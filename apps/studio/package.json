@@ -1,0 +1,26 @@
+{
+  "name": "@fulcrum/studio",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b && vite build",
+    "dev": "vite --port 4311",
+    "typecheck": "tsc -b --noEmit"
+  },
+  "dependencies": {
+    "@fulcrum/domain": "workspace:*",
+    "@react-three/drei": "latest",
+    "@react-three/fiber": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "three": "latest"
+  },
+  "devDependencies": {
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "@types/three": "latest",
+    "@vitejs/plugin-react": "latest",
+    "vite": "latest"
+  }
+}

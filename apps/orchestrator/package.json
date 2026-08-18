@@ -1,0 +1,25 @@
+{
+  "name": "@fulcrum/orchestrator",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fulcrum/creative": "workspace:*",
+    "@fulcrum/domain": "workspace:*",
+    "@fulcrum/execution": "workspace:*",
+    "@fulcrum/production": "workspace:*",
+    "@fulcrum/project": "workspace:*",
+    "@fulcrum/scene": "workspace:*",
+    "@mastra/core": "latest",
+    "@fastify/cors": "latest",
+    "dotenv": "latest",
+    "fastify": "latest",
+    "zod": "latest"
+  }
+}

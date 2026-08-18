@@ -1,0 +1,22 @@
+{
+  "name": "@fulcrum/production",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fulcrum/domain": "workspace:*",
+    "@fulcrum/project": "workspace:*",
+    "@gltf-transform/core": "latest",
+    "three": "latest"
+  },
+  "devDependencies": {
+    "@types/three": "latest"
+  }
+}

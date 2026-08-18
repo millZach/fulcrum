@@ -4,6 +4,7 @@ dist/
 build/
 coverage/
 .turbo/
+*.tsbuildinfo
 
 # Local configuration and credentials
 .env
@@ -12,6 +13,13 @@ coverage/
 
 # Generated production artifacts
 workspace/projects/
+workspace/*.db
+workspace/*.db-shm
+workspace/*.db-wal
+**/workspace/projects/
+**/workspace/*.db
+**/workspace/*.db-shm
+**/workspace/*.db-wal
 
 # Python
 __pycache__/
