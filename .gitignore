@@ -1,0 +1,32 @@
+# Dependencies and build output
+node_modules/
+dist/
+build/
+coverage/
+.turbo/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+
+# Generated production artifacts
+workspace/projects/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Blender
+*.blend1
+*.blend2
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local handoff documents
+**/HANDOFF.md
