@@ -1,20 +1,20 @@
 import path from "node:path";
 import { createReadStream } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import cors from "@fastify/cors";
 import { M0_FIXTURE_BRIEF } from "@fulcrum/domain";
 import { createRepository } from "@fulcrum/project";
-import "dotenv/config";
 import Fastify from "fastify";
 import { ZodError } from "zod";
 
 import { M0Coordinator } from "./coordinator.js";
+import { loadRuntimeEnvironment } from "./runtime-config.js";
 
-process.env.FULCRUM_FIXTURE_BRIEF ??= M0_FIXTURE_BRIEF;
-const workspaceRoot = path.resolve(
-  process.cwd(),
-  process.env.FULCRUM_WORKSPACE_ROOT ?? "workspace",
+const { workspaceRoot } = loadRuntimeEnvironment(
+  path.dirname(fileURLToPath(import.meta.url)),
 );
+process.env.FULCRUM_FIXTURE_BRIEF ??= M0_FIXTURE_BRIEF;
 const repository = createRepository(workspaceRoot);
 const coordinator = new M0Coordinator(repository);
 const server = Fastify({ logger: true, bodyLimit: 12 * 1024 * 1024 });

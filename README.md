@@ -29,7 +29,7 @@ generated and validated 3D asset
 coherent Three.js scene
 ```
 
-Fulcrum is currently implementing M0. The deterministic replay path already runs locally from brief to visual-direction approval, generated GLB, QA, Three.js review, captured review image, and final decision. The live model-backed orchestrator + Meshy acceptance run is still required before M0 can be called complete; Tripo is available as an alternate 3D adapter.
+Fulcrum completed its first live M0 acceptance run on 2026-08-18. The OpenAI subscription and Meshy path carried one immutable lineage from brief through two human approvals, a generated GLB, deterministic QA, a Three.js review, and a stored review image. The deterministic replay path remains the offline development and CI route; Tripo is available as an alternate 3D adapter. See the [M0 live acceptance report](milestones/M0_REPORT.md) for evidence and accepted limitations.
 
 ## Run M0 locally
 
@@ -60,9 +60,10 @@ pnpm format:check
 - [Architecture](ARCHITECTURE.md) — state ownership, module interfaces, Scene Spec, and technical decisions
 - [Roadmap](ROADMAP.md) — staged path from the first proof to the Gauntlet
 - [M0 implementation contract](milestones/M0.md) — the current bounded walking skeleton
+- [M0 live acceptance report](milestones/M0_REPORT.md) — result, cost, evidence, failures, and limitations
 - [Implementation prompt](IMPLEMENTATION_PROMPT.md) — the short execution contract for an implementation agent
 
-Implementation begins with M0: one real, immutable lineage from a game brief through an approved concept and generated 3D hero prop into a rendered Three.js review scene.
+M0 establishes one real, immutable lineage from a game brief through an approved concept and generated 3D hero prop into a rendered Three.js review scene.
 
 ## License
 
