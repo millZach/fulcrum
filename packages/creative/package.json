@@ -1,0 +1,21 @@
+{
+  "name": "@fulcrum/creative",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fulcrum/domain": "workspace:*",
+    "@fulcrum/execution": "workspace:*",
+    "@fulcrum/project": "workspace:*",
+    "openai": "latest",
+    "sharp": "latest",
+    "zod": "latest"
+  }
+}
