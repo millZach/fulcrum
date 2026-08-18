@@ -7,7 +7,7 @@ import {
 import { Canvas, useThree } from "@react-three/fiber";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type { WebGLRenderer } from "three";
-import { Color } from "three";
+import { Box3, Color } from "three";
 
 import {
   M0_FIXTURE_BRIEF,
@@ -19,6 +19,9 @@ import {
   type ImageProvider,
   type ProjectSnapshot,
 } from "@fulcrum/domain";
+
+import { api } from "./api.js";
+import { fitAssetToGround } from "./scene-fit.js";
 
 const executionLabels: Record<ExecutionProvider, string> = {
   claude: "Claude Subscription",
@@ -33,17 +36,6 @@ const imageLabels: Record<ImageProvider, string> = {
   "openai-gpt-image-2": "OpenAI API · GPT Image 2",
   "custom-api": "Custom image API",
   none: "No image model",
-};
-
-const api = async <T,>(path: string, options?: RequestInit): Promise<T> => {
-  const response = await fetch(path, {
-    ...options,
-    headers: { "Content-Type": "application/json", ...options?.headers },
-  });
-  const payload = (await response.json()) as T & { detail?: string };
-  if (!response.ok)
-    throw new Error(payload.detail ?? `Request failed (${response.status}).`);
-  return payload;
 };
 
 const stageOrder = [
@@ -96,14 +88,24 @@ function CameraRig({ scene }: { scene: FulcrumSceneSpecV0 }) {
 function Reliquary({ uri, scene }: { uri: string; scene: FulcrumSceneSpecV0 }) {
   const gltf = useGLTF(uri);
   const object = useMemo(() => gltf.scene.clone(true), [gltf.scene]);
+  const fit = useMemo(() => {
+    const bounds = new Box3().setFromObject(object);
+    return fitAssetToGround({
+      min: [bounds.min.x, bounds.min.y, bounds.min.z],
+      max: [bounds.max.x, bounds.max.y, bounds.max.z],
+    });
+  }, [object]);
   const transform = scene.entities[0]?.transform;
   return (
-    <primitive
-      object={object}
+    <group
       position={transform?.position ?? [0, 0, 0]}
       rotation={transform?.rotationEulerRadians ?? [0, 0, 0]}
       scale={transform?.scale ?? [1, 1, 1]}
-    />
+    >
+      <group position={fit.position} scale={fit.scale}>
+        <primitive object={object} />
+      </group>
+    </group>
   );
 }
 
