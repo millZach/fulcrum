@@ -21,6 +21,7 @@ import { z, ZodError } from "zod";
 
 import { ProjectCoordinator } from "./project-coordinator.js";
 import { loadRuntimeEnvironment } from "./runtime-config.js";
+import { isTrustedStudioOrigin, STUDIO_ORIGINS } from "./studio-origin.js";
 
 const { repositoryRoot, workspaceRoot } = loadRuntimeEnvironment(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -31,7 +32,11 @@ const coordinator = new ProjectCoordinator(repository);
 const server = Fastify({ logger: true, bodyLimit: 12 * 1024 * 1024 });
 const prototypeImageRoot = path.join(workspaceRoot, "prototype-imagegen");
 
-await server.register(cors, { origin: true });
+// Explicit studio allowlist. `origin: true` reflected any Origin, so a tab on
+// this machine could call the orchestrator. CORS alone is not enough for the
+// Vite proxy on :4311 — that path forwards the browser Origin and the tab
+// never sees these headers — so the ImageGen POST also checks Origin below.
+await server.register(cors, { origin: [...STUDIO_ORIGINS] });
 
 const PrototypeImageEditInputSchema = z
   .object({
@@ -104,44 +109,56 @@ server.get<{ Params: { sha256: string } }>(
     return reply.send(createReadStream(absolutePath));
   },
 );
-server.post("/api/prototype/imagegen/edit", async (request) => {
-  const input = PrototypeImageEditInputSchema.parse(request.body);
-  const subscription = inspectExecutionProviders().find(
-    ({ provider }) => provider === "openai",
-  );
-  if (!subscription?.ready || !subscription.capabilities.imageGeneration)
-    throw new Error(
-      subscription?.detail ??
-        "The signed-in OpenAI subscription ImageGen capability is unavailable.",
+server.post(
+  "/api/prototype/imagegen/edit",
+  {
+    onRequest: async (request, reply) => {
+      if (isTrustedStudioOrigin(request.headers.origin)) return;
+      return reply.status(403).send({
+        error: "This request is not from a trusted studio origin.",
+        detail: "This request is not from a trusted studio origin.",
+      });
+    },
+  },
+  async (request) => {
+    const input = PrototypeImageEditInputSchema.parse(request.body);
+    const subscription = inspectExecutionProviders().find(
+      ({ provider }) => provider === "openai",
     );
-  const source = prototypeSource(input);
-  const finalPrompt = [
-    "Use case: precise-object-edit",
-    "Asset type: polished game concept art",
-    `Primary request: ${input.prompt}`,
-    "Input images: Image 1 is the edit target.",
-    `Subject: ${input.conceptTitle}`,
-    `Purpose: ${input.conceptPurpose}`,
-    `Approved visual direction: ${input.directionName}`,
-    "Constraints: Make only the requested change. Preserve the subject identity, approved visual direction, environment, lighting, color language, composition, and all unrelated details.",
-    "Avoid: text, UI, logos, watermarks, additional characters, unrelated objects, and unrequested redesigns.",
-  ].join("\n");
-  const result = await runCodexSubscriptionImage({
-    prompt: finalPrompt,
-    referenceImages: [source],
-  });
-  const sha256 = createHash("sha256").update(result.bytes).digest("hex");
-  mkdirSync(prototypeImageRoot, { recursive: true });
-  const absolutePath = path.join(prototypeImageRoot, `${sha256}.png`);
-  if (!existsSync(absolutePath)) writeFileSync(absolutePath, result.bytes);
-  return {
-    imageUrl: `/api/prototype/imagegen/images/${sha256}.png`,
-    sha256,
-    model: result.model,
-    costUsd: result.costUsd,
-    prompt: finalPrompt,
-  };
-});
+    if (!subscription?.ready || !subscription.capabilities.imageGeneration)
+      throw new Error(
+        subscription?.detail ??
+          "The signed-in OpenAI subscription ImageGen capability is unavailable.",
+      );
+    const source = prototypeSource(input);
+    const finalPrompt = [
+      "Use case: precise-object-edit",
+      "Asset type: polished game concept art",
+      `Primary request: ${input.prompt}`,
+      "Input images: Image 1 is the edit target.",
+      `Subject: ${input.conceptTitle}`,
+      `Purpose: ${input.conceptPurpose}`,
+      `Approved visual direction: ${input.directionName}`,
+      "Constraints: Make only the requested change. Preserve the subject identity, approved visual direction, environment, lighting, color language, composition, and all unrelated details.",
+      "Avoid: text, UI, logos, watermarks, additional characters, unrelated objects, and unrequested redesigns.",
+    ].join("\n");
+    const result = await runCodexSubscriptionImage({
+      prompt: finalPrompt,
+      referenceImages: [source],
+    });
+    const sha256 = createHash("sha256").update(result.bytes).digest("hex");
+    mkdirSync(prototypeImageRoot, { recursive: true });
+    const absolutePath = path.join(prototypeImageRoot, `${sha256}.png`);
+    if (!existsSync(absolutePath)) writeFileSync(absolutePath, result.bytes);
+    return {
+      imageUrl: `/api/prototype/imagegen/images/${sha256}.png`,
+      sha256,
+      model: result.model,
+      costUsd: result.costUsd,
+      prompt: finalPrompt,
+    };
+  },
+);
 server.get("/api/configuration", async () => coordinator.configuration());
 server.get("/api/projects", async () => coordinator.list());
 server.get<{ Params: { projectId: string } }>(

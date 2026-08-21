@@ -247,6 +247,19 @@ describe("M1Coordinator replay path", () => {
 
     const conceptsBeforeDirectionChange = project.conceptSet!;
     const paletteBefore = selectedBefore.visualBible.palette;
+    await expect(
+      coordinator.m1.changeDirection(project.state.projectId, {
+        directionSetRevisionId: project.state.visualDirectionSet!.revisionId,
+        directionRevisionId: project.state.selectedVisualDirectionRevisionId!,
+        change: "Rebalance the emphasis toward the objective",
+        pinnedAspects: ["palette", "shape language"],
+      }),
+    ).rejects.toThrow(/could not be classified/i);
+    const afterRejectedChange = coordinator.snapshot(project.state.projectId);
+    expect(afterRejectedChange.state.focusedDirectionChangeCount ?? 0).toBe(0);
+    expect(afterRejectedChange.state.visualDirectionSet?.revisionId).toBe(
+      project.state.visualDirectionSet?.revisionId,
+    );
     project = await coordinator.m1.changeDirection(project.state.projectId, {
       directionSetRevisionId: project.state.visualDirectionSet!.revisionId,
       directionRevisionId: project.state.selectedVisualDirectionRevisionId!,

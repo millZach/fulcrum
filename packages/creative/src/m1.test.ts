@@ -17,6 +17,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   M1CreativeDevelopment,
+  classifyFocusedDirectionChange,
   type ArchitectureDecisionRecord,
   type ConceptPlan,
   type FocusedDirectionChange,
@@ -787,4 +788,228 @@ describe("M1CreativeDevelopment validation brief matrix", () => {
       }
     },
   );
+});
+
+describe("M1CreativeDevelopment correctness cluster", () => {
+  it("does not infer a negated camera from keyword array order", () => {
+    const { repository, creative, context } = createHarness();
+    const brief =
+      "Design a strict side-scrolling platformer where a runner clears collapsing ledges; the side-scrolling framing must never change.";
+    const intent = createApprovedIntent(
+      repository,
+      creative,
+      context,
+      brief,
+      (branchId) =>
+        branchId === "presentation.camera-readability"
+          ? "Keep the strict side-scrolling framing; do not use an isometric camera."
+          : answerValue(branchId),
+    );
+    const spec = GameDesignSpecSchema.parse(
+      repository.resolveRevision(intent.gameDesignSpec),
+    );
+    expect(spec.camera).toBe("side-scrolling");
+    expect(spec.camera).not.toContain("isometric");
+    expect(spec.gameplayConstraints.join(" ")).not.toContain("isometric");
+  });
+
+  it("classifies lighting stems and rejects unclassified focused changes", async () => {
+    expect(
+      classifyFocusedDirectionChange(
+        "Replace the soft overcast fill with a hard midnight moonlight key",
+      ),
+    ).toBe("lighting");
+    expect(
+      classifyFocusedDirectionChange(
+        "Add lamplight and backlight glow along the objective",
+      ),
+    ).toBe("lighting");
+    expect(
+      classifyFocusedDirectionChange(
+        "Add restrained wind streaks around the active objective",
+      ),
+    ).toBe("vfx");
+    expect(() =>
+      classifyFocusedDirectionChange(
+        "Rebalance the emphasis toward the objective",
+      ),
+    ).toThrow(/Recognizable categories: .*lighting.*vfx/);
+
+    const { repository, creative, context } = createHarness();
+    const intent = createApprovedIntent(
+      repository,
+      creative,
+      context,
+      CONSTRAINT_BRIEF,
+    );
+    const directionSet = await creative.generateVisualDirections({
+      ...context,
+      gameDesignSpec: intent.gameDesignSpec,
+    });
+    const set = VisualDirectionSetSchema.parse(
+      repository.resolveRevision(directionSet),
+    );
+    const selected = set.directions[0]!;
+    const moonlight =
+      "Replace the soft overcast fill with a hard midnight moonlight key";
+    const focused = await creative.makeFocusedDirectionChange({
+      ...context,
+      gameDesignSpec: intent.gameDesignSpec,
+      directionSet,
+      directionRevisionId: selected.revisionId,
+      change: moonlight,
+      pinnedAspects: ["palette", "shape language"],
+    });
+    const changed = VisualDirectionSetSchema.parse(
+      repository.resolveRevision(focused.directionSet),
+    ).directions[0]!;
+    expect(changed.visualBible.lighting).toBe(`${moonlight}.`);
+    expect(
+      changed.visualBible.tokens.some((token) => token.category === "vfx"),
+    ).toBe(false);
+    expect(
+      changed.visualBible.tokens.filter(
+        (token) => token.category === "lighting",
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        value: `${moonlight}.`,
+        role: "focused revision",
+      }),
+    ]);
+
+    await expect(
+      creative.makeFocusedDirectionChange({
+        ...context,
+        gameDesignSpec: intent.gameDesignSpec,
+        directionSet,
+        directionRevisionId: selected.revisionId,
+        change: "Rebalance the emphasis toward the objective",
+        pinnedAspects: ["palette"],
+      }),
+    ).rejects.toThrow(/could not be classified/);
+  });
+
+  it("replaces superseded lighting instead of concatenating it into compiled prompts", async () => {
+    const { repository, creative, context } = createHarness();
+    const intent = createApprovedIntent(
+      repository,
+      creative,
+      context,
+      CONSTRAINT_BRIEF,
+    );
+    const directionSet = await creative.generateVisualDirections({
+      ...context,
+      gameDesignSpec: intent.gameDesignSpec,
+    });
+    const set = VisualDirectionSetSchema.parse(
+      repository.resolveRevision(directionSet),
+    );
+    const selected = set.directions[0]!;
+    expect(selected.visualBible.lighting).toBe(
+      "Soft overcast fill with a warm objective glow",
+    );
+    const change =
+      "Use a hard midnight lighting key instead of the soft overcast fill";
+    const focused = await creative.makeFocusedDirectionChange({
+      ...context,
+      gameDesignSpec: intent.gameDesignSpec,
+      directionSet,
+      directionRevisionId: selected.revisionId,
+      change,
+      pinnedAspects: ["palette", "shape language", "readability"],
+    });
+    const changedSet = VisualDirectionSetSchema.parse(
+      repository.resolveRevision(focused.directionSet),
+    );
+    const changed = changedSet.directions[0]!;
+    expect(changed.visualBible.lighting).toBe(`${change}.`);
+    expect(changed.visualBible.lighting).not.toContain("Soft overcast fill");
+    const originalSet = VisualDirectionSetSchema.parse(
+      repository.resolveRevision(directionSet),
+    );
+    expect(originalSet.directions[0]!.visualBible.lighting).toBe(
+      "Soft overcast fill with a warm objective glow",
+    );
+
+    const planRevision = creative.planConcepts({
+      ...context,
+      brief: CONSTRAINT_BRIEF,
+      gameDesignSpec: intent.gameDesignSpec,
+      directionSet: focused.directionSet,
+      selectedDirectionRevisionId: changed.revisionId,
+    });
+    const conceptSetRevision = await creative.generateConceptSet({
+      ...context,
+      gameDesignSpec: intent.gameDesignSpec,
+      directionSet: focused.directionSet,
+      selectedDirectionRevisionId: changed.revisionId,
+      conceptPlan: planRevision,
+    });
+    const conceptSet = ConceptSetSchema.parse(
+      repository.resolveRevision(conceptSetRevision),
+    );
+    const prompt = M1ConceptDocumentSchema.parse(
+      repository.resolveRevision(conceptSet.slots[0]!.revisions[0]!.revision),
+    ).prompt;
+    expect(prompt).toContain("midnight lighting key");
+    expect(prompt).not.toContain(
+      "Soft overcast fill with a warm objective glow",
+    );
+    expect(prompt).not.toMatch(/lighting: Soft overcast fill/);
+  });
+
+  it("compiles camera tokens from the approved spec instead of a three-quarter default", async () => {
+    const { repository, creative, context } = createHarness();
+    const intent = createApprovedIntent(
+      repository,
+      creative,
+      context,
+      CONSTRAINT_BRIEF,
+    );
+    const spec = GameDesignSpecSchema.parse(
+      repository.resolveRevision(intent.gameDesignSpec),
+    );
+    expect(spec.camera).toContain("top-down");
+    const directionSet = await creative.generateVisualDirections({
+      ...context,
+      gameDesignSpec: intent.gameDesignSpec,
+    });
+    const directions = VisualDirectionSetSchema.parse(
+      repository.resolveRevision(directionSet),
+    );
+    const selected = directions.directions[0]!;
+    expect(selected.visualBible.cameraLanguage).toContain("top-down");
+    expect(
+      selected.visualBible.tokens.find((token) => token.category === "camera")
+        ?.value,
+    ).toContain("top-down");
+    expect(
+      selected.visualBible.tokens.find((token) => token.category === "camera")
+        ?.value,
+    ).not.toMatch(/three-quarter/i);
+
+    const planRevision = creative.planConcepts({
+      ...context,
+      brief: CONSTRAINT_BRIEF,
+      gameDesignSpec: intent.gameDesignSpec,
+      directionSet,
+      selectedDirectionRevisionId: selected.revisionId,
+    });
+    const conceptSetRevision = await creative.generateConceptSet({
+      ...context,
+      gameDesignSpec: intent.gameDesignSpec,
+      directionSet,
+      selectedDirectionRevisionId: selected.revisionId,
+      conceptPlan: planRevision,
+    });
+    const conceptSet = ConceptSetSchema.parse(
+      repository.resolveRevision(conceptSetRevision),
+    );
+    const prompt = M1ConceptDocumentSchema.parse(
+      repository.resolveRevision(conceptSet.slots[0]!.revisions[0]!.revision),
+    ).prompt;
+    expect(prompt).toMatch(/camera(?: \([^)]+\))?: [^.]*top-down/i);
+    expect(prompt).not.toMatch(/three-quarter/i);
+  });
 });
