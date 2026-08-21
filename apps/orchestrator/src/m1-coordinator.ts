@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 
-import { M1CreativeDevelopment } from "@fulcrum/creative";
+import {
+  classifyFocusedDirectionChange,
+  M1CreativeDevelopment,
+} from "@fulcrum/creative";
+import { z } from "zod";
+
 import {
   AnswerFrontierRoundInputSchema,
   ChangeVisualDirectionInputSchema,
@@ -386,6 +391,17 @@ export class M1Coordinator {
     );
     if (!source)
       throw new Error("The requested direction is not in the current set.");
+    try {
+      classifyFocusedDirectionChange(parsed.change);
+    } catch (error) {
+      throw new z.ZodError([
+        {
+          code: "custom",
+          path: ["change"],
+          message: error instanceof Error ? error.message : String(error),
+        },
+      ]);
+    }
     const changed = await this.creative.makeFocusedDirectionChange({
       projectId,
       runId: state.runId,

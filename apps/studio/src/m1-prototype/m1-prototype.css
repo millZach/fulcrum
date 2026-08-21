@@ -1241,6 +1241,33 @@
   cursor: not-allowed;
   opacity: 0.45;
 }
+.image-gen-paid-note {
+  margin: 6px 0 0;
+  color: #7d8988;
+  font-size: 10px;
+  line-height: 1.45;
+}
+.image-gen-confirm {
+  margin-top: 8px;
+  border: 1px solid var(--m1-line);
+  background: #0b1111;
+  padding: 12px 13px;
+}
+.image-gen-confirm > p {
+  margin: 0 0 10px;
+  color: #cfe3de;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.image-gen-confirm-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.image-gen-confirm-actions button {
+  width: 100%;
+  margin-top: 0;
+}
 .image-generation-status,
 .image-generation-error,
 .image-generation-result {
@@ -9160,6 +9187,10 @@
 .variant-b-voxel .voxel-concept-host .single-review-controls > section,
 .variant-b-voxel .voxel-concept-host .single-review-controls > label,
 .variant-b-voxel .voxel-concept-host .single-review-controls > p,
+.variant-b-voxel
+  .voxel-concept-host
+  .single-review-controls
+  > .image-gen-confirm,
 .variant-b-voxel .voxel-concept-host .image-change-request > span,
 .variant-b-voxel .voxel-concept-host .image-change-request > small {
   min-height: auto;
@@ -9280,10 +9311,38 @@
   font-size: 12.5px;
   line-height: 1.45;
 }
+.variant-b-voxel .voxel-concept-host .image-gen-paid-note {
+  color: var(--muted);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  line-height: 1.45;
+}
+.variant-b-voxel .voxel-concept-host .image-gen-confirm {
+  display: grid;
+  gap: 10px;
+  border: 3px solid var(--ink);
+  border-radius: 6px;
+  padding: 12px;
+  background: rgba(47, 208, 197, 0.16);
+  box-shadow: 4px 4px 0 var(--ink-10);
+  /* Clear the sticky Keep CTA and its paper mask. */
+  scroll-margin-bottom: 80px;
+}
+.variant-b-voxel .voxel-concept-host .image-gen-confirm > p {
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.variant-b-voxel .voxel-concept-host .image-gen-confirm-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
 /* Sticky CTA shelf. The paper box-shadow is the mask: its spread has to cover
    the full 12px row gap above the button and the 16px pad below, or scrolled
    copy slides visibly into the gap and looks clipped. */
-.variant-b-voxel .voxel-concept-host .single-review-controls .m1-primary {
+.variant-b-voxel .voxel-concept-host .single-review-controls > .m1-primary {
   position: sticky;
   bottom: -16px;
   margin-top: 2px;
@@ -11506,6 +11565,28 @@ button.rr-card:hover {
 }
 .variant-c-review .single-review-controls > .m1-primary {
   margin-top: auto;
+}
+.variant-c-review .image-gen-paid-note {
+  margin: 0;
+  color: var(--rr-mute);
+  font: 400 10px/1.5 var(--rr-text);
+}
+.variant-c-review .image-gen-confirm {
+  margin: 0;
+  border: 1px solid rgba(255, 143, 67, 0.35);
+  background: rgba(255, 143, 67, 0.07);
+  padding: 12px;
+}
+.variant-c-review .image-gen-confirm > p {
+  margin: 0 0 10px;
+  color: var(--rr-mute);
+  font: 400 12px/1.5 var(--rr-text);
+}
+.variant-c-review .image-gen-confirm-actions .m1-primary,
+.variant-c-review .image-gen-confirm-actions .m1-secondary {
+  padding-inline: 10px;
+  letter-spacing: 0.06em;
+  white-space: normal;
 }
 .variant-c-review .image-generation-status,
 .variant-c-review .image-generation-error,

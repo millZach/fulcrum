@@ -258,33 +258,73 @@ const answerForBranch = (
     ?.value;
 };
 
+const CAMERA_TERMS = [
+  "first-person",
+  "third-person",
+  "top-down",
+  "isometric",
+  "side-scrolling",
+  "fixed camera",
+] as const;
+
+const GENRE_TERMS: Array<[string, string]> = [
+  ["puzzle", "Puzzle adventure"],
+  ["racing", "Action racing"],
+  ["strategy", "Tactical strategy"],
+  ["survival", "Survival adventure"],
+  ["platform", "Action platformer"],
+  ["extraction", "Extraction action"],
+];
+
+const isNegatedMention = (text: string, index: number): boolean => {
+  const prefix = text.slice(Math.max(0, index - 72), index);
+  return (
+    /\b(?:do\s+not|don't|dont|never|avoid|reject)\b[^.!?;]*$/i.test(prefix) ||
+    /\bno\s+(?:an?\s+|the\s+)?$/i.test(prefix) ||
+    /\bnot\s+(?:an?\s+|the\s+|use(?:\s+an?)?(?:\s+the)?\s+)?$/i.test(prefix)
+  );
+};
+
+const firstPositiveMention = (
+  text: string,
+  needles: readonly string[],
+): string | undefined => {
+  const haystack = normalize(text);
+  let best: { needle: string; index: number } | undefined;
+  for (const needle of needles) {
+    const target = normalize(needle);
+    let from = 0;
+    while (from <= haystack.length) {
+      const index = haystack.indexOf(target, from);
+      if (index === -1) break;
+      if (!isNegatedMention(haystack, index)) {
+        if (!best || index < best.index) best = { needle, index };
+        break;
+      }
+      from = index + target.length;
+    }
+  }
+  return best?.needle;
+};
+
 const inferCamera = (brief: string, state: InterrogationState): string => {
-  const combined = `${brief} ${answerForBranch(state, "presentation.camera-readability") ?? ""}`;
-  const known = [
-    "first-person",
-    "third-person",
-    "top-down",
-    "isometric",
-    "side-scrolling",
-    "fixed camera",
-  ].find((camera) => normalize(combined).includes(camera));
+  const answer =
+    answerForBranch(state, "presentation.camera-readability") ?? "";
+  const known =
+    firstPositiveMention(answer, CAMERA_TERMS) ??
+    firstPositiveMention(brief, CAMERA_TERMS);
   return (
     known ?? "Elevated three-quarter camera with a stable gameplay horizon"
   );
 };
 
 const inferGenre = (brief: string): string => {
-  const lower = normalize(brief);
-  const candidates: Array<[string, string]> = [
-    ["puzzle", "Puzzle adventure"],
-    ["racing", "Action racing"],
-    ["strategy", "Tactical strategy"],
-    ["survival", "Survival adventure"],
-    ["platform", "Action platformer"],
-    ["extraction", "Extraction action"],
-  ];
+  const mentioned = firstPositiveMention(
+    brief,
+    GENRE_TERMS.map(([needle]) => needle),
+  );
   return (
-    candidates.find(([needle]) => lower.includes(needle))?.[1] ??
+    GENRE_TERMS.find(([needle]) => needle === mentioned)?.[1] ??
     "Focused action adventure"
   );
 };
@@ -302,6 +342,7 @@ const titleFromBrief = (brief: string): string => {
 };
 
 const verbsFrom = (value: string): string[] => {
+  const haystack = normalize(value);
   const known = [
     "move",
     "explore",
@@ -317,7 +358,16 @@ const verbsFrom = (value: string): string[] => {
     "trade",
     "defend",
     "escape",
-  ].filter((verb) => normalize(value).includes(verb));
+  ].filter((verb) => {
+    let from = 0;
+    while (from <= haystack.length) {
+      const index = haystack.indexOf(verb, from);
+      if (index === -1) return false;
+      if (!isNegatedMention(haystack, index)) return true;
+      from = index + verb.length;
+    }
+    return false;
+  });
   return known.length >= 2 ? known : ["move", "interact", "commit"];
 };
 
@@ -562,7 +612,10 @@ const DIRECTION_TEMPLATES: DirectionTemplate[] = [
   },
 ];
 
-const tokensFor = (template: DirectionTemplate): VisualToken[] => [
+const tokensFor = (
+  template: DirectionTemplate,
+  cameraLanguage: string,
+): VisualToken[] => [
   {
     tokenId: `${template.slug}:style`,
     category: "style",
@@ -614,7 +667,7 @@ const tokensFor = (template: DirectionTemplate): VisualToken[] => [
   {
     tokenId: `${template.slug}:camera`,
     category: "camera",
-    value: "Three-quarter presentation with an unobstructed gameplay horizon",
+    value: cameraLanguage,
   },
   {
     tokenId: `${template.slug}:scale`,
@@ -636,6 +689,7 @@ const bibleFor = (
   const briefFact =
     spec.facts.find(({ origin }) => origin.source === "brief")?.text ??
     spec.coreFantasy;
+  const cameraLanguage = `${spec.camera}; keep the active objective unobstructed`;
   return StructuredVisualBibleSchema.parse({
     title: template.name,
     overallStyle: template.overallStyle,
@@ -646,7 +700,7 @@ const bibleFor = (
     palette: template.palette,
     lighting: template.lighting,
     atmosphere: template.atmosphere,
-    cameraLanguage: `${spec.camera}; keep the active objective unobstructed`,
+    cameraLanguage,
     textureLanguage: template.textureLanguage,
     readabilityRules: [
       "Reserve the gameplay-focus color for actionable goals",
@@ -660,7 +714,7 @@ const bibleFor = (
       "decorative clutter over gameplay edges",
     ],
     tokens: [
-      ...tokensFor(template),
+      ...tokensFor(template, cameraLanguage),
       {
         tokenId: `${template.slug}:project-world`,
         category: "project-world",
@@ -773,19 +827,103 @@ const PINNED_ASPECTS: Record<string, (bible: StructuredVisualBible) => string> =
     readability: (bible) => JSON.stringify(bible.readabilityRules),
   };
 
-const focusedChangeCategory = (change: string): VisualToken["category"] => {
+const FOCUSED_CHANGE_CLASSIFIERS: Array<{
+  category: VisualToken["category"];
+  pattern: RegExp;
+}> = [
+  { category: "style", pattern: /styl(?:e|ized|ised)/ },
+  { category: "palette", pattern: /colou?r|palette|hue|tint/ },
+  {
+    category: "material",
+    pattern: /material|metal|stone|wood|timber|bronze|copper|plaster/,
+  },
+  { category: "surface", pattern: /texture|surface|wear/ },
+  { category: "shape", pattern: /shape|silhouette|\bforms?\b/ },
+  { category: "lighting", pattern: /light|shadow|\bsun\b|glow|lamp/ },
+  {
+    category: "atmosphere",
+    pattern: /atmosphere|fog|mist|weather|haze|\brain\b|\bsnow\b|dust|pollen/,
+  },
+  { category: "camera", pattern: /camera|\blens\b|\bviews?\b|framing/ },
+  { category: "readability", pattern: /readab|contrast|legib/ },
+  {
+    category: "vfx",
+    pattern:
+      /\bvfx\b|\bfx\b|particle|streak|spark|\btrails?\b|ember|debris|\beffects?\b/,
+  },
+];
+
+const FOCUSED_CHANGE_CATEGORIES = FOCUSED_CHANGE_CLASSIFIERS.map(
+  ({ category }) => category,
+);
+
+export const classifyFocusedDirectionChange = (
+  change: string,
+): VisualToken["category"] => {
   const value = normalize(change);
-  if (/\b(style|stylized|stylised)\b/.test(value)) return "style";
-  if (/\b(color|colour|palette)\b/.test(value)) return "palette";
-  if (/\b(material|metal|stone|wood)\b/.test(value)) return "material";
-  if (/\b(texture|surface|wear)\b/.test(value)) return "surface";
-  if (/\b(shape|form|silhouette)\b/.test(value)) return "shape";
-  if (/\b(light|lighting|shadow|sun)\b/.test(value)) return "lighting";
-  if (/\b(atmosphere|fog|mist|weather|haze)\b/.test(value)) return "atmosphere";
-  if (/\b(camera|view|lens)\b/.test(value)) return "camera";
-  if (/\b(readability|readable|contrast)\b/.test(value)) return "readability";
-  return "vfx";
+  const match = FOCUSED_CHANGE_CLASSIFIERS.find(({ pattern }) =>
+    pattern.test(value),
+  );
+  if (!match)
+    throw new Error(
+      `The focused change could not be classified. Recognizable categories: ${FOCUSED_CHANGE_CATEGORIES.join(", ")}.`,
+    );
+  return match.category;
 };
+
+const focusedBiblePatch = (
+  category: VisualToken["category"],
+  instruction: string,
+): Partial<StructuredVisualBible> => {
+  switch (category) {
+    case "style":
+      return { overallStyle: instruction };
+    case "shape":
+      return { shapeLanguage: instruction };
+    case "material":
+      return { materials: [instruction] };
+    case "surface":
+      return { textureLanguage: instruction };
+    case "lighting":
+      return { lighting: instruction };
+    case "atmosphere":
+      return { atmosphere: instruction };
+    case "camera":
+      return { cameraLanguage: instruction };
+    case "readability":
+      return { readabilityRules: [instruction] };
+    default:
+      return {};
+  }
+};
+
+const PRESERVED_FOCUSED_TOKEN_ROLES = new Set([
+  "approved premise",
+  "approved gameplay constraint",
+]);
+
+const REPLACED_FOCUSED_CATEGORIES = new Set<VisualToken["category"]>([
+  "style",
+  "shape",
+  "material",
+  "surface",
+  "lighting",
+  "atmosphere",
+  "camera",
+  "readability",
+]);
+
+const retireSupersededTokens = (
+  tokens: VisualToken[],
+  category: VisualToken["category"],
+): VisualToken[] =>
+  tokens.filter(
+    (token) =>
+      token.category !== category ||
+      !REPLACED_FOCUSED_CATEGORIES.has(category) ||
+      (token.role !== undefined &&
+        PRESERVED_FOCUSED_TOKEN_ROLES.has(token.role)),
+  );
 
 const tokenCategoriesForSlot = (slotId: string): VisualToken["category"][] => {
   const shared: VisualToken["category"][] = [
@@ -831,10 +969,12 @@ const conceptPrompt = (
     `Production concept for ${slot.name}.`,
     `Purpose: ${slot.purpose}.`,
     `Gameplay context: ${spec.objective}`,
-    ...tokens.map(
-      (token) =>
-        `${token.category}${token.role ? ` (${token.role})` : ""}: ${token.value}.`,
-    ),
+    ...tokens
+      .filter((token) => token.role !== "superseded")
+      .map(
+        (token) =>
+          `${token.category}${token.role ? ` (${token.role})` : ""}: ${token.value}.`,
+      ),
     ...(regenerationNote
       ? [`Focused alternate request: ${sentence(regenerationNote)}`]
       : []),
@@ -1238,7 +1378,7 @@ export class M1CreativeDevelopment {
       if (!accessor) throw new Error(`Unsupported pinned aspect: ${name}`);
       return { name, accessor, before: accessor(target.visualBible) };
     });
-    const category = focusedChangeCategory(context.change);
+    const category = classifyFocusedDirectionChange(context.change);
     const pinnedNames = new Set(snapshots.map(({ name }) => normalize(name)));
     const pinnedTargets: Partial<Record<VisualToken["category"], string[]>> = {
       style: ["style", "overall style"],
@@ -1254,61 +1394,17 @@ export class M1CreativeDevelopment {
       throw new Error(
         `The focused change targets pinned aspect ${pinnedTargets[category]!.find((name) => pinnedNames.has(name))}.`,
       );
+    const instruction = sentence(context.change);
     const changed = StructuredVisualBibleSchema.parse({
       ...target.visualBible,
       title: `${target.visualBible.title} — Focused Revision`,
-      ...(category === "style"
-        ? {
-            overallStyle: `${target.visualBible.overallStyle}; ${sentence(context.change)}`,
-          }
-        : {}),
-      ...(category === "shape"
-        ? {
-            shapeLanguage: `${target.visualBible.shapeLanguage}; ${sentence(context.change)}`,
-          }
-        : {}),
-      ...(category === "material"
-        ? {
-            materials: [
-              ...target.visualBible.materials,
-              sentence(context.change),
-            ],
-          }
-        : {}),
-      ...(category === "surface"
-        ? {
-            textureLanguage: `${target.visualBible.textureLanguage}; ${sentence(context.change)}`,
-          }
-        : {}),
-      ...(category === "lighting"
-        ? {
-            lighting: `${target.visualBible.lighting}; ${sentence(context.change)}`,
-          }
-        : {}),
-      ...(category === "atmosphere"
-        ? {
-            atmosphere: `${target.visualBible.atmosphere}; ${sentence(context.change)}`,
-          }
-        : {}),
-      ...(category === "camera"
-        ? {
-            cameraLanguage: `${target.visualBible.cameraLanguage}; ${sentence(context.change)}`,
-          }
-        : {}),
-      ...(category === "readability"
-        ? {
-            readabilityRules: [
-              ...target.visualBible.readabilityRules,
-              sentence(context.change),
-            ],
-          }
-        : {}),
+      ...focusedBiblePatch(category, instruction),
       tokens: [
-        ...target.visualBible.tokens,
+        ...retireSupersededTokens(target.visualBible.tokens, category),
         {
           tokenId: stableId("focused-change", context.change),
           category,
-          value: sentence(context.change),
+          value: instruction,
           role: "focused revision",
         },
       ],

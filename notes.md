@@ -1,5 +1,17 @@
 # Fulcrum
 
+## 2026-08-21 — Grok's headless mode fails by succeeding
+
+First two Grok CLI subagent runs burned 11 minutes combined, exited 0, and changed nothing. In print mode the first tool call that needs interactive approval cancels the whole run with stopReason "cancelled" and a clean exit code, and --permission-mode acceptEdits is simply not honored there, so both agents read the repo, narrated a plan, and died the moment they tried to edit. A 4-cent probe run with --output-format json exposed the stopReason; --permission-mode auto was the only mode of five that actually completed. Third launch with auto: both agents landed their full tasks.
+
+## 2026-08-21 — `inferCamera` trusted array order, and `/\blight\b/` cannot see moonlight
+
+The M1 camera picker walked a fixed keyword list and returned the first hit in array order, so "do not use an isometric camera" beat an explicit side-scrolling answer because isometric sits earlier in the list. Same function had no idea what negation was. The focused-change classifier had the sibling problem: `\blight\b` does not match moonlight, so a lighting revision fell through to vfx, reported success, and left the bible's lighting field untouched. Fix was first-positive-mention with answer-over-brief precedence, stem matching, and fail-closed classification that actually replaces the superseded token instead of concatenating it.
+
+## 2026-08-21 — CORS on :4310 does not protect the Vite proxy
+
+The prototype ImageGen POST was wide open because `cors({ origin: true })` reflected any Origin, so a tab at evil.example could POST to 127.0.0.1:4310 and spend the signed-in OpenAI subscription. Tightening CORS was not enough on its own: the studio Vite proxy on :4311 forwards the browser's Origin, and the tab never sees the orchestrator's CORS headers. The fix is an explicit studio allowlist plus a 403 on the ImageGen route when Origin is not on it. Missing Origin is allowed (curl / local scripts); browsers always send Origin on a cross-origin POST, so a CSRF page cannot omit it.
+
 ## 2026-08-20 — A MutationObserver without `subtree: true` hid a bug for two hours, and unmounting a WebGL canvas found another
 
 Rusty had to vanish on the three image-review pages, so I watched the shared concepts component's DOM to find out which of its four screens was up — `observer.observe(host, { attributes: true, attributeFilter: ["class"], childList: true })`. My probe kept reporting the right class name (`single-concept-review`) _and_ one canvas still on screen, which made no sense until I re-read the MutationObserver contract: `attributeFilter` only applies to the node you observe, and React keeps the same `<div>` across all four screens and just swaps its className, so there was never a childList mutation and never an attribute change on the host. One word — `subtree: true` — and it worked first try. That immediately produced a second bug: with the canvas actually unmounting, react-three-fiber threw `Cannot read properties of null (reading 'addEventListener')`, because its `run()` is `await root.configure(...)` and the `onCreated` continuation lands after the component is gone and connects its pointer events to `divRef.current`, which is now null. The mascot is `aria-hidden` decoration that nothing ever points at, so the fix was `events={() => ({ enabled: false, priority: 0 })}` — an event manager with no `connect` at all, which r3f's `?.` guard skips.

@@ -1,7 +1,8 @@
 /**
  * PROTOTYPE — throw away after review.
- * Three replay-only variants of the M1 creative workflow, switchable with
+ * Three variants of the M1 creative workflow, switchable with
  * ?prototype=m1&variant=A on the existing Studio entry point.
+ * Concept review can run live subscription ImageGen after an explicit confirm.
  */
 import {
   useCallback,
@@ -104,7 +105,7 @@ function Mark() {
 function ReplayBadge() {
   return (
     <span className="m1-replay">
-      Subscription ImageGen enabled · no API key
+      Live ImageGen uses your OpenAI subscription
     </span>
   );
 }
@@ -547,6 +548,8 @@ function FocusedConcepts(props: VariantProps) {
         concepts.map((item, index) => [index, item.changeRequest]),
       ),
   );
+  const [confirmingGeneration, setConfirmingGeneration] = useState(false);
+  const imageGenConfirmRef = useRef<HTMLDivElement>(null);
   const currentChangeRequest = changeRequests[props.concept] ?? "";
   const revisionsFor = (index: number): ConceptRevision[] => {
     const item = concepts[index] ?? concepts[0];
@@ -570,10 +573,28 @@ function FocusedConcepts(props: VariantProps) {
   const generationError = generationErrors[props.concept];
   const nextRevisionLabel = `r${String(revisions.length + 1).padStart(2, "0")}`;
 
+  useEffect(() => {
+    setConfirmingGeneration(false);
+  }, [props.concept, currentChangeRequest]);
+
+  useEffect(() => {
+    if (!confirmingGeneration) return;
+    const node = imageGenConfirmRef.current;
+    if (!node) return;
+    const reduceMotion =
+      typeof window.matchMedia === "function" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    node.scrollIntoView({
+      block: "nearest",
+      behavior: reduceMotion ? "auto" : "smooth",
+    });
+  }, [confirmingGeneration]);
+
   const generateRevision = async () => {
     const conceptIndex = props.concept;
     const requestText = currentChangeRequest.trim();
     if (!requestText || isGenerating) return;
+    setConfirmingGeneration(false);
     setGeneratingConcept(conceptIndex);
     setGenerationErrors((current) => {
       const next = { ...current };
@@ -693,9 +714,9 @@ function FocusedConcepts(props: VariantProps) {
           <div>
             <strong>OpenAI subscription · ImageGen</strong>
             <small>
-              Open each saved starting image, then enter your own change request
-              to create live revisions through your signed-in subscription. No
-              API key or metered API request.
+              Open each saved starting image, then enter a change request.
+              Generating a revision uses your signed-in OpenAI subscription —
+              you will be asked to confirm before each request.
             </small>
           </div>
           <button
@@ -875,16 +896,48 @@ function FocusedConcepts(props: VariantProps) {
               are explicitly preserved.
             </small>
           </label>
-          <button
-            className="m1-secondary"
-            onClick={generateRevision}
-            disabled={!currentChangeRequest.trim() || isGenerating}
-            type="button"
-          >
-            {isGenerating
-              ? `ImageGen is creating ${nextRevisionLabel}…`
-              : "Generate a new revision with ImageGen"}
-          </button>
+          {confirmingGeneration && !isGenerating ? (
+            <div className="image-gen-confirm" ref={imageGenConfirmRef}>
+              <p>
+                This will use your signed-in OpenAI subscription to generate a
+                new revision.
+              </p>
+              <div className="image-gen-confirm-actions">
+                <button
+                  className="m1-secondary"
+                  onClick={() => setConfirmingGeneration(false)}
+                  type="button"
+                >
+                  Cancel
+                </button>
+                <button
+                  className="m1-primary"
+                  onClick={() => void generateRevision()}
+                  type="button"
+                >
+                  Generate with subscription
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <button
+                className="m1-secondary"
+                onClick={() => setConfirmingGeneration(true)}
+                disabled={!currentChangeRequest.trim() || isGenerating}
+                type="button"
+              >
+                {isGenerating
+                  ? `ImageGen is creating ${nextRevisionLabel}…`
+                  : "Generate a new revision with ImageGen"}
+              </button>
+              {!isGenerating && (
+                <p className="image-gen-paid-note">
+                  Uses your signed-in OpenAI subscription
+                </p>
+              )}
+            </>
+          )}
           {isGenerating && (
             <p className="image-generation-status">
               This normally takes a few minutes. Keep this page open.
@@ -3490,7 +3543,7 @@ function VoxelStart(props: VoxelProps) {
             value={props.projectPrompt}
           />
           <span className="vx-composer-foot">
-            <small>Replay prototype · subscription ImageGen · no API key</small>
+            <small>Live ImageGen uses your signed-in OpenAI subscription</small>
             <button
               className="vx-primary"
               disabled={!props.projectPrompt.trim()}
@@ -4045,7 +4098,7 @@ function ReviewHeader(props: VariantProps) {
       </nav>
       <span className="rr-slate">
         <em aria-hidden="true" />
-        Subscription ImageGen · no API key
+        Live ImageGen · uses your OpenAI subscription
       </span>
     </header>
   );
