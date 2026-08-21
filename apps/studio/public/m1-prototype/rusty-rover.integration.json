@@ -1,0 +1,370 @@
+{
+  "generated": "workspace/incoming/fulcrum-anim/scripts/rr_build.py",
+  "character": "Rusty Rover",
+  "units": "metres; he is 1.70 m to the antenna tip, faces -Y, his left is +X, up is +Z",
+  "fps": 30,
+  "clips": [
+    {
+      "name": "Poof",
+      "frames": 36,
+      "seconds": 1.2,
+      "loop": false,
+      "anchor": "stand",
+      "glbSeconds": 1.1667,
+      "glbSamples": 36
+    },
+    {
+      "name": "Wave",
+      "frames": 75,
+      "seconds": 2.5,
+      "loop": true,
+      "anchor": "stand",
+      "glbSeconds": 2.5,
+      "glbSamples": 76,
+      "glbLoopCloseError": 0
+    },
+    {
+      "name": "ClimbUp",
+      "frames": 72,
+      "seconds": 2.4,
+      "loop": false,
+      "anchor": "seat",
+      "glbSeconds": 2.3667,
+      "glbSamples": 72
+    },
+    {
+      "name": "DangleIdle",
+      "frames": 90,
+      "seconds": 3.0,
+      "loop": true,
+      "anchor": "seat",
+      "glbSeconds": 3,
+      "glbSamples": 91,
+      "glbLoopCloseError": 0
+    },
+    {
+      "name": "HopDown",
+      "frames": 42,
+      "seconds": 1.4,
+      "loop": false,
+      "anchor": "seat",
+      "glbSeconds": 1.3667,
+      "glbSamples": 42
+    },
+    {
+      "name": "FetchBlock",
+      "frames": 96,
+      "seconds": 3.2,
+      "loop": false,
+      "anchor": "seat",
+      "glbSeconds": 3.1667,
+      "glbSamples": 96
+    },
+    {
+      "name": "CarryPlace",
+      "frames": 120,
+      "seconds": 4.0,
+      "loop": false,
+      "anchor": "seat",
+      "glbSeconds": 3.9667,
+      "glbSamples": 120
+    }
+  ],
+  "anchors": {
+    "seat": [0.0, 0.0, 0.0],
+    "stand": [0.0, -0.58, 0.0],
+    "note": "Park the character at `stand` while Poof and Wave play and at `seat` for everything else.  ClimbUp frame 1 already carries the stand offset in its root track, so the world pose is identical across the Wave -> ClimbUp cut."
+  },
+  "seatBlock": {
+    "topZ": 0.66,
+    "size": [0.9731, 0.7, 0.66],
+    "centreXY": [0.0, 0.2962],
+    "frontFaceY": -0.0538,
+    "note": "The approved DangleIdle plinth, unchanged: he sits with 114 mm of pelvis overhanging the front edge and his boots 0.18 m clear of the floor."
+  },
+  "block": {
+    "size": 0.26,
+    "pickup": [1.0037, -1.2016, 0.34],
+    "pickupYawDeg": 52.0,
+    "placement": [0.0, -0.94, 0.34],
+    "placementYawDeg": 0.0,
+    "restingSurfaceZ": 0.21,
+    "carryNode": "RightHand",
+    "carryOffset": {
+      "translation": [20.16112, 12.09057, -8.38614],
+      "quaternion": [0.591615, 0.80622, -0.0, 0.0],
+      "note": "blockWorldMatrix = boneWorldMatrix * offset.  The offset is in the bone NODE's own units -- the armature's 0.01 scale sits above the joints in the glTF node tree, so these translation numbers are centimetres.  Measured constant across the whole carry (see audits)."
+    },
+    "markers": {
+      "attach": {
+        "clip": "FetchBlock",
+        "frame": 76,
+        "seconds": 2.5,
+        "action": "parent the block to carryNode"
+      },
+      "detach": {
+        "clip": "CarryPlace",
+        "frame": 100,
+        "seconds": 3.3,
+        "action": "unparent; leave the block at `placement` with `placementYawDeg`"
+      }
+    },
+    "note": "The animation never owns a block mesh.  Before `attach` the block must be sitting at `pickup`; after `detach` it is at `placement`.  The pile is the app's: it only has to present the next block at `pickup`."
+  },
+  "antenna": {
+    "bone": "Antenna",
+    "base": [0.0017, 0.0327, 1.5169],
+    "tip": [-0.0003, 0.0327, 1.7],
+    "lengthM": 0.1831,
+    "springHz": 3.6,
+    "dampingRatio": 0.2,
+    "perClipMaxDeflectionDeg": {
+      "Poof": 6.0,
+      "Wave": 6.0,
+      "ClimbUp": 6.0,
+      "DangleIdle": 3.232,
+      "HopDown": 6.0,
+      "FetchBlock": 6.0,
+      "CarryPlace": 6.0
+    },
+    "note": "A 25th bone, added on import and baked into every clip.  The source model has the antenna welded to the skull."
+  },
+  "audits": {
+    "loops": {
+      "Wave": {
+        "worstBoneDeg": 0.0,
+        "worstBone": "neck",
+        "rootErrMm": 1.246976707160306e-15,
+        "skinUm": 0.0
+      },
+      "DangleIdle": {
+        "worstBoneDeg": 0.0,
+        "worstBone": "neck",
+        "rootErrMm": 0.0,
+        "skinUm": 0.0
+      }
+    },
+    "boundaries": {
+      "Poof f36 -> Wave f1": {
+        "worstBoneDeg": 0.0,
+        "worstBone": "neck",
+        "rootErrMm": 0.0,
+        "skinUm": 0.0
+      },
+      "Wave f1 -> ClimbUp f1": {
+        "worstBoneDeg": 2.496759408033548e-5,
+        "worstBone": "RightUpLeg",
+        "rootErrMm": 7.917680521040807e-7,
+        "skinUm": 0.24646110694144804
+      },
+      "ClimbUp f72 -> DangleIdle f1": {
+        "worstBoneDeg": 0.0,
+        "worstBone": "neck",
+        "rootErrMm": 0.0,
+        "skinUm": 0.0
+      },
+      "DangleIdle f1 -> HopDown f1": {
+        "worstBoneDeg": 1.1751640210845646e-6,
+        "worstBone": "Antenna",
+        "rootErrMm": 0.0,
+        "skinUm": 0.011175870895385742
+      },
+      "HopDown f42 -> FetchBlock f1": {
+        "worstBoneDeg": 0.0,
+        "worstBone": "neck",
+        "rootErrMm": 0.0,
+        "skinUm": 0.0
+      },
+      "FetchBlock f96 -> CarryPlace f1": {
+        "worstBoneDeg": 1.4971552099717218e-6,
+        "worstBone": "Antenna",
+        "rootErrMm": 0.0,
+        "skinUm": 0.17881393432617188
+      },
+      "CarryPlace f120 -> ClimbUp f1": {
+        "worstBoneDeg": 8.538322682229261e-7,
+        "worstBone": "Antenna",
+        "rootErrMm": 0.0,
+        "skinUm": 0.010244548320770264
+      }
+    },
+    "perClip": {
+      "Poof": {
+        "plinthClipMm": 0.0,
+        "seatContactMm": 0.0,
+        "lowestVertexMm": -3.7716079968959093,
+        "peakArmExtensionPct": 113.14525490220966
+      },
+      "Wave": {
+        "plinthClipMm": 0.0,
+        "seatContactMm": 0.0,
+        "lowestVertexMm": -6.225756835192442,
+        "peakArmExtensionPct": 99.98451377701105
+      },
+      "ClimbUp": {
+        "plinthClipMm": 3.603479266166665,
+        "seatContactMm": 38.40550538152454,
+        "lowestVertexMm": -14.718632213771343,
+        "peakArmExtensionPct": 99.81575177246003
+      },
+      "DangleIdle": {
+        "plinthClipMm": 0.0,
+        "seatContactMm": 44.232307374477365,
+        "lowestVertexMm": 181.49082362651825,
+        "peakArmExtensionPct": 94.85411433514307
+      },
+      "HopDown": {
+        "plinthClipMm": 0.0,
+        "seatContactMm": 38.40550538152454,
+        "lowestVertexMm": -10.58417558670044,
+        "peakArmExtensionPct": 101.59157405835447
+      },
+      "FetchBlock": {
+        "plinthClipMm": 0.0,
+        "seatContactMm": 0.0,
+        "lowestVertexMm": -8.230560459196568,
+        "peakArmExtensionPct": 99.92438746902236
+      },
+      "CarryPlace": {
+        "plinthClipMm": 0.0,
+        "seatContactMm": 0.0,
+        "lowestVertexMm": -13.833817094564438,
+        "peakArmExtensionPct": 99.81273097119163
+      }
+    },
+    "footSlipMm": {
+      "FetchBlock": 7.162880790824712,
+      "CarryPlace": 12.336561809952647,
+      "HopDown": 5.205453880065441,
+      "ClimbUp": 10.15304748818915,
+      "Poof": 3.299135341180276,
+      "Wave": 1.533703652940557
+    },
+    "ikOutOfReachMm": {
+      "Poof": {
+        "LeftFoot": [20.8, 25],
+        "RightFoot": [20.51, 25]
+      },
+      "ClimbUp": {
+        "LeftFoot": [8.67, 56],
+        "RightFoot": [8.38, 56]
+      },
+      "HopDown": {
+        "RightHand": [14.63, 7],
+        "LeftFoot": [4.91, 37],
+        "RightFoot": [4.61, 37]
+      },
+      "FetchBlock": {
+        "LeftFoot": [3.43, 37]
+      },
+      "CarryPlace": {
+        "LeftFoot": [3.43, 1]
+      },
+      "Wave": {
+        "RightFoot": [1.45, 20]
+      },
+      "DangleIdle": {}
+    },
+    "block": {
+      "FetchBlock": {
+        "bodyOverlapMm": 0.0,
+        "clawBiteMm": 2.001394629478459
+      },
+      "CarryPlace": {
+        "bodyOverlapMm": 0.0,
+        "clawBiteMm": 3.1152266263961836
+      }
+    },
+    "clawSpacingMm": 256.0,
+    "placementErrorMm": 0.001,
+    "antenna": {
+      "Poof": {
+        "maxDeflectionDeg": 6.0,
+        "periodicResidualDeg": 0.0,
+        "loopCloseDeg": 0.0
+      },
+      "Wave": {
+        "maxDeflectionDeg": 6.0,
+        "periodicResidualDeg": 0.0,
+        "loopCloseDeg": 0.0
+      },
+      "ClimbUp": {
+        "maxDeflectionDeg": 6.0,
+        "periodicResidualDeg": 0.0,
+        "loopCloseDeg": 0.0
+      },
+      "DangleIdle": {
+        "maxDeflectionDeg": 3.232,
+        "periodicResidualDeg": 0.0,
+        "loopCloseDeg": 0.0
+      },
+      "HopDown": {
+        "maxDeflectionDeg": 6.0,
+        "periodicResidualDeg": 0.0,
+        "loopCloseDeg": 0.0
+      },
+      "FetchBlock": {
+        "maxDeflectionDeg": 6.0,
+        "periodicResidualDeg": 0.0,
+        "loopCloseDeg": 0.0
+      },
+      "CarryPlace": {
+        "maxDeflectionDeg": 6.0,
+        "periodicResidualDeg": 0.0,
+        "loopCloseDeg": 0.0
+      }
+    }
+  },
+  "playOrder": {
+    "intro": [
+      "Poof",
+      "Wave (loop until the user acts)",
+      "ClimbUp",
+      "DangleIdle (loop)"
+    ],
+    "perDecision": [
+      "HopDown",
+      "FetchBlock",
+      "CarryPlace",
+      "ClimbUp",
+      "DangleIdle (loop)"
+    ],
+    "decisionSeconds": 11.0
+  },
+  "glb": {
+    "path": "/m1-prototype/rusty-rover.glb",
+    "bytes": 2075512,
+    "megabytes": 2.076,
+    "bones": 25,
+    "skinnedMeshes": 1,
+    "axes": "glTF Y-up: Blender +Z (up) is glTF +Y and Blender -Y (his facing) is glTF -Z.  three.js loads it upright with no fix-up.  Every coordinate in THIS file is Blender/world metres -- convert with (x, y, z) -> (x, z, -y).",
+    "contents": "character mesh + 25-bone armature + the seven clips.  No plinth, block, pile, ground, lights or cameras: the app owns all of those.",
+    "textures": "single 1024x1024 WebP (EXT_texture_webp), decoded natively by three.js GLTFLoader.",
+    "geometryCompression": "none -- draco/meshopt would make the app ship a decoder for a 30k-triangle character.",
+    "sampleTimes": "rebased to t=0 (tools/fix_times.mjs), so every clip starts at 0 and the two loops' last sample lands exactly on the duration AND equals the first sample.",
+    "antennaBone": "Antenna -- a 25th bone added on import.  The source Meshy model welds the antenna to the skull; it is bound here with a 50 mm weight ramp and every clip carries its spring lag."
+  },
+  "verification": {
+    "carryOffsetCheckedInThree": {
+      "node": "RightHand",
+      "atSeconds": 2.5,
+      "wantedBlockCentre": [1.0037, 0.34, 1.2016],
+      "gotBlockCentre": [1.0038, 0.3402, 1.2017],
+      "errorMm": 0.22
+    },
+    "note": "Loaded with three.js, played to the attach marker, parented a block to the carry node with the documented offset and measured where it landed -- that is the number the app has to trust."
+  },
+  "preview": {
+    "page": "/m1-prototype/preview/",
+    "sequence": "/m1-prototype/preview/rr-sequence.mp4",
+    "clips": {
+      "Poof": "/m1-prototype/preview/rr-poof.mp4",
+      "Wave": "/m1-prototype/preview/rr-wave.mp4",
+      "ClimbUp": "/m1-prototype/preview/rr-climb.mp4",
+      "DangleIdle": "/m1-prototype/preview/rr-dangle.mp4",
+      "HopDown": "/m1-prototype/preview/rr-hop.mp4",
+      "FetchBlock": "/m1-prototype/preview/rr-fetch.mp4",
+      "CarryPlace": "/m1-prototype/preview/rr-carry.mp4"
+    }
+  }
+}

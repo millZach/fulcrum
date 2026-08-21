@@ -354,9 +354,37 @@ COMPLETE M0
 
 Each node receives revision references and the minimum required artifact context. Images and meshes never travel inside workflow snapshots.
 
+### M1 creative graph
+
+```text
+START M1
+  ↓
+provision_internal_creative_capabilities
+  ↓
+interrogate_design_tree ← answer current frontier
+  │ frontier remains ───────────────┘
+  ↓ frontier empty + human confirms
+AWAIT GAME-DESIGN APPROVAL
+  ↓
+produce_three_visual_directions
+  ↓
+AWAIT VISUAL-DIRECTION APPROVAL
+  │ optional: replace one unselected direction
+  │ optional: one focused change preserving pinned tokens
+  ↓
+plan_and_produce_concept_set
+  │ optional: regenerate one revision per slot
+  ↓
+AWAIT CONCEPT-SET APPROVAL
+  ↓
+COMPLETE M1
+```
+
+M0 and M1 remain separate milestone state machines selected by persisted project milestone. M1 project state stores only revision references, selections, approvals, and proof-bound counters. The creative module owns decision-tree recomputation, visual tokens, prompt inheritance, and immutable creative artifacts; the coordinator owns stages, stale-command guards, approvals, and limits.
+
 ### Future macro graph
 
-Future nodes may add game-design interrogation, multiview generation, asset batches, Blender refinement, gameplay implementation, playable builds, visual/gameplay/technical Gauntlets, prioritization, and improvement loops. Those nodes are added only when their preceding path works with real artifacts.
+Future nodes may add multiview generation, asset batches, Blender refinement, gameplay implementation, playable builds, visual/gameplay/technical Gauntlets, prioritization, and improvement loops. Those nodes are added only when their preceding path works with real artifacts.
 
 ## 13. Budgets and failure behavior
 
@@ -407,7 +435,7 @@ Tests assert domain outcomes, persisted revisions, artifacts, and findings. They
 - **Validation:** Zod schemas at process boundaries
 - **Studio:** React and Vite
 - **Runtime:** Three.js, wrapped so the Studio can embed the same renderer used by build output
-- **Persistence:** SQLite for M0 project/event state and filesystem artifacts
+- **Persistence:** SQLite for M0/M1 project and event state with filesystem artifacts
 - **3D utilities:** Python only where Blender or geometry tooling makes it the deeper implementation
 - **Package management:** pnpm workspace
 
@@ -438,6 +466,7 @@ Start with a small number of deep packages:
 
 /milestones
   M0.md
+  M1.md
 
 /workspace/projects       ignored local artifacts
 ```

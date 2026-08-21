@@ -12,10 +12,13 @@ coverage/
 !.env.example
 
 # Generated production artifacts
+workspace/incoming/
 workspace/projects/
 workspace/*.db
 workspace/*.db-shm
 workspace/*.db-wal
+workspace/prototype-imagegen/
+apps/studio/public/m1-prototype/preview/
 **/workspace/projects/
 **/workspace/*.db
 **/workspace/*.db-shm
@@ -38,3 +41,4 @@ Thumbs.db
 
 # Local handoff documents
 **/HANDOFF.md
+docs/SESSION_CONTEXT.md

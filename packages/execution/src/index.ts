@@ -61,6 +61,10 @@ export type SubscriptionImageResult = {
 
 export type SubscriptionImageRunner = (input: {
   prompt: string;
+  referenceImages?: Array<{
+    bytes: Uint8Array;
+    mediaType: "image/png" | "image/jpeg" | "image/webp";
+  }>;
 }) => Promise<SubscriptionImageResult>;
 
 export const DEFAULT_OPENAI_API_MODEL = "gpt-5.6-terra";
@@ -313,10 +317,24 @@ const imageBytesFromOutput = (output: string): Uint8Array | undefined => {
 
 export const createCodexSubscriptionImageRunner =
   (runner: CommandRunner = runCommand): SubscriptionImageRunner =>
-  async ({ prompt }) => {
+  async ({ prompt, referenceImages = [] }) => {
     const temporary = mkdtempSync(path.join(tmpdir(), "fulcrum-imagegen-"));
     const outputPath = path.join(temporary, "concept.png");
     try {
+      const referencePaths = referenceImages.map((reference, index) => {
+        const extension =
+          reference.mediaType === "image/jpeg"
+            ? "jpg"
+            : reference.mediaType === "image/webp"
+              ? "webp"
+              : "png";
+        const referencePath = path.join(
+          temporary,
+          `reference-${String(index + 1).padStart(2, "0")}.${extension}`,
+        );
+        writeFileSync(referencePath, reference.bytes);
+        return referencePath;
+      });
       const result = await runner({
         command: "codex",
         args: [
@@ -336,7 +354,18 @@ export const createCodexSubscriptionImageRunner =
         timeoutMs: 360_000,
         stdin: [
           "Use the installed $imagegen skill and its ImageGen tool.",
-          "Generate exactly one square 1024x1024 production concept image from the prompt below.",
+          referencePaths.length > 0
+            ? "Edit the supplied image target and produce exactly one polished landscape PNG. Preserve its aspect ratio and framing unless the prompt explicitly requests a composition change."
+            : "Generate exactly one square 1024x1024 production concept image from the prompt below.",
+          ...referencePaths.map(
+            (referencePath, index) =>
+              `Image ${index + 1} (${index === 0 ? "edit target" : "supporting reference"}): ${referencePath}`,
+          ),
+          ...(referencePaths.length > 0
+            ? [
+                "Inspect every supplied image before calling ImageGen. Use Image 1 as the edit target, not merely as a loose style reference.",
+              ]
+            : []),
           `Save or copy the final image as a PNG at this exact path: ${outputPath}`,
           "Use the signed-in OpenAI subscription. Do not call an API endpoint directly and do not read API keys.",
           "Do not create any other files or implement code.",

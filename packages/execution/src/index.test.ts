@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
@@ -101,6 +101,26 @@ describe("Codex subscription ImageGen", () => {
     expect(result.bytes).toEqual(png);
     expect(result.model).toBe("gpt-image-2");
     expect(result.costUsd).toBe(0);
+  });
+
+  it("places edit targets inside the isolated ImageGen workspace", async () => {
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64",
+    );
+    const runner: CommandRunner = vi.fn(async (spec) => {
+      const referencePath = path.join(spec.cwd, "reference-01.png");
+      expect(readFileSync(referencePath)).toEqual(png);
+      expect(spec.stdin).toContain(`Image 1 (edit target): ${referencePath}`);
+      expect(spec.stdin).toContain("Use Image 1 as the edit target");
+      writeFileSync(path.join(spec.cwd, "concept.png"), png);
+      return { status: 0, stdout: "", stderr: "" };
+    });
+
+    await createCodexSubscriptionImageRunner(runner)({
+      prompt: "Change only the coat silhouette.",
+      referenceImages: [{ bytes: png, mediaType: "image/png" }],
+    });
   });
 });
 

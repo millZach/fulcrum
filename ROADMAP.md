@@ -9,7 +9,7 @@ Prove one real brief → creative revision → concept → approval → 3D asset
 ## M1 — Creative-to-concept generalization
 
 - Accept varied game briefs.
-- Add bounded design interrogation and explicit assumption approval.
+- Run Grill Me With Docs until the decision-tree frontier is empty and shared understanding is confirmed.
 - Generate multiple purposeful visual directions.
 - Support per-concept regeneration and partial direction changes.
 - Expand the Visual Bible's structured visual tokens.
@@ -70,7 +70,6 @@ Prove one real brief → creative revision → concept → approval → 3D asset
 - Additional image and 3D providers
 - Godot adapter, followed by Unity and Unreal exploration
 - Collaboration and remote artifact storage
-- Reusable `game-development-workflow` interrogation skill
 - Larger game genres and longer playable slices
 - Calibrated autonomous gameplay evaluation
 
