@@ -1,6 +1,6 @@
-# Fulcrum M0 Implementation Prompt
+# Fulcrum M1 Implementation Prompt
 
-You are implementing Fulcrum, an open-source AI-native game production system.
+You are implementing Fulcrum's approved creative-to-concept generalization milestone.
 
 ## Read first
 
@@ -9,85 +9,60 @@ Read these files in order before changing code:
 1. `VISION.md`
 2. `PRODUCT_SPEC.md`
 3. `ARCHITECTURE.md`
-4. `milestones/M0.md`
+4. `milestones/M1.md`
 
-`VISION.md` explains the enduring intent. `milestones/M0.md` controls current scope. When long-term ambition conflicts with M0 scope, M0 wins.
+`milestones/M1.md` controls current scope. When broader product ambition conflicts with its proof bounds, M1 wins.
 
 ## Current objective
 
-Implement the complete M0 walking skeleton:
+Implement this durable workflow while preserving the M0 replay path:
 
 ```text
-game brief
+varied game brief
     ↓
-structured creative revision
+dependency-driven Grill Me With Docs interview
     ↓
-reviewable concept image
+confirmed and approved Game Design Spec
     ↓
-immutable human approval
+three visual directions → one approved Visual Bible
     ↓
-real image-to-3D job
+demand-driven concepts with inherited visual tokens
     ↓
-local GLB and deterministic QA
-    ↓
-Fulcrum Scene Spec
-    ↓
-rendered Three.js review scene
-    ↓
-immutable visual-slice decision
+approved concept set
 ```
-
-The default live path uses the user's signed-in OpenAI subscription through Codex for orchestration, Codex ImageGen with GPT Image 2 for concept imaging, and Meshy for image-to-3D. When a subscription capability is unavailable, default to the matching OpenAI API route and request its configuration. Claude, Grok, and OpenCode subscriptions remain selectable execution adapters. The independently selected implementation provider is controlled by the orchestrator and is persisted now, but M0 must not invent an implementation stage that does not yet exist. Concept imaging may also use an explicitly configured OpenAI-compatible image API or no image model. Tripo remains the alternate 3D adapter. Keep provider details behind the internal seams defined in `ARCHITECTURE.md`.
 
 ## Implementation rules
 
-- Implement M0 only. Do not begin M1–M7 work.
-- Keep project truth independent from Mastra snapshots and conversational history.
-- Store large outputs as immutable artifacts and pass references through workflow state.
-- Give every external production request a Fulcrum idempotency key, durable submission journal, and budget check. Never auto-resubmit an ambiguous provider call.
-- Use deep domain modules. Workflow nodes coordinate modules; they do not reproduce provider procedures.
-- Use deterministic code for schemas, persistence, hashes, GLB facts, budget enforcement, and state transitions.
-- Use model judgment only for structured creative development and later semantic evaluation.
-- Add deterministic replay adapters for ordinary tests, but do not claim M0 completion until the live smoke test succeeds.
-- Do not create placeholder graph nodes that report imaginary production.
-- Do not build generated characters, rigging, combat, Blender refinement, additional engines, or the Gauntlet.
-- Do not create one package per workflow node. Add a package only when it creates a real seam or coherent ownership.
-- Preserve provider/model configuration and generated-file rights metadata in provenance without storing credentials.
-- Keep the browser UI clean and focused on the current artifact, lineage, state, cost, and approval decision.
+- Keep `grill-with-docs`, `grilling`, and `domain-modeling` bundled and verified in the background. Do not expose skill installation or package names in normal Studio use.
+- Ask every question on the currently unblocked decision-tree frontier and include a recommendation for each. Do not impose a question or round limit; completion requires an empty frontier and explicit shared-understanding confirmation.
+- Keep project truth in immutable, content-addressed revisions. State stores references and selections, never prompts, image bytes, secrets, or conversational history.
+- Record fact and assumption origin, project glossary terms, and only qualifying ADRs.
+- Present exactly three directions for M1 acceptance. Permit one unselected replacement, one focused selected-direction change with pinned aspects, and one regeneration per concept slot.
+- Compile concept prompts from approved revision references and relevant structured visual tokens. Store ancestor revision IDs and SHA-256 hashes; omit unrelated history.
+- Invalidate only descendants of a changed ancestor and never delete superseded revisions.
+- Keep M0 routing and persisted projects valid. M1 ends at an approved concept set; do not invoke 3D, scene, or gameplay production.
+- Journal and budget every live provider request before submission. Never repeat an ambiguous paid request automatically.
+- Keep the Studio focused on the current decision. Prototype three structurally different interactions in replay mode and obtain human selection before promoting one to production.
 
-## Work sequence
+## Verification
 
-Follow the implementation sequence in `milestones/M0.md`. After every slice:
+After every slice:
 
-1. Run the relevant tests and static checks.
-2. Start the affected application locally.
-3. Exercise the behavior through its real interface.
-4. Visually inspect UI or rendered changes in the browser.
-5. Keep the repository runnable.
+1. Run TypeScript, tests, build, formatting, and diff-integrity checks.
+2. Exercise the affected workflow through its real interface.
+3. Restart during interrogation and after direction selection to verify durable recovery.
+4. Inspect Studio in the collaborative browser at desktop and mobile sizes.
+5. Keep the M0 replay regression green.
 
-Do not defer visual inspection until the end.
+Ordinary checks remain deterministic and offline. Do not claim M1 completion until the user has selected the production interaction and explicitly authorized a budget-capped live creative-to-concept run.
 
-## Decisions that require user input
+## Human decisions
 
-Ask only when work cannot continue safely without one of the following:
+Pause only for:
 
-- Missing provider credentials or account access for the live smoke test
-- A material change to the M0 product behavior or acceptance criteria
-- A provider limitation that invalidates the chosen real path
-- Approval of a generated concept or final visual slice
-- Authorization for spending beyond the configured project budget
+- Selection of the production Studio interaction
+- Approval of the Game Design Spec, visual direction, or concept set during the live run
+- Missing provider access or explicit authorization for metered live work
+- A provider limitation that invalidates an approved M1 decision
 
-Infer ordinary implementation details, record consequential assumptions, and continue.
-
-## Completion contract
-
-M0 is complete only when every acceptance criterion in `milestones/M0.md` is either demonstrated or explicitly documented as blocked by an external prerequisite. A passing offline test suite alone is insufficient.
-
-At handoff, report:
-
-- What the user can run and see
-- Live and replay paths exercised
-- Tests and visual checks performed
-- Provider cost and elapsed time for the recorded run
-- Known limitations and failed approaches
-- Exact remaining acceptance criteria, if any
+At handoff, report what is implemented, replay and live evidence, tests and browser inspection, provider cost and elapsed time, accepted limitations, and every remaining acceptance criterion.

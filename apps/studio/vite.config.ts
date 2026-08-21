@@ -5,6 +5,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 4311,
+    allowedHosts: [".ts.net"],
     proxy: {
       "/api": "http://localhost:4310",
     },

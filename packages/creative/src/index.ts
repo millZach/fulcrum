@@ -21,6 +21,8 @@ import { ProjectRepository } from "@fulcrum/project";
 import OpenAI from "openai";
 import sharp from "sharp";
 
+export * from "./m1.js";
+
 const replayCreativeOutput: CreativeOutput = CreativeOutputSchema.parse({
   gameDesign: {
     title: "The Last Reliquary",

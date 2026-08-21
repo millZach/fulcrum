@@ -6,6 +6,9 @@ export const M0_FIXTURE_BRIEF =
 export const ProviderModeSchema = z.enum(["replay", "live"]);
 export type ProviderMode = z.infer<typeof ProviderModeSchema>;
 
+export const MilestoneSchema = z.enum(["m0", "m1"]);
+export type Milestone = z.infer<typeof MilestoneSchema>;
+
 export const AssetProviderSchema = z.enum(["meshy", "tripo"]);
 export type AssetProvider = z.infer<typeof AssetProviderSchema>;
 
@@ -28,7 +31,13 @@ export type ImageProvider = z.infer<typeof ImageProviderSchema>;
 
 export const ProjectStageSchema = z.enum([
   "creative-development",
+  "interrogation",
+  "game-design-approval",
+  "visual-direction-generation",
   "visual-direction-approval",
+  "concept-planning",
+  "concept-generation",
+  "concept-set-approval",
   "asset-production",
   "asset-quality",
   "scene-composition",
@@ -40,6 +49,7 @@ export type ProjectStage = z.infer<typeof ProjectStageSchema>;
 
 export const ProjectStatusSchema = z.enum([
   "active",
+  "awaiting-input",
   "awaiting-approval",
   "blocked",
   "complete",
@@ -65,6 +75,52 @@ export const RevisionRefSchema = z.object({
 });
 export type RevisionRef = z.infer<typeof RevisionRefSchema>;
 
+export const InformationOriginSchema = z.object({
+  source: z.enum(["brief", "user", "research", "fulcrum"]),
+  reference: z.string().min(1).optional(),
+});
+export type InformationOrigin = z.infer<typeof InformationOriginSchema>;
+
+export const InterrogationQuestionSchema = z.object({
+  questionId: z.string().min(1),
+  branchId: z.string().min(1),
+  prompt: z.string().min(1),
+  recommendation: z.string().min(1),
+});
+export type InterrogationQuestion = z.infer<typeof InterrogationQuestionSchema>;
+
+export const InterrogationAnswerSchema = z.object({
+  questionId: z.string().min(1),
+  value: z.string().min(1),
+  origin: InformationOriginSchema,
+});
+export type InterrogationAnswer = z.infer<typeof InterrogationAnswerSchema>;
+
+export const InterrogationRoundSchema = z.object({
+  roundId: z.string().min(1),
+  questions: z.array(InterrogationQuestionSchema).min(1),
+  answers: z.array(InterrogationAnswerSchema),
+  createdAt: z.string().datetime(),
+  completedAt: z.string().datetime().optional(),
+});
+export type InterrogationRound = z.infer<typeof InterrogationRoundSchema>;
+
+export const SharedUnderstandingConfirmationSchema = z.object({
+  confirmed: z.literal(true),
+  confirmedBy: z.string().min(1),
+  confirmedAt: z.string().datetime(),
+});
+export type SharedUnderstandingConfirmation = z.infer<
+  typeof SharedUnderstandingConfirmationSchema
+>;
+
+export const InterrogationStateSchema = z.object({
+  rounds: z.array(InterrogationRoundSchema),
+  frontier: z.array(InterrogationQuestionSchema),
+  sharedUnderstanding: SharedUnderstandingConfirmationSchema.optional(),
+});
+export type InterrogationState = z.infer<typeof InterrogationStateSchema>;
+
 export const GameDesignDigestSchema = z.object({
   title: z.string().min(1),
   genre: z.string().min(1),
@@ -78,6 +134,24 @@ export const GameDesignDigestSchema = z.object({
   assumptions: z.array(z.string().min(1)),
 });
 export type GameDesignDigest = z.infer<typeof GameDesignDigestSchema>;
+
+export const DesignStatementSchema = z.object({
+  statementId: z.string().min(1),
+  text: z.string().min(1),
+  kind: z.enum(["fact", "assumption"]),
+  origin: InformationOriginSchema,
+});
+export type DesignStatement = z.infer<typeof DesignStatementSchema>;
+
+export const GameDesignSpecSchema = GameDesignDigestSchema.omit({
+  assumptions: true,
+}).extend({
+  facts: z.array(DesignStatementSchema.extend({ kind: z.literal("fact") })),
+  assumptions: z.array(
+    DesignStatementSchema.extend({ kind: z.literal("assumption") }),
+  ),
+});
+export type GameDesignSpec = z.infer<typeof GameDesignSpecSchema>;
 
 export const PaletteTokenSchema = z.object({
   name: z.string().min(1),
@@ -102,6 +176,62 @@ export const VisualBibleSchema = z.object({
 });
 export type VisualBible = z.infer<typeof VisualBibleSchema>;
 
+export const VisualTokenSchema = z.object({
+  tokenId: z.string().min(1),
+  category: z.enum([
+    "style",
+    "project-world",
+    "prohibited-style",
+    "shape",
+    "silhouette",
+    "palette",
+    "gameplay-color",
+    "material",
+    "surface",
+    "lighting",
+    "atmosphere",
+    "camera",
+    "scale",
+    "readability",
+    "vfx",
+  ]),
+  value: z.string().min(1),
+  role: z.string().min(1).optional(),
+});
+export type VisualToken = z.infer<typeof VisualTokenSchema>;
+
+export const StructuredVisualBibleSchema = VisualBibleSchema.extend({
+  tokens: z.array(VisualTokenSchema).min(1),
+});
+export type StructuredVisualBible = z.infer<typeof StructuredVisualBibleSchema>;
+
+export const PreviewArtifactSchema = z.object({
+  artifact: ArtifactRefSchema,
+  sourceGameDesignRevisionId: z.string().min(1),
+  sourceVisualBibleRevisionId: z.string().min(1),
+});
+export type PreviewArtifact = z.infer<typeof PreviewArtifactSchema>;
+
+export const VisualDirectionSchema = z.object({
+  directionId: z.string().min(1),
+  revisionId: z.string().min(1),
+  name: z.string().min(1),
+  rationale: z.string().min(1),
+  visualBible: StructuredVisualBibleSchema,
+  preview: PreviewArtifactSchema,
+});
+export type VisualDirection = z.infer<typeof VisualDirectionSchema>;
+
+export const VisualDirectionSetSchema = z.object({
+  directionSetId: z.string().min(1),
+  directions: z.tuple([
+    VisualDirectionSchema,
+    VisualDirectionSchema,
+    VisualDirectionSchema,
+  ]),
+});
+export type VisualDirectionSet = z.infer<typeof VisualDirectionSetSchema>;
+
 export const CreativeOutputSchema = z.object({
   gameDesign: GameDesignDigestSchema,
   visualBible: VisualBibleSchema,
@@ -120,6 +250,59 @@ export const ConceptDocumentSchema = z.object({
   costUsd: z.number().nonnegative(),
 });
 export type ConceptDocument = z.infer<typeof ConceptDocumentSchema>;
+
+export const RevisionAncestorSchema = z.object({
+  revisionId: z.string().min(1),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  kind: z.string().min(1),
+});
+export type RevisionAncestor = z.infer<typeof RevisionAncestorSchema>;
+
+/** M1 provenance contract; the M0 ConceptDocument remains unchanged. */
+export const M1ConceptDocumentSchema = ConceptDocumentSchema.extend({
+  ancestors: z.array(RevisionAncestorSchema).min(2),
+});
+export type M1ConceptDocument = z.infer<typeof M1ConceptDocumentSchema>;
+
+export const ConceptRevisionSchema = z.object({
+  revision: RevisionRefSchema,
+  inheritedVisualTokens: z.array(VisualTokenSchema).min(1),
+  staleReason: z.string().min(1).optional(),
+});
+export type ConceptRevision = z.infer<typeof ConceptRevisionSchema>;
+
+export const ConceptPlanSchema = z.object({
+  sourceGameDesignRevisionId: z.string().min(1),
+  sourceDirectionRevisionId: z.string().min(1),
+  slots: z
+    .array(
+      z.object({
+        slotId: z.string().min(1),
+        name: z.string().min(1),
+        purpose: z.string().min(1),
+        tokenCategories: z.array(VisualTokenSchema.shape.category).min(1),
+      }),
+    )
+    .min(1)
+    .max(3),
+});
+export type ConceptPlan = z.infer<typeof ConceptPlanSchema>;
+
+export const ConceptSlotSchema = z.object({
+  slotId: z.string().min(1),
+  name: z.string().min(1),
+  purpose: z.string().min(1),
+  revisions: z.array(ConceptRevisionSchema).min(1),
+  selectedRevisionId: z.string().min(1).optional(),
+});
+export type ConceptSlot = z.infer<typeof ConceptSlotSchema>;
+
+export const ConceptSetSchema = z.object({
+  conceptSetId: z.string().min(1),
+  sourceDirectionRevisionId: z.string().min(1),
+  slots: z.array(ConceptSlotSchema).min(1).max(3),
+});
+export type ConceptSet = z.infer<typeof ConceptSetSchema>;
 
 export const AssetDocumentSchema = z.object({
   assetId: z.string().min(1),
@@ -233,10 +416,18 @@ export const FulcrumSceneSpecV0Schema = z.object({
 });
 export type FulcrumSceneSpecV0 = z.infer<typeof FulcrumSceneSpecV0Schema>;
 
+export const ApprovalTargetTypeSchema = z.enum([
+  "game-design",
+  "visual-direction",
+  "concept-set",
+  "visual-slice",
+]);
+export type ApprovalTargetType = z.infer<typeof ApprovalTargetTypeSchema>;
+
 export const ApprovalDecisionSchema = z.object({
   approvalId: z.string().min(1),
   projectId: z.string().min(1),
-  targetType: z.enum(["visual-direction", "visual-slice"]),
+  targetType: ApprovalTargetTypeSchema,
   targetRevisionId: z.string().min(1),
   targetSha256: z.string().regex(/^[a-f0-9]{64}$/),
   decision: z.enum(["approved", "rejected", "changes-requested"]),
@@ -255,6 +446,7 @@ export type BlockedReason = z.infer<typeof BlockedReasonSchema>;
 
 export const ProjectStateSchema = z.object({
   schemaVersion: z.literal(1),
+  milestone: MilestoneSchema.default("m0"),
   projectId: z.string().min(1),
   name: z.string().min(1),
   mode: ProviderModeSchema,
@@ -269,11 +461,28 @@ export const ProjectStateSchema = z.object({
   budgetUsd: z.number().nonnegative(),
   spentUsd: z.number().nonnegative(),
   conceptReplacementCount: z.number().int().min(0).max(1).default(0),
+  directionReplacementCount: z.number().int().min(0).max(1).optional(),
+  focusedDirectionChangeCount: z.number().int().min(0).max(1).optional(),
+  conceptRegenerationCounts: z
+    .record(z.string().min(1), z.number().int().min(0).max(1))
+    .optional(),
   brief: RevisionRefSchema,
+  creativeCapabilities: RevisionRefSchema.optional(),
+  interrogation: RevisionRefSchema.optional(),
   gameDesign: RevisionRefSchema.optional(),
+  gameDesignSpec: RevisionRefSchema.optional(),
+  projectGlossary: RevisionRefSchema.optional(),
+  decisionRecords: z.array(RevisionRefSchema).optional(),
+  visualDirectionSet: RevisionRefSchema.optional(),
+  selectedVisualDirectionRevisionId: z.string().min(1).optional(),
+  focusedDirectionChange: RevisionRefSchema.optional(),
   visualBible: RevisionRefSchema.optional(),
   concept: RevisionRefSchema.optional(),
+  conceptPlan: RevisionRefSchema.optional(),
+  conceptSet: RevisionRefSchema.optional(),
+  gameDesignApproval: ApprovalDecisionSchema.optional(),
   directionApproval: ApprovalDecisionSchema.optional(),
+  conceptSetApproval: ApprovalDecisionSchema.optional(),
   asset: RevisionRefSchema.optional(),
   assetEvaluation: RevisionRefSchema.optional(),
   scene: RevisionRefSchema.optional(),
@@ -288,9 +497,17 @@ export type ProjectState = z.infer<typeof ProjectStateSchema>;
 export const ProjectSnapshotSchema = z.object({
   state: ProjectStateSchema,
   briefText: z.string(),
+  interrogation: InterrogationStateSchema.optional(),
   gameDesign: GameDesignDigestSchema.optional(),
+  gameDesignSpec: GameDesignSpecSchema.optional(),
+  visualDirections: VisualDirectionSetSchema.optional(),
+  conceptPlan: ConceptPlanSchema.optional(),
   visualBible: VisualBibleSchema.optional(),
   concept: ConceptDocumentSchema.optional(),
+  conceptSet: ConceptSetSchema.optional(),
+  conceptDocuments: z
+    .record(z.string().min(1), z.array(M1ConceptDocumentSchema).min(1))
+    .optional(),
   asset: AssetDocumentSchema.optional(),
   assetEvaluation: AssetEvaluationSchema.optional(),
   scene: FulcrumSceneSpecV0Schema.optional(),
@@ -298,6 +515,7 @@ export const ProjectSnapshotSchema = z.object({
 export type ProjectSnapshot = z.infer<typeof ProjectSnapshotSchema>;
 
 export const CreateProjectInputSchema = z.object({
+  milestone: MilestoneSchema.default("m0"),
   brief: z.string().min(40),
   mode: ProviderModeSchema,
   assetProvider: AssetProviderSchema.default("meshy"),
@@ -314,6 +532,98 @@ export const ApprovalInputSchema = z.object({
   notes: z.string().max(1_000).optional(),
 });
 export type ApprovalInput = z.infer<typeof ApprovalInputSchema>;
+
+export const AnswerFrontierRoundInputSchema = z.object({
+  interrogationRevisionId: z.string().min(1),
+  roundId: z.string().min(1),
+  answers: z
+    .array(
+      z.object({
+        questionId: z.string().min(1),
+        value: z.string().min(1),
+      }),
+    )
+    .min(1),
+});
+export type AnswerFrontierRoundInput = z.infer<
+  typeof AnswerFrontierRoundInputSchema
+>;
+
+export const ConfirmSharedUnderstandingInputSchema = z.object({
+  interrogationRevisionId: z.string().min(1),
+  confirmed: z.literal(true),
+});
+export type ConfirmSharedUnderstandingInput = z.infer<
+  typeof ConfirmSharedUnderstandingInputSchema
+>;
+
+export const ConfirmConceptPlanInputSchema = z.object({
+  conceptPlanRevisionId: z.string().min(1),
+  confirmed: z.literal(true),
+});
+export type ConfirmConceptPlanInput = z.infer<
+  typeof ConfirmConceptPlanInputSchema
+>;
+
+export const M1ApprovalInputSchema = ApprovalInputSchema.extend({
+  targetType: z.enum(["game-design", "visual-direction", "concept-set"]),
+  targetRevisionId: z.string().min(1),
+  targetSha256: z.string().regex(/^[a-f0-9]{64}$/),
+});
+export type M1ApprovalInput = z.infer<typeof M1ApprovalInputSchema>;
+
+export const ReplaceVisualDirectionInputSchema = z.object({
+  directionSetRevisionId: z.string().min(1),
+  directionRevisionId: z.string().min(1),
+  notes: z.string().min(1).max(1_000),
+});
+export type ReplaceVisualDirectionInput = z.infer<
+  typeof ReplaceVisualDirectionInputSchema
+>;
+
+export const ChangeVisualDirectionInputSchema = z.object({
+  directionSetRevisionId: z.string().min(1),
+  directionRevisionId: z.string().min(1),
+  change: z.string().min(1).max(1_000),
+  pinnedAspects: z.array(z.string().min(1)).min(1),
+});
+export type ChangeVisualDirectionInput = z.infer<
+  typeof ChangeVisualDirectionInputSchema
+>;
+
+export const RegenerateConceptInputSchema = z.object({
+  conceptSetRevisionId: z.string().min(1),
+  slotId: z.string().min(1),
+  notes: z.string().max(1_000).optional(),
+});
+export type RegenerateConceptInput = z.infer<
+  typeof RegenerateConceptInputSchema
+>;
+
+export const RebaseConceptSetInputSchema = z.object({
+  conceptSetRevisionId: z.string().min(1),
+  directionSetRevisionId: z.string().min(1),
+  previousDirectionRevisionId: z.string().min(1),
+  newDirectionRevisionId: z.string().min(1),
+});
+export type RebaseConceptSetInput = z.infer<typeof RebaseConceptSetInputSchema>;
+
+export const SelectConceptRevisionInputSchema = z.object({
+  conceptSetRevisionId: z.string().min(1),
+  slotId: z.string().min(1),
+  conceptRevisionId: z.string().min(1),
+});
+export type SelectConceptRevisionInput = z.infer<
+  typeof SelectConceptRevisionInputSchema
+>;
+
+export const ReviseGameDesignSpecInputSchema = z.object({
+  gameDesignSpecRevisionId: z.string().min(1),
+  change: z.string().min(1).max(1_000),
+});
+export type ReviseGameDesignSpecInput = z.infer<
+  typeof ReviseGameDesignSpecInputSchema
+>;
 
 export const ConfigurationStatusSchema = z.object({
   defaultMode: ProviderModeSchema,

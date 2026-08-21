@@ -249,6 +249,7 @@ export class M0Coordinator {
     });
     this.repository.createProject({
       schemaVersion: 1,
+      milestone: "m0",
       projectId,
       name: "The Last Reliquary",
       mode: parsed.mode,

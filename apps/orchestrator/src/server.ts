@@ -1,27 +1,147 @@
 import path from "node:path";
-import { createReadStream } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  createReadStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import cors from "@fastify/cors";
 import { M0_FIXTURE_BRIEF } from "@fulcrum/domain";
+import {
+  inspectExecutionProviders,
+  runCodexSubscriptionImage,
+} from "@fulcrum/execution";
 import { createRepository } from "@fulcrum/project";
 import Fastify from "fastify";
-import { ZodError } from "zod";
+import { z, ZodError } from "zod";
 
-import { M0Coordinator } from "./coordinator.js";
+import { ProjectCoordinator } from "./project-coordinator.js";
 import { loadRuntimeEnvironment } from "./runtime-config.js";
 
-const { workspaceRoot } = loadRuntimeEnvironment(
+const { repositoryRoot, workspaceRoot } = loadRuntimeEnvironment(
   path.dirname(fileURLToPath(import.meta.url)),
 );
 process.env.FULCRUM_FIXTURE_BRIEF ??= M0_FIXTURE_BRIEF;
 const repository = createRepository(workspaceRoot);
-const coordinator = new M0Coordinator(repository);
+const coordinator = new ProjectCoordinator(repository);
 const server = Fastify({ logger: true, bodyLimit: 12 * 1024 * 1024 });
+const prototypeImageRoot = path.join(workspaceRoot, "prototype-imagegen");
 
 await server.register(cors, { origin: true });
 
+const PrototypeImageEditInputSchema = z
+  .object({
+    sourceImage: z
+      .string()
+      .regex(
+        /^(?:\/m1-prototype\/[a-z0-9-]+\.png|\/api\/prototype\/imagegen\/images\/[a-f0-9]{64}\.png)$/,
+      )
+      .optional(),
+    sourceImageDataUrl: z
+      .string()
+      .regex(/^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/)
+      .optional(),
+    prompt: z.string().trim().min(1).max(2_000),
+    conceptTitle: z.string().trim().min(1).max(200),
+    conceptPurpose: z.string().trim().min(1).max(500),
+    directionName: z.string().trim().min(1).max(200),
+  })
+  .refine(
+    ({ sourceImage, sourceImageDataUrl }) =>
+      Boolean(sourceImage) !== Boolean(sourceImageDataUrl),
+    "Provide exactly one source image.",
+  );
+
+const prototypeSource = (
+  input: z.infer<typeof PrototypeImageEditInputSchema>,
+): {
+  bytes: Uint8Array;
+  mediaType: "image/png" | "image/jpeg" | "image/webp";
+} => {
+  if (input.sourceImageDataUrl) {
+    const match =
+      /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/.exec(
+        input.sourceImageDataUrl,
+      );
+    if (!match?.[1] || !match[2])
+      throw new Error("The source image is invalid.");
+    return {
+      bytes: Buffer.from(match[2], "base64"),
+      mediaType: match[1] as "image/png" | "image/jpeg" | "image/webp",
+    };
+  }
+  const generatedMatch =
+    /^\/api\/prototype\/imagegen\/images\/([a-f0-9]{64})\.png$/.exec(
+      input.sourceImage!,
+    );
+  const sourceRoot = generatedMatch
+    ? prototypeImageRoot
+    : path.join(repositoryRoot, "apps", "studio", "public", "m1-prototype");
+  const filename = path.basename(input.sourceImage!);
+  const absolutePath = path.resolve(sourceRoot, filename);
+  if (!absolutePath.startsWith(`${sourceRoot}${path.sep}`))
+    throw new Error("The source image path is invalid.");
+  return { bytes: readFileSync(absolutePath), mediaType: "image/png" };
+};
+
 server.get("/api/health", async () => ({ status: "ok" }));
+server.get<{ Params: { sha256: string } }>(
+  "/api/prototype/imagegen/images/:sha256.png",
+  async (request, reply) => {
+    const sha256 = z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .parse(request.params.sha256);
+    const absolutePath = path.join(prototypeImageRoot, `${sha256}.png`);
+    if (!existsSync(absolutePath))
+      return reply.status(404).send({ error: "Image revision not found." });
+    reply.header("Content-Type", "image/png");
+    reply.header("Cache-Control", "public, immutable, max-age=31536000");
+    return reply.send(createReadStream(absolutePath));
+  },
+);
+server.post("/api/prototype/imagegen/edit", async (request) => {
+  const input = PrototypeImageEditInputSchema.parse(request.body);
+  const subscription = inspectExecutionProviders().find(
+    ({ provider }) => provider === "openai",
+  );
+  if (!subscription?.ready || !subscription.capabilities.imageGeneration)
+    throw new Error(
+      subscription?.detail ??
+        "The signed-in OpenAI subscription ImageGen capability is unavailable.",
+    );
+  const source = prototypeSource(input);
+  const finalPrompt = [
+    "Use case: precise-object-edit",
+    "Asset type: polished game concept art",
+    `Primary request: ${input.prompt}`,
+    "Input images: Image 1 is the edit target.",
+    `Subject: ${input.conceptTitle}`,
+    `Purpose: ${input.conceptPurpose}`,
+    `Approved visual direction: ${input.directionName}`,
+    "Constraints: Make only the requested change. Preserve the subject identity, approved visual direction, environment, lighting, color language, composition, and all unrelated details.",
+    "Avoid: text, UI, logos, watermarks, additional characters, unrelated objects, and unrequested redesigns.",
+  ].join("\n");
+  const result = await runCodexSubscriptionImage({
+    prompt: finalPrompt,
+    referenceImages: [source],
+  });
+  const sha256 = createHash("sha256").update(result.bytes).digest("hex");
+  mkdirSync(prototypeImageRoot, { recursive: true });
+  const absolutePath = path.join(prototypeImageRoot, `${sha256}.png`);
+  if (!existsSync(absolutePath)) writeFileSync(absolutePath, result.bytes);
+  return {
+    imageUrl: `/api/prototype/imagegen/images/${sha256}.png`,
+    sha256,
+    model: result.model,
+    costUsd: result.costUsd,
+    prompt: finalPrompt,
+  };
+});
 server.get("/api/configuration", async () => coordinator.configuration());
 server.get("/api/projects", async () => coordinator.list());
 server.get<{ Params: { projectId: string } }>(
@@ -39,6 +159,97 @@ server.post<{ Params: { projectId: string } }>(
   "/api/projects/:projectId/approvals/visual-direction",
   async (request) =>
     coordinator.approveDirection(
+      request.params.projectId,
+      request.body as never,
+    ),
+);
+server.post<{ Params: { projectId: string } }>(
+  "/api/projects/:projectId/interrogation/answers",
+  async (request) =>
+    coordinator.m1.answerFrontier(
+      request.params.projectId,
+      request.body as never,
+    ),
+);
+server.post<{ Params: { projectId: string } }>(
+  "/api/projects/:projectId/interrogation/confirm",
+  async (request) =>
+    coordinator.m1.confirmSharedUnderstanding(
+      request.params.projectId,
+      request.body as never,
+    ),
+);
+server.post<{ Params: { projectId: string } }>(
+  "/api/projects/:projectId/approvals/game-design",
+  async (request) =>
+    coordinator.m1.approveGameDesign(
+      request.params.projectId,
+      request.body as never,
+    ),
+);
+server.post<{ Params: { projectId: string } }>(
+  "/api/projects/:projectId/game-design/revise",
+  async (request) =>
+    coordinator.m1.reviseGameDesign(
+      request.params.projectId,
+      request.body as never,
+    ),
+);
+server.post<{
+  Params: { projectId: string; directionId: string };
+  Body: { directionSetRevisionId: string; notes: string };
+}>(
+  "/api/projects/:projectId/directions/:directionId/replace",
+  async (request) =>
+    coordinator.m1.replaceDirection(request.params.projectId, {
+      ...request.body,
+      directionRevisionId: request.params.directionId,
+    }),
+);
+server.post<{
+  Params: { projectId: string; directionId: string };
+  Body: {
+    directionSetRevisionId: string;
+    change: string;
+    pinnedAspects: string[];
+  };
+}>("/api/projects/:projectId/directions/:directionId/change", async (request) =>
+  coordinator.m1.changeDirection(request.params.projectId, {
+    ...request.body,
+    directionRevisionId: request.params.directionId,
+  }),
+);
+server.post<{
+  Params: { projectId: string };
+  Body: { conceptPlanRevisionId: string; confirmed: true };
+}>("/api/projects/:projectId/concept-plan/confirm", async (request) =>
+  coordinator.m1.confirmConceptPlan(
+    request.params.projectId,
+    request.body as never,
+  ),
+);
+server.post<{
+  Params: { projectId: string; slotId: string };
+  Body: { conceptSetRevisionId: string; notes?: string };
+}>("/api/projects/:projectId/concepts/:slotId/regenerate", async (request) =>
+  coordinator.m1.regenerateConcept(request.params.projectId, {
+    ...request.body,
+    slotId: request.params.slotId,
+  }),
+);
+server.post<{
+  Params: { projectId: string; slotId: string };
+  Body: { conceptSetRevisionId: string; conceptRevisionId: string };
+}>("/api/projects/:projectId/concepts/:slotId/select", async (request) =>
+  coordinator.m1.selectConcept(request.params.projectId, {
+    ...request.body,
+    slotId: request.params.slotId,
+  }),
+);
+server.post<{ Params: { projectId: string } }>(
+  "/api/projects/:projectId/approvals/concept-set",
+  async (request) =>
+    coordinator.m1.approveConceptSet(
       request.params.projectId,
       request.body as never,
     ),

@@ -1,0 +1,1429 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#090c0f" />
+    <title>Fulcrum M1 — Product Overview</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --ink: #edf4f3;
+        --muted: #8d9a9c;
+        --quiet: #5f6b6e;
+        --line: #243034;
+        --line-bright: #395154;
+        --surface: #0d1215;
+        --surface-2: #11191c;
+        --cyan: #72ddda;
+        --cyan-dim: #214b4c;
+        --peach: #ec9d78;
+        --lime: #b7d889;
+        --serif: Georgia, "Times New Roman", serif;
+        --sans: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+        --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        min-width: 320px;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at 82% 8%, #153038 0, transparent 26rem),
+          radial-gradient(circle at 10% 42%, #171817 0, transparent 32rem),
+          #090c0f;
+        font-family: var(--sans);
+      }
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        opacity: 0.2;
+        background-image: linear-gradient(
+          rgba(255, 255, 255, 0.018) 1px,
+          transparent 1px
+        );
+        background-size: 100% 4px;
+        z-index: 10;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      .progress {
+        position: fixed;
+        inset: 0 auto auto 0;
+        width: 0;
+        height: 2px;
+        background: var(--cyan);
+        box-shadow: 0 0 16px var(--cyan);
+        z-index: 30;
+      }
+
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        min-height: 64px;
+        padding: 0 4vw;
+        border-bottom: 1px solid rgba(114, 221, 218, 0.12);
+        background: rgba(9, 12, 15, 0.82);
+        backdrop-filter: blur(18px);
+      }
+
+      .brand,
+      .toplinks {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+      }
+
+      .brand-mark {
+        display: grid;
+        width: 30px;
+        height: 30px;
+        place-items: center;
+        border: 1px solid #356266;
+        color: var(--cyan);
+        font: 600 13px var(--mono);
+      }
+
+      .brand span,
+      .toplinks a {
+        font: 600 10px var(--mono);
+        letter-spacing: 0.14em;
+        text-decoration: none;
+        text-transform: uppercase;
+      }
+
+      .brand small {
+        color: var(--quiet);
+        font: 10px var(--mono);
+        letter-spacing: 0.08em;
+      }
+
+      .toplinks a {
+        color: var(--muted);
+      }
+
+      .toplinks a:hover {
+        color: var(--cyan);
+      }
+
+      main {
+        overflow: hidden;
+      }
+
+      .wrap {
+        width: min(1180px, 92vw);
+        margin-inline: auto;
+      }
+
+      .hero {
+        position: relative;
+        min-height: calc(100vh - 64px);
+        display: grid;
+        align-items: center;
+        padding: 8vh 0 10vh;
+      }
+
+      .hero-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.15fr) minmax(340px, 0.85fr);
+        gap: clamp(60px, 9vw, 130px);
+        align-items: center;
+      }
+
+      .kicker {
+        margin: 0 0 22px;
+        color: var(--cyan);
+        font: 600 11px var(--mono);
+        letter-spacing: 0.17em;
+        text-transform: uppercase;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin-top: 0;
+      }
+
+      h1 {
+        max-width: 850px;
+        margin-bottom: 30px;
+        font: 400 clamp(58px, 8vw, 118px) / 0.9 var(--serif);
+        letter-spacing: -0.065em;
+      }
+
+      h1 em {
+        color: var(--cyan);
+        font-style: italic;
+      }
+
+      .lede {
+        max-width: 670px;
+        margin-bottom: 36px;
+        color: #a9b4b5;
+        font-size: clamp(17px, 1.7vw, 22px);
+        line-height: 1.65;
+      }
+
+      .hero-note {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        color: var(--muted);
+        font: 11px var(--mono);
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+
+      .hero-note::before {
+        content: "";
+        width: 36px;
+        height: 1px;
+        background: var(--cyan);
+      }
+
+      .orbit {
+        position: relative;
+        aspect-ratio: 1;
+        display: grid;
+        place-items: center;
+      }
+
+      .orbit::before,
+      .orbit::after {
+        content: "";
+        position: absolute;
+        border: 1px solid rgba(114, 221, 218, 0.2);
+        border-radius: 50%;
+      }
+
+      .orbit::before {
+        inset: 5%;
+        animation: spin 24s linear infinite;
+        border-top-color: var(--cyan);
+      }
+
+      .orbit::after {
+        inset: 20%;
+        animation: spin 16s linear infinite reverse;
+        border-right-color: var(--peach);
+      }
+
+      .orbit-core {
+        position: relative;
+        z-index: 2;
+        width: 45%;
+        aspect-ratio: 1;
+        display: grid;
+        place-items: center;
+        border: 1px solid #34565a;
+        background: radial-gradient(circle at 40% 35%, #274b4d, #0e171a 65%);
+        transform: rotate(45deg);
+        box-shadow: 0 0 80px rgba(68, 180, 180, 0.12);
+      }
+
+      .orbit-core span {
+        max-width: 120px;
+        color: #cce8e6;
+        font: 600 11px/1.5 var(--mono);
+        letter-spacing: 0.08em;
+        text-align: center;
+        text-transform: uppercase;
+        transform: rotate(-45deg);
+      }
+
+      .orbit-label {
+        position: absolute;
+        color: #728083;
+        font: 9px var(--mono);
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+
+      .orbit-label.one {
+        top: 8%;
+        right: 1%;
+      }
+
+      .orbit-label.two {
+        bottom: 18%;
+        left: 0;
+      }
+
+      .orbit-label.three {
+        bottom: 2%;
+        right: 16%;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      section {
+        padding: clamp(90px, 13vw, 170px) 0;
+        border-top: 1px solid rgba(129, 160, 163, 0.12);
+      }
+
+      .section-head {
+        display: grid;
+        grid-template-columns: 0.45fr 1fr;
+        gap: 50px;
+        margin-bottom: clamp(55px, 8vw, 100px);
+      }
+
+      .section-number {
+        color: var(--cyan);
+        font: 11px var(--mono);
+        letter-spacing: 0.16em;
+      }
+
+      h2 {
+        max-width: 850px;
+        margin-bottom: 22px;
+        font: 400 clamp(42px, 5.2vw, 76px) / 1 var(--serif);
+        letter-spacing: -0.045em;
+      }
+
+      .section-copy {
+        max-width: 720px;
+        color: var(--muted);
+        font-size: 17px;
+        line-height: 1.7;
+      }
+
+      .workflow {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        border-block: 1px solid var(--line);
+      }
+
+      .workflow-step {
+        position: relative;
+        min-height: 260px;
+        padding: 30px 28px;
+        border-right: 1px solid var(--line);
+      }
+
+      .workflow-step:last-child {
+        border-right: 0;
+      }
+
+      .workflow-step::after {
+        content: "→";
+        position: absolute;
+        top: 50%;
+        right: -11px;
+        z-index: 2;
+        display: grid;
+        width: 22px;
+        height: 22px;
+        place-items: center;
+        color: var(--cyan);
+        background: #090c0f;
+        font: 13px var(--mono);
+      }
+
+      .workflow-step:last-child::after {
+        display: none;
+      }
+
+      .step-id {
+        color: var(--quiet);
+        font: 10px var(--mono);
+      }
+
+      .workflow-step h3 {
+        margin: 78px 0 12px;
+        font: 500 18px var(--sans);
+      }
+
+      .workflow-step p {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
+      .approval {
+        display: inline-flex;
+        margin-top: 10px;
+        padding: 5px 8px;
+        border: 1px solid #3b6768;
+        color: var(--cyan);
+        font: 9px var(--mono);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .interview-layout {
+        display: grid;
+        grid-template-columns: 0.8fr 1.2fr;
+        gap: clamp(45px, 8vw, 110px);
+        align-items: center;
+      }
+
+      .loop-diagram {
+        position: relative;
+        min-height: 500px;
+        display: grid;
+        place-items: center;
+      }
+
+      .loop-diagram svg {
+        width: min(100%, 520px);
+        overflow: visible;
+      }
+
+      .loop-path {
+        fill: none;
+        stroke: #345558;
+        stroke-width: 1.5;
+        stroke-dasharray: 7 8;
+        animation: dash 18s linear infinite;
+      }
+
+      @keyframes dash {
+        to {
+          stroke-dashoffset: -180;
+        }
+      }
+
+      .loop-node {
+        fill: #0f171a;
+        stroke: #47777a;
+      }
+
+      .loop-node.active {
+        fill: #173236;
+        stroke: var(--cyan);
+      }
+
+      .loop-text {
+        fill: #d8e4e3;
+        font: 600 13px var(--mono);
+        letter-spacing: 0.04em;
+      }
+
+      .loop-subtext {
+        fill: #7d8b8d;
+        font: 11px var(--sans);
+      }
+
+      .question-panel {
+        border-left: 1px solid var(--line-bright);
+        padding-left: clamp(28px, 5vw, 68px);
+      }
+
+      .round-label {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 26px;
+        color: var(--cyan);
+        font: 10px var(--mono);
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+
+      .question-panel h3 {
+        margin-bottom: 16px;
+        font: 400 clamp(29px, 3.2vw, 46px) / 1.13 var(--serif);
+      }
+
+      .question-panel > p {
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.7;
+      }
+
+      .choices {
+        margin-top: 30px;
+        border-top: 1px solid var(--line);
+      }
+
+      .choice {
+        display: grid;
+        grid-template-columns: 36px 1fr auto;
+        gap: 14px;
+        align-items: center;
+        padding: 18px 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .choice b {
+        color: var(--cyan);
+        font: 11px var(--mono);
+      }
+
+      .choice span {
+        font-size: 14px;
+      }
+
+      .choice small {
+        color: var(--lime);
+        font: 9px var(--mono);
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .docs-note {
+        margin-top: 28px;
+        padding: 18px 0 0;
+        color: #9babac;
+        font: 11px/1.7 var(--mono);
+      }
+
+      .docs-note strong {
+        color: var(--peach);
+      }
+
+      .direction-stage {
+        display: grid;
+        grid-template-columns: minmax(0, 1.35fr) minmax(260px, 0.65fr);
+        min-height: 560px;
+        border: 1px solid var(--line);
+        background: #0a0f12;
+      }
+
+      .direction-visual {
+        position: relative;
+        overflow: hidden;
+        min-height: 520px;
+        background:
+          linear-gradient(145deg, transparent 38%, rgba(104, 228, 220, 0.18)),
+          radial-gradient(
+            circle at 48% 54%,
+            #3e7171 0,
+            #152326 24%,
+            #0c1114 64%
+          );
+        transition: background 0.5s ease;
+      }
+
+      .direction-visual::before,
+      .direction-visual::after {
+        content: "";
+        position: absolute;
+        border: 1px solid rgba(154, 225, 222, 0.22);
+        transform: rotate(45deg);
+      }
+
+      .direction-visual::before {
+        width: 280px;
+        height: 280px;
+        left: calc(50% - 140px);
+        top: calc(50% - 140px);
+        box-shadow: inset 0 0 80px rgba(71, 184, 180, 0.1);
+      }
+
+      .direction-visual::after {
+        width: 150px;
+        height: 150px;
+        left: calc(50% - 75px);
+        top: calc(50% - 75px);
+        background: rgba(112, 224, 219, 0.08);
+      }
+
+      .visual-caption {
+        position: absolute;
+        inset: auto 28px 25px;
+        display: flex;
+        justify-content: space-between;
+        color: #a8b9b9;
+        font: 9px var(--mono);
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+
+      .direction-copy {
+        display: flex;
+        flex-direction: column;
+        padding: 34px;
+        border-left: 1px solid var(--line);
+      }
+
+      .direction-copy h3 {
+        margin: auto 0 12px;
+        font: 400 34px/1.1 var(--serif);
+      }
+
+      .direction-copy p {
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.65;
+      }
+
+      .direction-tabs {
+        display: grid;
+        gap: 1px;
+        background: var(--line);
+      }
+
+      .direction-tabs button {
+        border: 0;
+        padding: 15px 16px;
+        color: #849194;
+        background: #0e1417;
+        font: 10px var(--mono);
+        letter-spacing: 0.07em;
+        text-align: left;
+        text-transform: uppercase;
+        cursor: pointer;
+      }
+
+      .direction-tabs button.active {
+        color: var(--cyan);
+        background: #162427;
+        box-shadow: inset 2px 0 var(--cyan);
+      }
+
+      .lineage {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        align-items: stretch;
+        gap: 44px;
+      }
+
+      .lineage-node {
+        position: relative;
+        min-height: 210px;
+        padding: 22px 0;
+        border-block: 1px solid var(--line);
+      }
+
+      .lineage-node::after {
+        content: "";
+        position: absolute;
+        top: 50%;
+        left: calc(100% + 7px);
+        width: 30px;
+        border-top: 1px solid #3d6a6b;
+      }
+
+      .lineage-node:last-child::after {
+        display: none;
+      }
+
+      .lineage-node small {
+        color: var(--cyan);
+        font: 9px var(--mono);
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+
+      .lineage-node h3 {
+        margin: 62px 0 12px;
+        font: 500 18px var(--sans);
+      }
+
+      .lineage-node p {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
+      .change-map {
+        display: grid;
+        grid-template-columns: 1fr 80px 1fr;
+        align-items: center;
+        gap: 28px;
+      }
+
+      .change-side {
+        padding: 34px 0;
+        border-block: 1px solid var(--line);
+      }
+
+      .change-side h3 {
+        margin-bottom: 22px;
+        font: 400 30px var(--serif);
+      }
+
+      .change-side ul {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .change-side li {
+        display: flex;
+        justify-content: space-between;
+        padding: 13px 0;
+        border-bottom: 1px solid rgba(36, 48, 52, 0.65);
+        color: #aab4b5;
+        font-size: 13px;
+      }
+
+      .change-side li span:last-child {
+        color: var(--quiet);
+        font: 9px var(--mono);
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+
+      .change-side.after li.changed span:last-child {
+        color: var(--peach);
+      }
+
+      .change-side.after li.safe span:last-child {
+        color: var(--lime);
+      }
+
+      .change-arrow {
+        color: var(--cyan);
+        font: 26px var(--mono);
+        text-align: center;
+      }
+
+      .boundary {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1px;
+        background: var(--line);
+        border: 1px solid var(--line);
+      }
+
+      .boundary > div {
+        min-height: 390px;
+        padding: clamp(32px, 5vw, 65px);
+        background: var(--surface);
+      }
+
+      .boundary h3 {
+        margin-bottom: 35px;
+        font: 400 34px var(--serif);
+      }
+
+      .boundary ul {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .boundary li {
+        position: relative;
+        margin: 15px 0;
+        padding-left: 24px;
+        color: #a8b3b4;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      .boundary li::before {
+        position: absolute;
+        left: 0;
+        color: var(--cyan);
+        content: "✓";
+      }
+
+      .boundary .not-yet li::before {
+        color: var(--quiet);
+        content: "—";
+      }
+
+      .definition {
+        display: grid;
+        grid-template-columns: 0.7fr 1.3fr;
+        gap: 70px;
+        align-items: start;
+      }
+
+      .definition blockquote {
+        margin: 0;
+        color: #dce8e7;
+        font: 400 clamp(30px, 3.4vw, 49px) / 1.25 var(--serif);
+      }
+
+      .done-list {
+        border-top: 1px solid var(--line-bright);
+      }
+
+      .done-item {
+        display: grid;
+        grid-template-columns: 36px 1fr;
+        gap: 18px;
+        padding: 20px 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .done-item span:first-child {
+        color: var(--cyan);
+        font: 12px var(--mono);
+      }
+
+      .done-item strong {
+        display: block;
+        margin-bottom: 5px;
+        font-size: 14px;
+      }
+
+      .done-item small {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      footer {
+        padding: 42px 4vw 60px;
+        border-top: 1px solid var(--line);
+      }
+
+      .footer-inner {
+        width: min(1180px, 92vw);
+        display: flex;
+        justify-content: space-between;
+        margin: auto;
+        color: var(--quiet);
+        font: 10px var(--mono);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .reveal {
+        opacity: 0;
+        transform: translateY(22px);
+        transition:
+          opacity 0.7s ease,
+          transform 0.7s ease;
+      }
+
+      .reveal.visible {
+        opacity: 1;
+        transform: none;
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.01ms !important;
+        }
+      }
+
+      @media (max-width: 900px) {
+        .hero-grid,
+        .section-head,
+        .interview-layout,
+        .definition {
+          grid-template-columns: 1fr;
+        }
+
+        .hero {
+          min-height: auto;
+        }
+
+        .orbit {
+          width: min(520px, 88vw);
+          margin: 20px auto 0;
+        }
+
+        .workflow {
+          grid-template-columns: 1fr;
+        }
+
+        .workflow-step {
+          min-height: auto;
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+
+        .workflow-step h3 {
+          margin-top: 34px;
+        }
+
+        .workflow-step::after {
+          top: auto;
+          right: 50%;
+          bottom: -11px;
+          content: "↓";
+        }
+
+        .direction-stage,
+        .boundary {
+          grid-template-columns: 1fr;
+        }
+
+        .direction-copy {
+          border-top: 1px solid var(--line);
+          border-left: 0;
+        }
+
+        .direction-copy h3 {
+          margin-top: 60px;
+        }
+
+        .lineage {
+          grid-template-columns: 1fr 1fr;
+        }
+
+        .lineage-node::after {
+          display: none;
+        }
+      }
+
+      @media (max-width: 620px) {
+        .toplinks a:first-child,
+        .brand small {
+          display: none;
+        }
+
+        h1 {
+          font-size: 58px;
+        }
+
+        .loop-diagram {
+          min-height: 350px;
+        }
+
+        .lineage,
+        .change-map {
+          grid-template-columns: 1fr;
+        }
+
+        .change-arrow {
+          transform: rotate(90deg);
+        }
+
+        .footer-inner {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="progress" aria-hidden="true"></div>
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">F</div>
+        <span>Fulcrum</span>
+        <small>M1 product preview</small>
+      </div>
+      <nav class="toplinks" aria-label="Page navigation">
+        <a href="#workflow">Workflow</a>
+        <a href="#boundary">Boundary</a>
+        <a href="../milestones/M1.md">Read contract ↗</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="wrap hero-grid">
+          <div>
+            <p class="kicker">M1 · Creative-to-concept generalization</p>
+            <h1>From a rough idea to <em>visual ground truth.</em></h1>
+            <p class="lede">
+              After M1, Fulcrum will stop quietly filling in the important gaps.
+              It will work through the game with you, record the shared
+              language, show you real visual choices, and carry the approved
+              direction into every concept.
+            </p>
+            <div class="hero-note">
+              The creative front half becomes a product
+            </div>
+          </div>
+          <div class="orbit" aria-label="Creative alignment diagram">
+            <span class="orbit-label one">Game intent</span>
+            <span class="orbit-label two">Visual language</span>
+            <span class="orbit-label three">Concept lineage</span>
+            <div class="orbit-core"><span>Shared understanding</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="workflow">
+        <div class="wrap">
+          <div class="section-head reveal">
+            <div class="section-number">01 / THE JOURNEY</div>
+            <div>
+              <h2>Five moments. Nothing is selected behind your back.</h2>
+              <p class="section-copy">
+                Fulcrum does the exploratory work between approvals. You step in
+                when the game definition, visual direction, or concept ground
+                truth is about to become authoritative.
+              </p>
+            </div>
+          </div>
+
+          <div class="workflow reveal" aria-label="M1 workflow">
+            <div class="workflow-step">
+              <span class="step-id">01</span>
+              <h3>Describe the game</h3>
+              <p>
+                Start with whatever you have: mechanics, a mood, or a messy mix
+                of both.
+              </p>
+            </div>
+            <div class="workflow-step">
+              <span class="step-id">02</span>
+              <h3>Resolve the design</h3>
+              <p>
+                Grill Me With Docs explores the decision tree in focused rounds.
+              </p>
+              <span class="approval">Approve game design</span>
+            </div>
+            <div class="workflow-step">
+              <span class="step-id">03</span>
+              <h3>Compare directions</h3>
+              <p>
+                See three meaningfully different interpretations—not prompt
+                variations.
+              </p>
+              <span class="approval">Approve visual bible</span>
+            </div>
+            <div class="workflow-step">
+              <span class="step-id">04</span>
+              <h3>Confirm the image plan</h3>
+              <p>
+                See which images Fulcrum proposes and why. Edit the list, then
+                authorize ImageGen through your signed-in subscription.
+              </p>
+            </div>
+            <div class="workflow-step">
+              <span class="step-id">05</span>
+              <h3>Keep or revise</h3>
+              <p>
+                Every image starts unapproved. Keep it, or type what should
+                change and compare the ImageGen revision before choosing.
+              </p>
+              <span class="approval">Approve concept set</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="wrap">
+          <div class="section-head reveal">
+            <div class="section-number">02 / SHARED UNDERSTANDING</div>
+            <div>
+              <h2>Questions follow the design—not a fixed questionnaire.</h2>
+              <p class="section-copy">
+                Each answer unlocks the next useful decisions. The interview
+                ends only when no branch is unresolved and you agree that
+                Fulcrum understands the project.
+              </p>
+            </div>
+          </div>
+
+          <div class="interview-layout reveal">
+            <div class="loop-diagram">
+              <svg
+                viewBox="0 0 520 440"
+                role="img"
+                aria-labelledby="loop-title"
+              >
+                <title id="loop-title">Grill Me With Docs decision loop</title>
+                <path
+                  class="loop-path"
+                  d="M260 72 C430 72 452 208 400 270 C350 334 176 344 112 252 C65 184 111 76 260 72Z"
+                />
+                <path
+                  class="loop-path"
+                  d="M257 136 C355 130 385 206 338 258 C297 303 198 291 170 238 C137 177 188 140 257 136Z"
+                />
+                <circle class="loop-node active" cx="260" cy="72" r="55" />
+                <circle class="loop-node" cx="405" cy="250" r="55" />
+                <circle class="loop-node" cx="112" cy="250" r="55" />
+                <text class="loop-text" x="260" y="68" text-anchor="middle">
+                  FRONTIER
+                </text>
+                <text class="loop-subtext" x="260" y="88" text-anchor="middle">
+                  ask what is ready
+                </text>
+                <text class="loop-text" x="405" y="246" text-anchor="middle">
+                  ANSWER
+                </text>
+                <text class="loop-subtext" x="405" y="266" text-anchor="middle">
+                  settle decisions
+                </text>
+                <text class="loop-text" x="112" y="246" text-anchor="middle">
+                  REBUILD
+                </text>
+                <text class="loop-subtext" x="112" y="266" text-anchor="middle">
+                  unlock branches
+                </text>
+                <text class="loop-text" x="260" y="410" text-anchor="middle">
+                  EMPTY FRONTIER → CONFIRM
+                </text>
+              </svg>
+            </div>
+
+            <div class="question-panel">
+              <div class="round-label">
+                <span>Round 02 · Current frontier</span><span>2 decisions</span>
+              </div>
+              <h3>What should make a failed extraction feel fair?</h3>
+              <p>
+                This choice affects encounter pacing, reward loss, and how much
+                information the environment must communicate before danger.
+              </p>
+              <div class="choices">
+                <div class="choice">
+                  <b>A</b><span>Clear warning, severe consequence</span
+                  ><small>Recommended</small>
+                </div>
+                <div class="choice">
+                  <b>B</b><span>Low warning, recoverable consequence</span
+                  ><small></small>
+                </div>
+                <div class="choice">
+                  <b>C</b><span>Custom answer</span><small></small>
+                </div>
+              </div>
+              <div class="docs-note">
+                <strong>WITH DOCS</strong> · “Extraction” is added to the
+                project glossary now. An ADR is created only if this becomes a
+                hard-to-reverse design tradeoff.
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="wrap">
+          <div class="section-head reveal">
+            <div class="section-number">03 / VISUAL CHOICE</div>
+            <div>
+              <h2>Three directions with a reason to exist.</h2>
+              <p class="section-copy">
+                M1 is not satisfied by recoloring the same picture. Each option
+                must make a different visual argument while honoring the
+                approved gameplay and readability constraints.
+              </p>
+            </div>
+          </div>
+
+          <div class="direction-stage reveal">
+            <div class="direction-visual" id="directionVisual">
+              <div class="visual-caption">
+                <span>Visual direction 01</span><span>Conceptual preview</span>
+              </div>
+            </div>
+            <div class="direction-copy">
+              <div
+                class="direction-tabs"
+                role="tablist"
+                aria-label="Visual direction examples"
+              >
+                <button
+                  class="active"
+                  data-title="Monolithic Signal"
+                  data-copy="Heavy silhouettes, quiet stone, and cyan wayfinding make objectives readable from a distance."
+                  data-theme="cyan"
+                >
+                  01 · Monolithic
+                </button>
+                <button
+                  data-title="Living Ruin"
+                  data-copy="Organic growth interrupts ancient geometry, trading stark clarity for a world that feels reclaimed."
+                  data-theme="lime"
+                >
+                  02 · Living ruin
+                </button>
+                <button
+                  data-title="Ember Archive"
+                  data-copy="Warm metal, ash, and vertical light turn the same game constraints into a more ceremonial world."
+                  data-theme="peach"
+                >
+                  03 · Ember archive
+                </button>
+              </div>
+              <h3 id="directionTitle">Monolithic Signal</h3>
+              <p id="directionCopy">
+                Heavy silhouettes, quiet stone, and cyan wayfinding make
+                objectives readable from a distance.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="wrap">
+          <div class="section-head reveal">
+            <div class="section-number">04 / LINEAGE</div>
+            <div>
+              <h2>Approved intent travels forward automatically.</h2>
+              <p class="section-copy">
+                The ImageGen prompt is compiled from approved project truth and
+                your visible change request. Every image can show where its
+                mechanics, visual tokens, and constraints came from.
+              </p>
+            </div>
+          </div>
+
+          <div class="lineage reveal" aria-label="Creative artifact lineage">
+            <div class="lineage-node">
+              <small>Source</small>
+              <h3>Game brief</h3>
+              <p>The user's original intent remains immutable.</p>
+            </div>
+            <div class="lineage-node">
+              <small>Approval 01</small>
+              <h3>Game Design Spec</h3>
+              <p>
+                Resolved mechanics, scope, assumptions, and shared language.
+              </p>
+            </div>
+            <div class="lineage-node">
+              <small>Approval 02</small>
+              <h3>Visual Bible</h3>
+              <p>
+                Structured shape, color, material, lighting, and readability
+                rules.
+              </p>
+            </div>
+            <div class="lineage-node">
+              <small>Approval 03</small>
+              <h3>Concept set</h3>
+              <p>
+                Exact image revisions with ancestor hashes and inherited tokens.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="wrap">
+          <div class="section-head reveal">
+            <div class="section-number">05 / TARGETED CHANGE</div>
+            <div>
+              <h2>Change one thing without restarting everything.</h2>
+              <p class="section-copy">
+                A direction adjustment only invalidates its descendants. A
+                plain-English request sends the current image and relevant
+                approved context back to subscription ImageGen; sibling images
+                remain exactly where they are.
+              </p>
+            </div>
+          </div>
+
+          <div class="change-map reveal">
+            <div class="change-side before">
+              <h3>Before feedback</h3>
+              <ul>
+                <li>
+                  <span>Material language</span><span>Bronze + basalt</span>
+                </li>
+                <li>
+                  <span>Shape language</span><span>Low + monolithic</span>
+                </li>
+                <li><span>Lighting</span><span>Cold cyan</span></li>
+                <li><span>Hero concept</span><span>Revision A</span></li>
+                <li><span>Environment concept</span><span>Revision A</span></li>
+              </ul>
+            </div>
+            <div class="change-arrow">→</div>
+            <div class="change-side after">
+              <h3>“Make it more vertical”</h3>
+              <ul>
+                <li class="safe">
+                  <span>Material language</span><span>Preserved</span>
+                </li>
+                <li class="changed">
+                  <span>Shape language</span><span>Revised</span>
+                </li>
+                <li class="safe">
+                  <span>Lighting</span><span>Preserved</span>
+                </li>
+                <li class="changed">
+                  <span>Hero concept</span><span>Stale</span>
+                </li>
+                <li class="safe">
+                  <span>Environment concept</span><span>Untouched</span>
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="boundary">
+        <div class="wrap">
+          <div class="section-head reveal">
+            <div class="section-number">06 / THE BOUNDARY</div>
+            <div>
+              <h2>M1 finishes the creative front half.</h2>
+              <p class="section-copy">
+                It produces trustworthy visual ground truth. It does not quietly
+                expand into asset optimization, environment construction, or
+                gameplay.
+              </p>
+            </div>
+          </div>
+
+          <div class="boundary reveal">
+            <div>
+              <h3>After M1, Fulcrum can…</h3>
+              <ul>
+                <li>
+                  Interrogate a varied brief until it is genuinely understood
+                </li>
+                <li>
+                  Maintain the game's glossary and important design decisions
+                </li>
+                <li>Offer and redirect multiple visual directions</li>
+                <li>Generate a demand-driven concept set</li>
+                <li>Regenerate one concept without disturbing its siblings</li>
+                <li>Show exact creative lineage and inherited visual tokens</li>
+              </ul>
+            </div>
+            <div class="not-yet">
+              <h3>It does not yet…</h3>
+              <ul>
+                <li>
+                  Improve mesh topology, textures, or 3D-provider strategy
+                </li>
+                <li>Generate multiview concepts or modular environment kits</li>
+                <li>Refine assets in Blender</li>
+                <li>Build gameplay or a playable vertical slice</li>
+                <li>Run autonomous visual-improvement loops or Gauntlets</li>
+                <li>Require another paid image-to-3D acceptance run</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="wrap definition reveal">
+          <blockquote>
+            “Fulcrum understood the game, showed me real choices, and the
+            concepts look like they came from the same world.”
+          </blockquote>
+          <div class="done-list">
+            <div class="done-item">
+              <span>01</span>
+              <div>
+                <strong>Varied briefs survive intact</strong
+                ><small
+                  >Explicit facts are preserved; ambiguity is resolved instead
+                  of averaged away.</small
+                >
+              </div>
+            </div>
+            <div class="done-item">
+              <span>02</span>
+              <div>
+                <strong>The interview is durable</strong
+                ><small
+                  >Rounds, documentation, and approvals resume without losing or
+                  repeating work.</small
+                >
+              </div>
+            </div>
+            <div class="done-item">
+              <span>03</span>
+              <div>
+                <strong>Visual options are materially different</strong
+                ><small
+                  >Each direction has a clear thesis and respects the same
+                  gameplay constraints.</small
+                >
+              </div>
+            </div>
+            <div class="done-item">
+              <span>04</span>
+              <div>
+                <strong>Lineage is visible</strong
+                ><small
+                  >Every approved concept points to the exact design and visual
+                  revisions that shaped it.</small
+                >
+              </div>
+            </div>
+            <div class="done-item">
+              <span>05</span>
+              <div>
+                <strong>One live run is approved</strong
+                ><small
+                  >Signed-in subscription ImageGen creates the real direction
+                  and concept images without an API key or separately metered
+                  API request.</small
+                >
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <div class="footer-inner">
+        <span>Fulcrum · M1 product overview</span>
+        <span>Draft for review · No provider spend</span>
+      </div>
+    </footer>
+
+    <script>
+      const progress = document.querySelector(".progress");
+      const updateProgress = () => {
+        const height = document.documentElement.scrollHeight - innerHeight;
+        progress.style.width = `${height > 0 ? (scrollY / height) * 100 : 0}%`;
+      };
+      addEventListener("scroll", updateProgress, { passive: true });
+      updateProgress();
+
+      const observer = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            if (entry.isIntersecting) entry.target.classList.add("visible");
+          }
+        },
+        { threshold: 0.12 },
+      );
+      document
+        .querySelectorAll(".reveal")
+        .forEach((element) => observer.observe(element));
+
+      const palettes = {
+        cyan: "linear-gradient(145deg, transparent 38%, rgba(104, 228, 220, .18)), radial-gradient(circle at 48% 54%, #3e7171 0, #152326 24%, #0c1114 64%)",
+        lime: "linear-gradient(145deg, transparent 38%, rgba(179, 216, 137, .16)), radial-gradient(circle at 48% 54%, #536a3f 0, #202a1d 24%, #0c1110 64%)",
+        peach:
+          "linear-gradient(145deg, transparent 38%, rgba(236, 157, 120, .18)), radial-gradient(circle at 48% 54%, #7b4835 0, #2d1d19 24%, #100d0d 64%)",
+      };
+      const visual = document.querySelector("#directionVisual");
+      const title = document.querySelector("#directionTitle");
+      const copy = document.querySelector("#directionCopy");
+      document
+        .querySelectorAll(".direction-tabs button")
+        .forEach((button, index) => {
+          button.addEventListener("click", () => {
+            document
+              .querySelectorAll(".direction-tabs button")
+              .forEach((item) => item.classList.remove("active"));
+            button.classList.add("active");
+            title.textContent = button.dataset.title;
+            copy.textContent = button.dataset.copy;
+            visual.style.background = palettes[button.dataset.theme];
+            visual.querySelector(".visual-caption span").textContent =
+              `Visual direction 0${index + 1}`;
+          });
+        });
+    </script>
+  </body>
+</html>

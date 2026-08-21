@@ -61,6 +61,8 @@ pnpm format:check
 - [Roadmap](ROADMAP.md) — staged path from the first proof to the Gauntlet
 - [M0 implementation contract](milestones/M0.md) — the current bounded walking skeleton
 - [M0 live acceptance report](milestones/M0_REPORT.md) — result, cost, evidence, failures, and limitations
+- [M1 implementation contract](milestones/M1.md) — the approved creative-to-concept generalization milestone
+- [M1 product overview](docs/m1-product-overview.html) — plain-English workflow and expected product
 - [Implementation prompt](IMPLEMENTATION_PROMPT.md) — the short execution contract for an implementation agent
 
 M0 establishes one real, immutable lineage from a game brief through an approved concept and generated 3D hero prop into a rendered Three.js review scene.

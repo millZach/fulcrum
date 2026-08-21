@@ -40,11 +40,11 @@ The first structured game-design representation includes, when relevant:
 
 ### 2.2 Design interrogation
 
-Fulcrum infers reasonable defaults, records them as assumptions, and asks only about uncertainties that materially alter production.
+Fulcrum infers reasonable defaults, records them as assumptions, researches discoverable facts, and asks the user only for consequential decisions.
 
-For the initial product, interrogation is bounded to one round of at most five questions. A later `game-development-workflow` skill may provide a richer Grill Me-style process, but it must consume and produce the same Game Design Spec interface.
+M1 runs Grill Me With Docs as an internal capability. It maps the project as a decision tree, asks the whole currently unblocked frontier with a recommendation for every question, and recomputes the frontier after each answer round. There is no arbitrary question or round limit: interrogation ends only when the frontier is empty and the user explicitly confirms shared understanding. Stable project terminology is recorded in the glossary while only qualifying, hard-to-reverse tradeoffs receive an ADR.
 
-The user can approve all assumptions together or revise individual ones. The resulting Game Design Spec is immutable; changes create a new revision and invalidate affected descendants.
+The resulting Game Design Spec records facts and assumptions with their origin. It is immutable; changes create a new revision and invalidate affected descendants.
 
 ### 2.3 Visual Director
 

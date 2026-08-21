@@ -1,0 +1,163 @@
+{
+  "generated": "workspace/incoming/fulcrum-anim/scripts/build_story.py",
+  "units": "metres; character is 1.70 m tall, faces -Y, his left is +X, up is +Z",
+  "fps": 30,
+  "clips": [
+    {
+      "name": "Poof",
+      "frames": 36,
+      "seconds": 1.2,
+      "loop": false,
+      "anchor": "stand",
+      "note": "ends exactly on Wave frame 1",
+      "glbSeconds": 1.1667,
+      "glbSamples": 36
+    },
+    {
+      "name": "Wave",
+      "frames": 75,
+      "seconds": 2.5,
+      "loop": true,
+      "anchor": "stand",
+      "note": "seamless",
+      "glbSeconds": 2.5,
+      "glbSamples": 76,
+      "loopCloseError": 0
+    },
+    {
+      "name": "ClimbUp",
+      "frames": 60,
+      "seconds": 2.0,
+      "loop": false,
+      "anchor": "seat",
+      "note": "starts on Wave frame 1 offset by standOffset; root motion carries him onto the block; ends exactly on DangleIdle f1",
+      "glbSeconds": 1.9667,
+      "glbSamples": 60
+    },
+    {
+      "name": "DangleIdle",
+      "frames": 90,
+      "seconds": 3.0,
+      "loop": true,
+      "anchor": "seat",
+      "glbSeconds": 3,
+      "glbSamples": 91,
+      "loopCloseError": 0
+    },
+    {
+      "name": "Scared",
+      "frames": 24,
+      "seconds": 0.8,
+      "loop": false,
+      "anchor": "seat",
+      "note": "starts on DangleIdle f1, ends catch-ready",
+      "glbSeconds": 0.7667,
+      "glbSamples": 24
+    },
+    {
+      "name": "CatchPlace",
+      "frames": 84,
+      "seconds": 2.8,
+      "loop": false,
+      "anchor": "seat",
+      "note": "starts on Scared last frame, ends exactly on DangleIdle f1",
+      "glbSeconds": 2.7667,
+      "glbSamples": 84
+    }
+  ],
+  "playOrder": [
+    "Poof",
+    "Wave (loop until advance)",
+    "ClimbUp",
+    "DangleIdle (loop until advance)",
+    "Scared",
+    "CatchPlace",
+    "DangleIdle (loop)"
+  ],
+  "anchors": {
+    "seat": [0.0, 0.0, 0.0],
+    "stand": [0.0, -0.7, 0.0],
+    "note": "Place the character object at `stand` while Poof and Wave play and at `seat` from ClimbUp onward.  ClimbUp frame 1 already carries the standOffset in its root track, so the world pose is identical across the Wave -> ClimbUp cut."
+  },
+  "seatBlock": {
+    "min": [-0.58, -0.111, 0.0],
+    "max": [0.58, 0.72, 0.6531],
+    "size": [1.16, 0.831, 0.6531],
+    "centreXY": [0.0, 0.3045],
+    "topZ": 0.6531,
+    "note": "Not a cube.  Two separate measurements set it: the approved DangleIdle plants his mitts out to |x| = 0.48, so the top face has to be ~1.0 m wide or both hands hang in mid air; and the block he sets down needs a clear landing strip outboard of that, which takes it to 1.16.  The 0.653 height is what makes his boots dangle 0.30 m clear of the floor."
+  },
+  "carryBlock": {
+    "size": 0.26,
+    "spawn": [-0.0078, -0.372, 2.4079],
+    "hangUntilCaught": [-0.0078, -0.372, 2.2679],
+    "catch": [-0.0078, -0.372, 2.0079],
+    "placed": [-0.42, 0.41, 0.7831],
+    "timeline": {
+      "popIn": "Scared frames 1-6 (scale 0 -> 1.22 -> 1.0)",
+      "hang": "Scared frames 6-24 drifts from spawn to hangUntilCaught",
+      "fall": "CatchPlace frames 1-11 (quadratic)",
+      "carried": "CatchPlace frames 11-44, riding on top of the two mitts",
+      "walkedDown": "CatchPlace frames 44-57, on the right mitt alone",
+      "dropped": "CatchPlace frames 57-63 (he lets go: a 0.30 m mitt cannot reach the seat top)",
+      "settled": "CatchPlace frame 69 onward, static"
+    },
+    "note": "During the carry the block is placed on the top of the glove geometry each frame, which is why the catch reads as load-bearing.  The app can reproduce it by parenting the block to a midpoint between the two hand bones with a +0.13 z offset, or simply bake this path."
+  },
+  "rig": {
+    "facing": [0, -1, 0],
+    "armatureScale": 0.01,
+    "bones": 24,
+    "rootBone": "Hips",
+    "rootMotion": "Hips translation is baked into Poof, ClimbUp and the seated clips; do not add your own vertical offset.",
+    "squashStretch": "Hips bone SCALE is animated in Poof, ClimbUp, Scared and CatchPlace.  Keep bone inheritScale = full."
+  },
+  "audits": {
+    "boundaryWorstDegrees": 0.088469,
+    "boundaryWorstSkinMm": 0.00038,
+    "blockClippingMm": {
+      "Poof": 0.0,
+      "Wave": 0.0,
+      "ClimbUp": 0.311,
+      "DangleIdle": 0.0,
+      "Scared": 0.0,
+      "CatchPlace": 0.0
+    },
+    "seatContactCompressionMm": {
+      "Poof": 0.0,
+      "Wave": 0.0,
+      "ClimbUp": 93.3,
+      "DangleIdle": 103.9,
+      "Scared": 93.3,
+      "CatchPlace": 99.0
+    },
+    "caughtBlockOverlapMm": 0.0
+  },
+  "glb": {
+    "path": "/m1-prototype/fulcrum.glb",
+    "bytes": 1153224,
+    "megabytes": 1.153,
+    "bones": 24,
+    "skinnedMeshes": 1,
+    "boundsMin": [-0.578, 0, -0.302],
+    "boundsMax": [0.578, 1.7, 0.302],
+    "axes": "glTF Y-up: the Blender +Z (up) is glTF +Y, Blender -Y (facing) is glTF -Z.  three.js loads it upright with no fix-up.",
+    "contents": "character mesh + 24-bone armature + the six clips.  No plinth, lights, cameras or prop block: the app owns those.",
+    "textures": "single 1024x1024 WebP (EXT_texture_webp).  three.js GLTFLoader decodes it natively; no extra loader needed.",
+    "geometryCompression": "none -- draco/meshopt would make the app ship a decoder for a 7k-triangle character.",
+    "sampleTimes": "rebased to t=0 (tools/fix_times.mjs).  Blender writes frame/fps, so straight out of the exporter every clip started at t=1/30 and held its first pose for an extra frame -- 100 ms of hitch per idle loop."
+  },
+  "skinRepair": "The source Meshy rig binds most of each glove to <side>UpLeg, so raising an arm smears a brown ribbon from the mitt to the armpit.  It is repaired on import (fulcrum_rig.fix_hand_weights) and the repair is BAKED INTO THIS GLB -- do not re-import the original Meshy file.",
+  "preview": {
+    "sequence": "/m1-prototype/preview/sequence.mp4",
+    "page": "/m1-prototype/preview/",
+    "clips": {
+      "Poof": "/m1-prototype/preview/poof.mp4",
+      "Wave": "/m1-prototype/preview/wave.mp4",
+      "ClimbUp": "/m1-prototype/preview/climb.mp4",
+      "DangleIdle": "/m1-prototype/preview/dangle.mp4",
+      "Scared": "/m1-prototype/preview/scared.mp4",
+      "CatchPlace": "/m1-prototype/preview/catchplace.mp4"
+    }
+  }
+}
