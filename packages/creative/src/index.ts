@@ -22,6 +22,14 @@ import OpenAI from "openai";
 import sharp from "sharp";
 
 export * from "./m1.js";
+export {
+  ensureDurableSubscriptionImage,
+  isM1LiveAuthorized,
+  m1ConceptImageIdempotencyKey,
+  m1LiveAuthorizationMessage,
+  M1_LIVE_AUTHORIZATION_ENV,
+  subscriptionImageReserveUsd,
+} from "./durable-image.js";
 
 const replayCreativeOutput: CreativeOutput = CreativeOutputSchema.parse({
   gameDesign: {

@@ -8,24 +8,37 @@ import {
   GameDesignSpecSchema,
   InterrogationStateSchema,
   M1ConceptDocumentSchema,
+  ProviderPreflightCodeSchema,
+  ProviderPreflightError,
   StructuredVisualBibleSchema,
   VisualDirectionSetSchema,
   type ConceptSet,
   type ConceptPlan,
   type GameDesignSpec,
+  type ImageProvider,
   type InformationOrigin,
   type InterrogationAnswer,
   type InterrogationQuestion,
   type InterrogationState,
   type M1ConceptDocument,
+  type ProviderMode,
   type RevisionRef,
   type StructuredVisualBible,
   type VisualDirection,
   type VisualDirectionSet,
   type VisualToken,
 } from "@fulcrum/domain";
+import {
+  runCodexSubscriptionImage,
+  type SubscriptionImageRunner,
+} from "@fulcrum/execution";
 import { ProjectRepository } from "@fulcrum/project";
 import sharp from "sharp";
+
+import {
+  ensureDurableSubscriptionImage,
+  m1ConceptImageIdempotencyKey,
+} from "./durable-image.js";
 
 export type { ConceptPlan } from "@fulcrum/domain";
 
@@ -1010,7 +1023,10 @@ const conceptSvg = (
  * deterministic creative transformations and immutable persistence.
  */
 export class M1CreativeDevelopment {
-  constructor(private readonly repository: ProjectRepository) {}
+  constructor(
+    private readonly repository: ProjectRepository,
+    private readonly imageRunner: SubscriptionImageRunner = runCodexSubscriptionImage,
+  ) {}
 
   provisionSkillChain(context: M1CreativeContext): RevisionRef {
     const manifests = new Map<SkillName, string>();
@@ -1545,6 +1561,8 @@ export class M1CreativeDevelopment {
       directionSet: RevisionRef;
       selectedDirectionRevisionId: string;
       conceptPlan: RevisionRef;
+      mode?: ProviderMode;
+      imageProvider?: ImageProvider;
     },
   ): Promise<RevisionRef> {
     const spec = GameDesignSpecSchema.parse(
@@ -1567,31 +1585,30 @@ export class M1CreativeDevelopment {
       throw new Error(
         "The concept plan does not descend from these approvals.",
       );
-    const slots = await Promise.all(
-      plan.slots.map(async (slot) => {
-        const inheritedVisualTokens = direction.visualBible.tokens.filter(
-          (token) => slot.tokenCategories.includes(token.category),
-        );
-        const revision = await this.createConceptRevision({
-          ...context,
-          spec,
-          slot,
-          inheritedVisualTokens,
-          sourceRevisionIds: [
-            context.gameDesignSpec.revisionId,
-            direction.revisionId,
-            context.conceptPlan.revisionId,
-          ],
-          attempt: 0,
-        });
-        return {
-          slotId: slot.slotId,
-          name: slot.name,
-          purpose: slot.purpose,
-          revisions: [{ revision, inheritedVisualTokens }],
-        };
-      }),
-    );
+    const slots = [];
+    for (const slot of plan.slots) {
+      const inheritedVisualTokens = direction.visualBible.tokens.filter(
+        (token) => slot.tokenCategories.includes(token.category),
+      );
+      const revision = await this.createConceptRevision({
+        ...context,
+        spec,
+        slot,
+        inheritedVisualTokens,
+        sourceRevisionIds: [
+          context.gameDesignSpec.revisionId,
+          direction.revisionId,
+          context.conceptPlan.revisionId,
+        ],
+        attempt: 0,
+      });
+      slots.push({
+        slotId: slot.slotId,
+        name: slot.name,
+        purpose: slot.purpose,
+        revisions: [{ revision, inheritedVisualTokens }],
+      });
+    }
     const conceptSet = ConceptSetSchema.parse({
       conceptSetId: stableId("concept-set", context.conceptPlan.revisionId),
       sourceDirectionRevisionId: direction.revisionId,
@@ -1704,6 +1721,8 @@ export class M1CreativeDevelopment {
       conceptSet: RevisionRef;
       slotId: string;
       notes?: string;
+      mode?: ProviderMode;
+      imageProvider?: ImageProvider;
     },
   ): Promise<RevisionRef> {
     const spec = GameDesignSpecSchema.parse(
@@ -1873,6 +1892,8 @@ export class M1CreativeDevelopment {
       sourceRevisionIds: string[];
       attempt: number;
       regenerationNote?: string;
+      mode?: ProviderMode;
+      imageProvider?: ImageProvider;
     },
   ): Promise<RevisionRef> {
     if (input.inheritedVisualTokens.length === 0)
@@ -1885,6 +1906,16 @@ export class M1CreativeDevelopment {
       input.inheritedVisualTokens,
       input.regenerationNote,
     );
+    const mode = input.mode ?? "replay";
+    const imageProvider = input.imageProvider ?? "none";
+    if (mode === "live") {
+      return await this.createLiveConceptRevision({
+        ...input,
+        prompt,
+        mode,
+        imageProvider,
+      });
+    }
     const image = this.repository.putArtifact(
       input.projectId,
       await sharp(
@@ -1896,27 +1927,119 @@ export class M1CreativeDevelopment {
         .toBuffer(),
       "image/png",
     );
+    return this.writeConceptDocument({
+      ...input,
+      prompt,
+      image,
+      provider: "fulcrum-replay",
+      model: "m1-replay-svg-v1",
+      costUsd: 0,
+    });
+  }
+
+  private async createLiveConceptRevision(
+    input: M1CreativeContext & {
+      spec: GameDesignSpec;
+      slot: ConceptPlan["slots"][number];
+      inheritedVisualTokens: VisualToken[];
+      sourceRevisionIds: string[];
+      attempt: number;
+      prompt: string;
+      mode: ProviderMode;
+      imageProvider: ImageProvider;
+    },
+  ): Promise<RevisionRef> {
+    if (input.imageProvider !== "openai-subscription") {
+      throw new ProviderPreflightError(
+        "provider-unconfigured",
+        "Live M1 concept generation uses the signed-in OpenAI subscription ImageGen route (imageProvider openai-subscription).",
+      );
+    }
+    const idempotencyKey = m1ConceptImageIdempotencyKey({
+      projectId: input.projectId,
+      slotId: input.slot.slotId,
+      sourceRevisionIds: input.sourceRevisionIds,
+      attempt: input.attempt,
+      mode: input.mode,
+      imageProvider: input.imageProvider,
+    });
+    const prior = this.repository.getSubmissionByKey(idempotencyKey);
+    if (prior?.status === "ready" && prior.resultRevisionId)
+      return this.repository.getRevision(prior.resultRevisionId);
+    const outcome = await ensureDurableSubscriptionImage({
+      repository: this.repository,
+      runner: this.imageRunner,
+      projectId: input.projectId,
+      runId: input.runId,
+      idempotencyKey,
+      prompt: input.prompt,
+      mode: input.mode,
+      provider: input.imageProvider,
+    });
+    if (outcome.status === "failed") {
+      const preflight = ProviderPreflightCodeSchema.safeParse(
+        outcome.error.code,
+      );
+      if (preflight.success)
+        throw new ProviderPreflightError(preflight.data, outcome.error.message);
+      throw new Error(outcome.error.message);
+    }
+    if (outcome.status !== "ready")
+      throw new Error(
+        "Subscription ImageGen did not return a completed image.",
+      );
+    const recorded = this.repository.getSubmissionByKey(idempotencyKey);
+    if (recorded?.resultRevisionId)
+      return this.repository.getRevision(recorded.resultRevisionId);
+    const revision = this.writeConceptDocument({
+      ...input,
+      image: outcome.value.artifact,
+      provider: input.imageProvider,
+      model: outcome.value.model,
+      costUsd: outcome.value.costUsd,
+    });
+    this.repository.updateSubmission(outcome.requestId, {
+      status: "ready",
+      resultRevisionId: revision.revisionId,
+      payload: recorded?.payload ?? { imageArtifact: outcome.value.artifact },
+    });
+    return revision;
+  }
+
+  private writeConceptDocument(
+    input: M1CreativeContext & {
+      slot: ConceptPlan["slots"][number];
+      inheritedVisualTokens: VisualToken[];
+      sourceRevisionIds: string[];
+      attempt: number;
+      prompt: string;
+      image: M1ConceptDocument["image"];
+      provider: string;
+      model: string;
+      costUsd: number;
+    },
+  ): RevisionRef {
     const sourceRevisions = [...new Set(input.sourceRevisionIds)].map(
       (revisionId) => this.repository.getRevision(revisionId),
     );
     const document = M1ConceptDocumentSchema.parse({
       conceptId: `${input.projectId}:${input.slot.slotId}`,
       name: `${input.slot.name} r${String(input.attempt + 1).padStart(2, "0")}`,
-      prompt,
+      prompt: input.prompt,
       negativePrompt: input.inheritedVisualTokens
         .filter((token) => token.category === "prohibited-style")
         .map((token) => token.value)
         .join(", "),
-      image,
-      provider: "fulcrum-replay",
-      model: "m1-replay-svg-v1",
+      image: input.image,
+      provider: input.provider,
+      model: input.model,
       sourceRevisionIds: sourceRevisions.map(({ revisionId }) => revisionId),
       ancestors: sourceRevisions.map(({ revisionId, artifact, kind }) => ({
         revisionId,
         sha256: artifact.sha256,
         kind,
       })),
-      costUsd: 0,
+      costUsd: input.costUsd,
     });
     return writeRevision(
       this.repository,

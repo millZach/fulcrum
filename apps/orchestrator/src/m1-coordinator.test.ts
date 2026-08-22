@@ -2,11 +2,21 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { M0_FIXTURE_BRIEF, type ProjectSnapshot } from "@fulcrum/domain";
+import { m1ConceptImageIdempotencyKey } from "@fulcrum/creative";
+import {
+  M0_FIXTURE_BRIEF,
+  ProviderPreflightError,
+  type ProjectSnapshot,
+} from "@fulcrum/domain";
 import { ProjectRepository } from "@fulcrum/project";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ProjectCoordinator } from "./project-coordinator.js";
+
+const PNG_1x1 = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
 
 const roots: string[] = [];
 
@@ -17,6 +27,8 @@ const temporaryRoot = (): string => {
 };
 
 afterEach(() => {
+  delete process.env.FULCRUM_M1_LIVE_AUTHORIZED;
+  delete process.env.FULCRUM_SUBSCRIPTION_IMAGE_RESERVE_USD;
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
 });
@@ -175,6 +187,12 @@ describe("M1Coordinator replay path", () => {
     });
     expect(project.state.stage).toBe("visual-direction-approval");
     expect(project.visualDirections?.directions).toHaveLength(3);
+    for (const direction of project.visualDirections!.directions) {
+      expect(
+        project.visualDirectionRevisions?.[direction.revisionId]?.artifact
+          .sha256,
+      ).toMatch(/^[a-f0-9]{64}$/);
+    }
 
     const selectedBefore = project.visualDirections!.directions[0];
     const directionRevision = repository.getRevision(selectedBefore.revisionId);
@@ -435,7 +453,8 @@ describe("M1Coordinator replay path", () => {
         budgetUsd: 1,
         rightsConfirmed: true,
       }),
-    ).rejects.toThrow(/live M1 is not yet authorized or supported/i);
+    ).rejects.toThrow(/FULCRUM_M1_LIVE_AUTHORIZED=true/);
+    expect(repository.listProjects()).toEqual([]);
 
     let rejected = await coordinator.create({
       milestone: "m1",
@@ -477,7 +496,67 @@ describe("M1Coordinator replay path", () => {
     repository.close();
   });
 
-  it("rejects a direction rebase that would deadlock an exhausted concept slot", async () => {
+  it("regenerates the same slot more than once and keeps revision labels", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const coordinator = new ProjectCoordinator(repository);
+    let project = await coordinator.create({
+      milestone: "m1",
+      brief: M1_BRIEF,
+      mode: "replay",
+      imageProvider: "none",
+      budgetUsd: 1,
+      rightsConfirmed: true,
+    });
+    project = finishInterrogation(coordinator, project);
+    project = coordinator.m1.confirmSharedUnderstanding(
+      project.state.projectId,
+      {
+        interrogationRevisionId: project.state.interrogation!.revisionId,
+        confirmed: true,
+      },
+    );
+    project = await coordinator.m1.approveGameDesign(project.state.projectId, {
+      decision: "approved",
+      targetRevisionId: project.state.gameDesignSpec!.revisionId,
+      targetSha256: project.state.gameDesignSpec!.artifact.sha256,
+    });
+    const direction = project.visualDirections!.directions[0];
+    const directionRevision = repository.getRevision(direction.revisionId);
+    project = await coordinator.approveDirection(project.state.projectId, {
+      decision: "approved",
+      targetRevisionId: directionRevision.revisionId,
+      targetSha256: directionRevision.artifact.sha256,
+    } as never);
+    project = await confirmConceptPlan(coordinator, project);
+
+    const slotId = project.conceptSet!.slots[0]!.slotId;
+    for (let index = 0; index < 3; index += 1) {
+      project = await coordinator.m1.regenerateConcept(
+        project.state.projectId,
+        {
+          conceptSetRevisionId: project.state.conceptSet!.revisionId,
+          slotId,
+          notes: `Replay revision ${index + 2}.`,
+        },
+      );
+    }
+    const slot = project.conceptSet!.slots.find(
+      (item) => item.slotId === slotId,
+    )!;
+    expect(slot.revisions).toHaveLength(4);
+    expect(project.state.conceptRegenerationCounts?.[slotId]).toBe(3);
+    expect(
+      project.conceptDocuments?.[slotId]?.map((document) => document.name),
+    ).toEqual([
+      expect.stringMatching(/r01$/),
+      expect.stringMatching(/r02$/),
+      expect.stringMatching(/r03$/),
+      expect.stringMatching(/r04$/),
+    ]);
+    repository.close();
+  });
+
+  it("stales a regenerated slot on a focused direction change so it can be regenerated again", async () => {
     const repository = new ProjectRepository(temporaryRoot());
     const coordinator = new ProjectCoordinator(repository);
     let project = await coordinator.create({
@@ -516,7 +595,7 @@ describe("M1Coordinator replay path", () => {
     project = await coordinator.m1.regenerateConcept(project.state.projectId, {
       conceptSetRevisionId: project.state.conceptSet!.revisionId,
       slotId: target.slotId,
-      notes: "Use the single allowed alternate before changing direction.",
+      notes: "Use an alternate before changing direction.",
     });
     const regenerated = project
       .conceptSet!.slots.find((slot) => slot.slotId === target.slotId)!
@@ -527,28 +606,94 @@ describe("M1Coordinator replay path", () => {
       conceptRevisionId: regenerated.revision.revisionId,
     });
     const before = project.state;
+    expect(before.conceptRegenerationCounts?.[target.slotId]).toBe(1);
 
-    await expect(
-      coordinator.m1.changeDirection(project.state.projectId, {
-        directionSetRevisionId: before.visualDirectionSet!.revisionId,
-        directionRevisionId: before.selectedVisualDirectionRevisionId!,
-        change: "Add charged wind streaks that affect the gameplay anchor.",
-        pinnedAspects: ["palette", "shape language"],
-      }),
-    ).rejects.toThrow(/regeneration allowance is already used/i);
-    const restored = coordinator.snapshot(project.state.projectId);
-    expect(restored.state.stage).toBe("concept-set-approval");
-    expect(restored.state.visualDirectionSet?.revisionId).toBe(
-      before.visualDirectionSet?.revisionId,
+    project = await coordinator.m1.changeDirection(project.state.projectId, {
+      directionSetRevisionId: before.visualDirectionSet!.revisionId,
+      directionRevisionId: before.selectedVisualDirectionRevisionId!,
+      change: "Add charged wind streaks that affect the gameplay anchor.",
+      pinnedAspects: ["palette", "shape language"],
+    });
+    expect(project.state.stage).toBe("visual-direction-approval");
+    expect(project.state.focusedDirectionChangeCount).toBe(1);
+    const rebased = project.conceptSet!.slots.find(
+      (slot) => slot.slotId === target.slotId,
+    )!;
+    expect(rebased.selectedRevisionId).toBeUndefined();
+    expect(rebased.revisions.at(-1)?.staleReason).toBeDefined();
+    expect(project.state.conceptRegenerationCounts?.[target.slotId]).toBe(1);
+
+    const changedDirection = repository.getRevision(
+      project.state.selectedVisualDirectionRevisionId!,
     );
-    expect(restored.state.selectedVisualDirectionRevisionId).toBe(
-      before.selectedVisualDirectionRevisionId,
+    project = await coordinator.approveDirection(project.state.projectId, {
+      decision: "approved",
+      targetRevisionId: changedDirection.revisionId,
+      targetSha256: changedDirection.artifact.sha256,
+    } as never);
+    project = await coordinator.m1.regenerateConcept(project.state.projectId, {
+      conceptSetRevisionId: project.state.conceptSet!.revisionId,
+      slotId: target.slotId,
+      notes: "Carry the charged wind streaks into this slot again.",
+    });
+    expect(project.state.conceptRegenerationCounts?.[target.slotId]).toBe(2);
+    expect(
+      project.conceptSet!.slots.find((slot) => slot.slotId === target.slotId)
+        ?.revisions,
+    ).toHaveLength(3);
+    repository.close();
+  });
+
+  it("raises the budget on a non-terminal project and refuses a lower or equal cap", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const coordinator = new ProjectCoordinator(repository);
+    let project = await coordinator.create({
+      milestone: "m1",
+      brief: M1_BRIEF,
+      mode: "replay",
+      imageProvider: "none",
+      budgetUsd: 1,
+      rightsConfirmed: true,
+    });
+    expect(() =>
+      coordinator.increaseBudget(project.state.projectId, { budgetUsd: 1 }),
+    ).toThrow(/greater than the current \$1\.00 cap/i);
+    expect(() =>
+      coordinator.increaseBudget(project.state.projectId, { budgetUsd: 0.5 }),
+    ).toThrow(/greater than the current \$1\.00 cap/i);
+    expect(() =>
+      coordinator.increaseBudget(project.state.projectId, { budgetUsd: 0 }),
+    ).toThrow();
+    project = coordinator.increaseBudget(project.state.projectId, {
+      budgetUsd: 2.5,
+    });
+    expect(project.state.budgetUsd).toBe(2.5);
+    expect(project.state.spentUsd).toBe(0);
+    const increased = repository
+      .listEvents(project.state.projectId)
+      .find((event) => event.type === "budget.increased");
+    expect(increased?.payload).toEqual({
+      previousBudgetUsd: 1,
+      budgetUsd: 2.5,
+    });
+
+    project = finishInterrogation(coordinator, project);
+    project = coordinator.m1.confirmSharedUnderstanding(
+      project.state.projectId,
+      {
+        interrogationRevisionId: project.state.interrogation!.revisionId,
+        confirmed: true,
+      },
     );
-    expect(restored.state.conceptSet?.revisionId).toBe(
-      before.conceptSet?.revisionId,
-    );
-    expect(restored.state.directionApproval).toEqual(before.directionApproval);
-    expect(restored.state.focusedDirectionChangeCount).toBe(0);
+    project = await coordinator.m1.approveGameDesign(project.state.projectId, {
+      decision: "rejected",
+      targetRevisionId: project.state.gameDesignSpec!.revisionId,
+      targetSha256: project.state.gameDesignSpec!.artifact.sha256,
+    });
+    expect(project.state.stage).toBe("blocked");
+    expect(() =>
+      coordinator.increaseBudget(project.state.projectId, { budgetUsd: 4 }),
+    ).toThrow(/completed or blocked/i);
     repository.close();
   });
 
@@ -605,6 +750,253 @@ describe("M1Coordinator replay path", () => {
       });
       expect(project.state.status).toBe("complete");
     }
+    repository.close();
+  });
+});
+
+const fakeImageRunner = () =>
+  vi.fn(async ({ prompt }: { prompt: string }) => {
+    expect(prompt.length).toBeGreaterThan(0);
+    return { bytes: PNG_1x1, model: "gpt-image-2", costUsd: 0 };
+  });
+
+const reachConceptPlanning = async (
+  coordinator: ProjectCoordinator,
+): Promise<ProjectSnapshot> => {
+  let project = await coordinator.create({
+    milestone: "m1",
+    brief: M1_BRIEF,
+    mode: "live",
+    imageProvider: "openai-subscription",
+    budgetUsd: 1,
+    rightsConfirmed: true,
+  });
+  project = finishInterrogation(coordinator, project);
+  project = coordinator.m1.confirmSharedUnderstanding(project.state.projectId, {
+    interrogationRevisionId: project.state.interrogation!.revisionId,
+    confirmed: true,
+  });
+  project = await coordinator.m1.approveGameDesign(project.state.projectId, {
+    decision: "approved",
+    targetRevisionId: project.state.gameDesignSpec!.revisionId,
+    targetSha256: project.state.gameDesignSpec!.artifact.sha256,
+  });
+  const direction = project.visualDirections!.directions[0];
+  const directionRevision = coordinator.repository.getRevision(
+    direction.revisionId,
+  );
+  return await coordinator.approveDirection(project.state.projectId, {
+    decision: "approved",
+    targetRevisionId: directionRevision.revisionId,
+    targetSha256: directionRevision.artifact.sha256,
+  } as never);
+};
+
+describe("M1Coordinator live path", () => {
+  it("refuses unauthorized live create without writing a project", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const coordinator = new ProjectCoordinator(repository, {
+      imageRunner: fakeImageRunner(),
+    });
+    await expect(
+      coordinator.create({
+        milestone: "m1",
+        brief: M1_BRIEF,
+        mode: "live",
+        imageProvider: "openai-subscription",
+        budgetUsd: 1,
+        rightsConfirmed: true,
+      }),
+    ).rejects.toThrow(/Set FULCRUM_M1_LIVE_AUTHORIZED=true/);
+    expect(repository.listProjects()).toEqual([]);
+    repository.close();
+  });
+
+  it("generates a live concept set through durable intent, idempotency, and budget records", async () => {
+    process.env.FULCRUM_M1_LIVE_AUTHORIZED = "true";
+    const repository = new ProjectRepository(temporaryRoot());
+    const runner = fakeImageRunner();
+    const coordinator = new ProjectCoordinator(repository, {
+      imageRunner: runner,
+    });
+    let project = await reachConceptPlanning(coordinator);
+    project = await confirmConceptPlan(coordinator, project);
+    expect(project.state.stage).toBe("concept-set-approval");
+    expect(runner).toHaveBeenCalledTimes(project.conceptSet!.slots.length);
+    expect(
+      Object.values(project.conceptDocuments ?? {}).every((documents) =>
+        documents.every(
+          (document) => document.provider === "openai-subscription",
+        ),
+      ),
+    ).toBe(true);
+    const sourceRevisionIds = [
+      project.state.gameDesignSpec!.revisionId,
+      project.state.selectedVisualDirectionRevisionId!,
+      project.state.conceptPlan!.revisionId,
+    ];
+    for (const slot of project.conceptSet!.slots) {
+      const submission = repository.getSubmissionByKey(
+        m1ConceptImageIdempotencyKey({
+          projectId: project.state.projectId,
+          slotId: slot.slotId,
+          sourceRevisionIds,
+          attempt: 0,
+          mode: "live",
+          imageProvider: "openai-subscription",
+        }),
+      );
+      expect(submission?.status).toBe("ready");
+      expect(submission?.resultRevisionId).toBe(
+        slot.revisions[0]?.revision.revisionId,
+      );
+    }
+    expect(repository.getProject(project.state.projectId).spentUsd).toBeCloseTo(
+      0.01 * project.conceptSet!.slots.length,
+    );
+    expect(
+      repository
+        .listEvents(project.state.projectId)
+        .filter((event) => event.type === "budget.reserved"),
+    ).toHaveLength(project.conceptSet!.slots.length);
+    repository.close();
+  });
+
+  it("refuses a live concept image when the project cap is exhausted, then continues the same keys after a top-up", async () => {
+    process.env.FULCRUM_M1_LIVE_AUTHORIZED = "true";
+    process.env.FULCRUM_SUBSCRIPTION_IMAGE_RESERVE_USD = "0.50";
+    const repository = new ProjectRepository(temporaryRoot());
+    const runner = fakeImageRunner();
+    const coordinator = new ProjectCoordinator(repository, {
+      imageRunner: runner,
+    });
+    let project = await reachConceptPlanning(coordinator);
+    repository.saveProject({
+      ...repository.getProject(project.state.projectId),
+      budgetUsd: 0.5,
+    });
+
+    await expect(
+      confirmConceptPlan(coordinator, project),
+    ).rejects.toBeInstanceOf(ProviderPreflightError);
+    expect(runner.mock.calls.length).toBeGreaterThanOrEqual(1);
+    const callsAfterRefusal = runner.mock.calls.length;
+    expect(
+      repository
+        .listEvents(project.state.projectId)
+        .some((event) => event.type === "budget.refused"),
+    ).toBe(true);
+    expect(
+      coordinator.snapshot(project.state.projectId).state.conceptSet,
+    ).toBeUndefined();
+
+    repository.saveProject({
+      ...repository.getProject(project.state.projectId),
+      budgetUsd: 5,
+    });
+    project = await confirmConceptPlan(coordinator, project);
+    expect(project.state.stage).toBe("concept-set-approval");
+    expect(runner.mock.calls.length).toBeGreaterThan(callsAfterRefusal);
+    expect(project.conceptSet?.slots.length).toBe(runner.mock.calls.length);
+    repository.close();
+  });
+
+  it("refuses a live slot regeneration on budget, then resumes the same key after a raise", async () => {
+    process.env.FULCRUM_M1_LIVE_AUTHORIZED = "true";
+    const repository = new ProjectRepository(temporaryRoot());
+    const runner = fakeImageRunner();
+    const coordinator = new ProjectCoordinator(repository, {
+      imageRunner: runner,
+    });
+    let project = await reachConceptPlanning(coordinator);
+    project = await confirmConceptPlan(coordinator, project);
+    const slotId = project.conceptSet!.slots[0]!.slotId;
+    const spentAfterGenerate = repository.getProject(
+      project.state.projectId,
+    ).spentUsd;
+    repository.saveProject({
+      ...repository.getProject(project.state.projectId),
+      budgetUsd: Number((spentAfterGenerate + 0.02).toFixed(2)),
+    });
+
+    project = await coordinator.m1.regenerateConcept(project.state.projectId, {
+      conceptSetRevisionId: project.state.conceptSet!.revisionId,
+      slotId,
+      notes: "First extra revision before the cap.",
+    });
+    project = await coordinator.m1.regenerateConcept(project.state.projectId, {
+      conceptSetRevisionId: project.state.conceptSet!.revisionId,
+      slotId,
+      notes: "Second extra revision before the cap.",
+    });
+    const callsAfterPaidRegens = runner.mock.calls.length;
+    expect(callsAfterPaidRegens).toBe(project.conceptSet!.slots.length + 2);
+    expect(project.state.conceptRegenerationCounts?.[slotId]).toBe(2);
+
+    const slot = project.conceptSet!.slots.find(
+      (item) => item.slotId === slotId,
+    )!;
+    const previousRevision = slot.revisions.at(-1)!;
+    const priorDocument = project.conceptDocuments?.[slotId]?.at(-1);
+    expect(priorDocument).toBeDefined();
+    const refusedKey = m1ConceptImageIdempotencyKey({
+      projectId: project.state.projectId,
+      slotId,
+      sourceRevisionIds: [
+        ...priorDocument!.sourceRevisionIds,
+        project.conceptSet!.sourceDirectionRevisionId,
+        previousRevision.revision.revisionId,
+        project.state.conceptSet!.revisionId,
+      ],
+      attempt: slot.revisions.length,
+      mode: "live",
+      imageProvider: "openai-subscription",
+    });
+    const conceptSetRevisionId = project.state.conceptSet!.revisionId;
+
+    await expect(
+      coordinator.m1.regenerateConcept(project.state.projectId, {
+        conceptSetRevisionId,
+        slotId,
+        notes: "This revision should wait on a budget raise.",
+      }),
+    ).rejects.toSatisfy(
+      (error) =>
+        error instanceof ProviderPreflightError &&
+        error.code === "budget-refused",
+    );
+    expect(runner.mock.calls.length).toBe(callsAfterPaidRegens);
+    const refused = repository.getSubmissionByKey(refusedKey);
+    expect(refused?.status).toBe("intent-recorded");
+    expect(refused?.payload.preflightCode).toBe("budget-refused");
+    expect(
+      coordinator.snapshot(project.state.projectId).state.conceptSet
+        ?.revisionId,
+    ).toBe(conceptSetRevisionId);
+    expect(
+      coordinator.snapshot(project.state.projectId).state
+        .conceptRegenerationCounts?.[slotId],
+    ).toBe(2);
+
+    project = coordinator.increaseBudget(project.state.projectId, {
+      budgetUsd: 5,
+    });
+    expect(project.state.budgetUsd).toBe(5);
+    project = await coordinator.m1.regenerateConcept(project.state.projectId, {
+      conceptSetRevisionId,
+      slotId,
+      notes: "This revision should wait on a budget raise.",
+    });
+    expect(runner.mock.calls.length).toBe(callsAfterPaidRegens + 1);
+    expect(repository.getSubmissionByKey(refusedKey)?.status).toBe("ready");
+    expect(repository.getSubmissionByKey(refusedKey)?.requestId).toBe(
+      refused?.requestId,
+    );
+    expect(project.state.conceptRegenerationCounts?.[slotId]).toBe(3);
+    expect(
+      project.conceptSet!.slots.find((item) => item.slotId === slotId)
+        ?.revisions,
+    ).toHaveLength(4);
     repository.close();
   });
 });

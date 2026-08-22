@@ -11768,3 +11768,560 @@ button.rr-card:hover {
   letter-spacing: 0.14em;
   text-transform: uppercase;
 }
+
+/* ===================================================================
+ * M1 studio (real coordinator) — additive World Forge surfaces.
+ * Scoped under .variant-b-voxel.m1-studio so prototype screens stay put.
+ * =================================================================== */
+
+.variant-b-voxel.m1-studio .vx-topbar {
+  grid-template-columns: 240px minmax(0, 1fr) auto;
+}
+/* The World Forge shell is 100vh / overflow:hidden. Prototype screens each
+   own an inner scroller; studio screens did not, so anything taller than the
+   middle track was clipped with no way to reach it. Make the stage the
+   scroller — topbar and hotbar stay put — and size its rows to content so
+   the 1fr track cannot eat the overflow. */
+.variant-b-voxel.m1-studio .vx-stage {
+  align-content: start;
+  grid-template-rows: max-content;
+  grid-auto-rows: max-content;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-22) transparent;
+}
+.variant-b-voxel.m1-studio .vx-stage::-webkit-scrollbar {
+  width: 8px;
+}
+.variant-b-voxel.m1-studio .vx-stage::-webkit-scrollbar-track {
+  background: transparent;
+}
+.variant-b-voxel.m1-studio .vx-stage::-webkit-scrollbar-thumb {
+  background: var(--ink-22);
+  border: 2px solid transparent;
+  border-radius: 8px;
+  background-clip: padding-box;
+}
+.variant-b-voxel.m1-studio .vx-stage::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-45);
+  background-clip: padding-box;
+}
+.variant-b-voxel.m1-studio .vx-question,
+.variant-b-voxel.m1-studio .vx-gds,
+.variant-b-voxel.m1-studio .vx-spec,
+.variant-b-voxel.m1-studio .vx-project-list ul,
+.variant-b-voxel.m1-studio .voxel-concept-host .single-review-controls {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-22) transparent;
+}
+.variant-b-voxel.m1-studio .vx-stage > section,
+.variant-b-voxel.m1-studio .vx-stage > .voxel-concept-host {
+  min-height: 100%;
+}
+.variant-b-voxel.m1-studio .voxel-concept-host {
+  grid-template-rows: minmax(min-content, 1fr);
+}
+.variant-b-voxel.m1-studio .voxel-concept-host > section {
+  min-height: min-content;
+}
+/* Task F sizes studio stage rows to content so overflow can scroll. The
+   finale's .vx-world is height:100%, which only resolves when the row
+   stretches like the prototype's 1fr track. Restore that for complete;
+   the approval card stays content-sized (align-self: center). */
+.variant-b-voxel.m1-studio .vx-stage.vx-stage-concepts:has(.concept-complete) {
+  align-content: stretch;
+  grid-template-rows: minmax(0, 1fr);
+  grid-auto-rows: minmax(0, 1fr);
+}
+.variant-b-voxel.m1-studio .vx-session {
+  gap: 14px;
+}
+.variant-b-voxel.m1-studio .vx-session-link,
+.variant-b-voxel.m1-studio .vx-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 2px solid var(--ink);
+  border-radius: 5px;
+  color: var(--ink);
+  background: var(--paper-2);
+  box-shadow: 3px 3px 0 var(--ink);
+  font-family: "Fulcrum Text", sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.variant-b-voxel.m1-studio .vx-session-link {
+  min-height: 28px;
+  padding: 0 10px;
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.variant-b-voxel.m1-studio .vx-secondary:hover:not(:disabled),
+.variant-b-voxel.m1-studio .vx-session-link:hover:not(:disabled) {
+  transform: translate(-2px, -2px);
+  box-shadow: 5px 5px 0 var(--ink);
+}
+.variant-b-voxel.m1-studio .vx-secondary:disabled {
+  border-color: var(--ink-22);
+  color: var(--ink-45);
+  background: var(--paper-3);
+  box-shadow: 3px 3px 0 var(--ink-10);
+  cursor: not-allowed;
+}
+
+.variant-b-voxel.m1-studio .vx-budget {
+  color: var(--ink);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.variant-b-voxel.m1-studio .vx-error {
+  z-index: 3;
+  margin-bottom: 12px;
+  border: 3px solid #d3455b;
+  border-radius: 6px;
+  padding: 12px 16px;
+  color: #a32b3f;
+  background: #fff5f6;
+  box-shadow: 4px 4px 0 var(--ink-10);
+}
+.variant-b-voxel.m1-studio .vx-error strong {
+  display: block;
+  margin-bottom: 4px;
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.variant-b-voxel.m1-studio .vx-error p {
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+.variant-b-voxel.m1-studio .vx-stage > .vx-error {
+  grid-column: 1 / -1;
+}
+.variant-b-voxel.m1-studio .vx-error-budget {
+  display: grid;
+  gap: 12px;
+}
+.variant-b-voxel.m1-studio .vx-error-budget .vx-budget-field {
+  max-width: 200px;
+}
+.variant-b-voxel.m1-studio .vx-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.variant-b-voxel.m1-studio .vx-mode-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.variant-b-voxel.m1-studio .vx-mode-row button {
+  display: grid;
+  gap: 2px;
+  border: 2px solid var(--ink-22);
+  border-radius: 5px;
+  padding: 10px 12px;
+  text-align: left;
+  color: var(--ink);
+  background: #fffdf7;
+  cursor: pointer;
+}
+.variant-b-voxel.m1-studio .vx-mode-row button.selected {
+  border-color: var(--ink);
+  box-shadow: 3px 3px 0 var(--teal);
+}
+.variant-b-voxel.m1-studio .vx-mode-row strong {
+  font-size: 13px;
+}
+.variant-b-voxel.m1-studio .vx-mode-row small {
+  color: var(--muted);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+}
+.variant-b-voxel.m1-studio .vx-budget-field,
+.variant-b-voxel.m1-studio .vx-rights {
+  display: grid;
+  gap: 6px;
+  color: var(--ink);
+  font-size: 13px;
+}
+.variant-b-voxel.m1-studio .vx-budget-field span,
+.variant-b-voxel.m1-studio .vx-rights {
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.variant-b-voxel.m1-studio .vx-rights {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: "Fulcrum Text", sans-serif;
+  font-weight: 600;
+}
+.variant-b-voxel.m1-studio .vx-budget-field input[type="number"] {
+  width: 120px;
+  border: 2px solid var(--ink);
+  border-radius: 4px;
+  padding: 8px 10px;
+  background: #fffdf7;
+  font-family: "Fulcrum Mono", monospace;
+}
+.variant-b-voxel.m1-studio .vx-budget-field small {
+  color: var(--muted);
+  font-family: "Fulcrum Text", sans-serif;
+  font-size: 12px;
+  letter-spacing: 0;
+  text-transform: none;
+  font-weight: 500;
+}
+
+.variant-b-voxel.m1-studio .vx-project-list {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-height: 0;
+  max-height: 240px;
+  padding: 16px;
+  overflow: hidden;
+  border: 3px solid var(--ink);
+  border-radius: 7px;
+  background: var(--paper-2);
+  box-shadow: 6px 6px 0 var(--ink-10);
+}
+.variant-b-voxel.m1-studio .vx-project-list ul {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+.variant-b-voxel.m1-studio .vx-project-list button {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  border: 2px solid var(--ink);
+  border-radius: 6px;
+  padding: 12px 14px;
+  text-align: left;
+  color: var(--ink);
+  background: var(--paper-2);
+  box-shadow: 4px 4px 0 var(--ink-10);
+  cursor: pointer;
+}
+.variant-b-voxel.m1-studio .vx-project-list button:hover {
+  transform: translate(-2px, -2px);
+  box-shadow: 6px 6px 0 var(--ink-10);
+}
+.variant-b-voxel.m1-studio .vx-project-list small,
+.variant-b-voxel.m1-studio .vx-project-list i {
+  color: var(--muted);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+  font-style: normal;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.variant-b-voxel.m1-studio .vx-empty-worlds {
+  display: grid;
+  gap: 8px;
+  border: 2px dashed var(--ink-22);
+  border-radius: 6px;
+  padding: 28px 18px;
+}
+
+.variant-b-voxel.m1-studio .vx-generating {
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  gap: 14px;
+  max-width: 52ch;
+  margin: auto;
+  border: 3px solid var(--ink);
+  border-radius: 8px;
+  padding: 36px;
+  background: var(--paper-2);
+  box-shadow: 7px 7px 0 var(--ink-10);
+}
+.variant-b-voxel.m1-studio .vx-generating h1 {
+  font-size: 32px;
+}
+
+.variant-b-voxel.m1-studio .vx-frontier-card {
+  display: grid;
+  gap: 10px;
+  border: 2px solid var(--ink-22);
+  border-radius: 6px;
+  padding: 16px;
+  background: #fffdf7;
+}
+.variant-b-voxel.m1-studio .vx-frontier-card h2 {
+  font-size: 22px;
+  line-height: 1.15;
+}
+.variant-b-voxel.m1-studio .vx-question {
+  overflow: auto;
+  min-height: calc(100vh - 194px);
+}
+.variant-b-voxel.m1-studio .vx-signoff {
+  min-width: 0;
+  align-items: start;
+}
+.variant-b-voxel.m1-studio .vx-brief-rows article {
+  display: grid;
+  gap: 5px;
+  border: 2px solid var(--ink-22);
+  border-radius: 5px;
+  padding: 12px 14px;
+  background: #fffdf7;
+}
+
+.variant-b-voxel.m1-studio .vx-gds-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 640px);
+  gap: 24px;
+  align-items: start;
+  min-width: 0;
+}
+.variant-b-voxel.m1-studio .vx-gds {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  overflow: auto;
+  min-width: 0;
+  border: 3px solid var(--ink);
+  border-radius: 8px;
+  padding: 28px;
+  background: var(--paper-2);
+  box-shadow: 7px 7px 0 var(--ink-10);
+}
+.variant-b-voxel.m1-studio .vx-gds h1 {
+  font-size: 34px;
+}
+.variant-b-voxel.m1-studio .vx-gds dl {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+.variant-b-voxel.m1-studio .vx-gds dt {
+  color: var(--teal-deep);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.variant-b-voxel.m1-studio .vx-gds dd {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.variant-b-voxel.m1-studio .vx-gds-lists {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.variant-b-voxel.m1-studio .vx-gds-lists small {
+  color: var(--teal-deep);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.variant-b-voxel.m1-studio .vx-gds-lists p {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.variant-b-voxel.m1-studio .vx-gds-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.variant-b-voxel.m1-studio .vx-swatches {
+  display: flex;
+  gap: 6px;
+}
+.variant-b-voxel.m1-studio .vx-swatches i {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--ink);
+  border-radius: 3px;
+}
+.variant-b-voxel.m1-studio .vx-spec-actions {
+  display: grid;
+  gap: 8px;
+}
+.variant-b-voxel.m1-studio .vx-pins {
+  display: grid;
+  gap: 6px;
+  font-size: 12.5px;
+}
+.variant-b-voxel.m1-studio .vx-pins label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.variant-b-voxel.m1-studio .vx-spec {
+  overflow: auto;
+  align-content: start;
+}
+.variant-b-voxel.m1-studio .vx-direction {
+  min-width: 0;
+  height: calc(100vh - 194px);
+  max-height: calc(100vh - 194px);
+}
+.variant-b-voxel.m1-studio .voxel-concept-host .concept-plan-list,
+.variant-b-voxel.m1-studio .voxel-concept-host .package-summary-grid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+.variant-b-voxel.m1-studio .voxel-concept-host .full-revision-history {
+  max-height: 220px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  min-height: 0;
+  padding-right: 4px;
+}
+.variant-b-voxel.m1-studio .vx-understand {
+  align-items: start;
+}
+.variant-b-voxel.m1-studio .vx-rail {
+  height: calc(100vh - 194px);
+  max-height: calc(100vh - 194px);
+}
+.variant-b-voxel.m1-studio .vx-rail-world {
+  min-height: 160px;
+}
+
+@media (max-width: 980px) {
+  .variant-b-voxel.m1-studio .vx-start,
+  .variant-b-voxel.m1-studio .vx-understand,
+  .variant-b-voxel.m1-studio .vx-signoff,
+  .variant-b-voxel.m1-studio .vx-gds-layout,
+  .variant-b-voxel.m1-studio .vx-gds-lists {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Rusty sits in leftover paper, never on a control. He is position:absolute
+   on the 100vh shell (a sibling of the stage), so stage scroll does not
+   move or clip him. data-mascot=off keeps him mounted and seated.
+
+   Home / shared-understanding / game-design have no data-mascot-frame (the
+   prototype only frames interrogation, look-dev, and the finale). Free-mode
+   parking therefore falls through to the prototype .vx-mascot[data-screen]
+   rules so he stays the small corner robot, not a full-column capture dock.
+
+   Frameless worlds size to the prototype's stage fill (100vh − topbar 62 −
+   hotbar 88 − stage padding 44) so .vx-world keeps its aspect instead of
+   being squashed by a 1fr leftover row. The resume list stacks under the
+   home world and the stage scroller takes the overflow. */
+.variant-b-voxel.m1-studio[data-mascot="off"] .vx-mascot {
+  opacity: 0;
+  visibility: hidden;
+}
+.variant-b-voxel.m1-studio .vx-start {
+  align-items: start;
+}
+.variant-b-voxel.m1-studio .vx-start-copy {
+  align-content: center;
+  min-width: 0;
+  min-height: calc(100vh - 194px);
+}
+.variant-b-voxel.m1-studio .vx-home-side {
+  display: grid;
+  grid-template-rows: auto auto;
+  align-content: start;
+  gap: 14px;
+  min-width: 0;
+  min-height: 0;
+}
+.variant-b-voxel.m1-studio .vx-home-side .vx-start-world,
+.variant-b-voxel.m1-studio .vx-signoff-world,
+.variant-b-voxel.m1-studio .vx-gds-layout .vx-signoff-world {
+  height: calc(100vh - 194px);
+  min-height: calc(100vh - 194px);
+}
+.variant-b-voxel.m1-studio .vx-mascot[data-screen="question"] {
+  right: auto;
+  left: calc(var(--vx-gutter) + 12px);
+  bottom: 108px;
+  width: min(18vw, 260px);
+  height: min(28%, 220px);
+}
+.variant-b-voxel.m1-studio .vx-mascot[data-screen="direction"] {
+  right: auto;
+  left: calc(var(--vx-gutter) + 24px);
+  bottom: 196px;
+  width: min(16vw, 240px);
+  height: min(22%, 180px);
+}
+.variant-b-voxel.m1-studio .vx-mascot[data-screen="package"] {
+  right: calc(var(--vx-gutter) + 6px);
+  bottom: calc(100% - 176px);
+  width: min(22vw, 280px);
+  height: 96px;
+}
+.variant-b-voxel.m1-studio:has(.concept-plan-review)
+  .vx-mascot[data-screen="concepts"] {
+  right: auto;
+  left: 22px;
+  bottom: 100px;
+  width: min(16vw, 260px);
+  height: min(26%, 200px);
+}
+
+@media (max-width: 1599px) {
+  .variant-b-voxel.m1-studio .vx-project-list {
+    max-height: 180px;
+  }
+  .variant-b-voxel.m1-studio .vx-mascot[data-screen="question"] {
+    width: min(16vw, 200px);
+    height: min(22%, 160px);
+  }
+  .variant-b-voxel.m1-studio .vx-mascot[data-screen="direction"] {
+    bottom: 188px;
+    width: min(14vw, 180px);
+    height: min(18%, 140px);
+  }
+  .variant-b-voxel.m1-studio:has(.concept-plan-review)
+    .vx-mascot[data-screen="concepts"] {
+    left: 18px;
+    bottom: 96px;
+    width: min(16vw, 180px);
+    height: 110px;
+  }
+  .variant-b-voxel.m1-studio .voxel-concept-host .concept-plan-review {
+    padding-bottom: 132px;
+  }
+}
+
+@media (max-width: 1365px) {
+  .variant-b-voxel.m1-studio:has(.concept-plan-review)
+    .vx-mascot[data-screen="concepts"] {
+    height: 88px;
+    width: min(16vw, 150px);
+  }
+}

@@ -1,5 +1,44 @@
 # Fulcrum
 
+## 2026-08-22 — Invented mascot frames made Rusty a giant
+
+Task G wrapped the studio home/signoff/game-design dioramas in
+`data-mascot-frame="capture"` that the prototype never uses, so
+`measureDock` filled those columns and Rusty rendered at ~1034×459
+instead of the free-mode 560×419. I stripped the extra frames, sized
+the worlds to the prototype's stage fill so they keep the 711/1028
+aspect, and let CSS park him as the small corner robot again. Same
+thing on the complete screen: Task F's max-content stage rows collapsed
+the finale's `height:100%` world to a 364px band, and restoring the
+prototype's 1fr stretch filled it to 725px.
+
+## 2026-08-21 — Regen was a one-shot; budget is the real gate
+
+The coordinator threw after the first concept regen, so a later direction
+change that staled that slot deadlocked the project. Zach's call: regenerate
+as many times as it takes, and let `reserveBudget` refuse at $0.01 a shot.
+I ripped the cap, added `POST /api/projects/:id/budget` so a
+`budget-refused` key can resume after a raise, and the same idempotency row
+stays on `intent-recorded` until the fake runner actually runs.
+
+## 2026-08-21 — JS .click() hid an unscrollable studio
+
+The shared-understanding CTA sat 26px under the fold at 1920×911 and
+nothing on the page could scroll. Playwright (and I) kept calling
+`.click()` on the button, which ignores visibility, so the layout bug
+never showed up until a real mouse got stuck. The prototype's screens
+each own an overflow-y panel; M1Studio didn't, and the World Forge
+shell is `height: 100vh; overflow: hidden`. Stage is now the scroller,
+scoped under `.m1-studio` so the prototype stays put.
+
+## 2026-08-21 — Direction approval needs a hash the snapshot did not have
+
+Wiring World Forge to the real M1 coordinator, I could approve a Game Design Spec from `state.gameDesignSpec.artifact.sha256` and a concept set from `state.conceptSet.artifact.sha256`, but visual-direction approval targets the _bible_ revision, not the direction set. `VisualDirection` only carries `revisionId`. Tests cheat with `repository.getRevision()`. The UI cannot. Additive snapshot field `visualDirectionRevisions` (revisionId → RevisionRef) unblocked the approval POST without changing the stored direction document.
+
+## 2026-08-21 — Budget refusal was poisoning paid idempotency keys
+
+Live Meshy submit reserved budget and checked env before fetch, then the ensure() catch treated that throw like a mid-flight provider failure and wrote `submission-unknown`. Topping up the budget did nothing; the same key was stuck on "will not create another paid job" even though Meshy never saw the request. Fix was a typed preflight refusal (`budget-refused` / `provider-unconfigured`) that stays on `intent-recorded` so the key is retryable, and only an actual fetch throw still goes unknown.
+
 ## 2026-08-21 — Grok's headless mode fails by succeeding
 
 First two Grok CLI subagent runs burned 11 minutes combined, exited 0, and changed nothing. In print mode the first tool call that needs interactive approval cancels the whole run with stopReason "cancelled" and a clean exit code, and --permission-mode acceptEdits is simply not honored there, so both agents read the repo, narrated a plan, and died the moment they tried to edit. A 4-cent probe run with --output-format json exposed the stopReason; --permission-mode auto was the only mode of five that actually completed. Third launch with auto: both agents landed their full tasks.

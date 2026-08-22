@@ -10,7 +10,7 @@ import {
 import { fileURLToPath } from "node:url";
 
 import cors from "@fastify/cors";
-import { M0_FIXTURE_BRIEF } from "@fulcrum/domain";
+import { M0_FIXTURE_BRIEF, isProviderPreflightError } from "@fulcrum/domain";
 import {
   inspectExecutionProviders,
   runCodexSubscriptionImage,
@@ -172,6 +172,11 @@ server.post<{ Params: { projectId: string } }>(
   "/api/projects/:projectId/advance",
   async (request) => coordinator.advance(request.params.projectId),
 );
+server.post<{ Params: { projectId: string }; Body: { budgetUsd: number } }>(
+  "/api/projects/:projectId/budget",
+  async (request) =>
+    coordinator.increaseBudget(request.params.projectId, request.body),
+);
 server.post<{ Params: { projectId: string } }>(
   "/api/projects/:projectId/approvals/visual-direction",
   async (request) =>
@@ -308,6 +313,7 @@ server.setErrorHandler((error, _request, reply) => {
     error:
       statusCode === 500 ? "Fulcrum could not complete the request." : message,
     detail: message,
+    ...(isProviderPreflightError(error) ? { code: error.code } : {}),
   });
 });
 

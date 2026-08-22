@@ -464,7 +464,7 @@ export const ProjectStateSchema = z.object({
   directionReplacementCount: z.number().int().min(0).max(1).optional(),
   focusedDirectionChangeCount: z.number().int().min(0).max(1).optional(),
   conceptRegenerationCounts: z
-    .record(z.string().min(1), z.number().int().min(0).max(1))
+    .record(z.string().min(1), z.number().int().min(0))
     .optional(),
   brief: RevisionRefSchema,
   creativeCapabilities: RevisionRefSchema.optional(),
@@ -501,6 +501,9 @@ export const ProjectSnapshotSchema = z.object({
   gameDesign: GameDesignDigestSchema.optional(),
   gameDesignSpec: GameDesignSpecSchema.optional(),
   visualDirections: VisualDirectionSetSchema.optional(),
+  visualDirectionRevisions: z
+    .record(z.string().min(1), RevisionRefSchema)
+    .optional(),
   conceptPlan: ConceptPlanSchema.optional(),
   visualBible: VisualBibleSchema.optional(),
   concept: ConceptDocumentSchema.optional(),
@@ -625,6 +628,11 @@ export type ReviseGameDesignSpecInput = z.infer<
   typeof ReviseGameDesignSpecInputSchema
 >;
 
+export const IncreaseBudgetInputSchema = z.object({
+  budgetUsd: z.number().positive(),
+});
+export type IncreaseBudgetInput = z.infer<typeof IncreaseBudgetInputSchema>;
+
 export const ConfigurationStatusSchema = z.object({
   defaultMode: ProviderModeSchema,
   defaultAssetProvider: AssetProviderSchema,
@@ -693,3 +701,76 @@ export type ProductionOutcome<T> =
   | { status: "pending"; requestId: string; resumeAfter: string }
   | { status: "ready"; requestId: string; value: T }
   | { status: "failed"; requestId: string; error: BlockedReason };
+
+export const ProviderPreflightCodeSchema = z.enum([
+  "budget-refused",
+  "provider-unconfigured",
+  "payload-invalid",
+]);
+export type ProviderPreflightCode = z.infer<typeof ProviderPreflightCodeSchema>;
+
+export class ProviderPreflightError extends Error {
+  readonly code: ProviderPreflightCode;
+
+  constructor(code: ProviderPreflightCode, message: string) {
+    super(message);
+    this.name = "ProviderPreflightError";
+    this.code = code;
+  }
+}
+
+export const isProviderPreflightError = (
+  error: unknown,
+): error is ProviderPreflightError => error instanceof ProviderPreflightError;
+
+export const preflightCodeFromPayload = (
+  payload: Record<string, unknown>,
+): ProviderPreflightCode | undefined => {
+  const parsed = ProviderPreflightCodeSchema.safeParse(payload.preflightCode);
+  return parsed.success ? parsed.data : undefined;
+};
+
+export const providerCallStartedAtFromPayload = (
+  payload: Record<string, unknown>,
+): string | undefined =>
+  typeof payload.providerCallStartedAt === "string"
+    ? payload.providerCallStartedAt
+    : undefined;
+
+export type DurableSubmissionDecision =
+  | { kind: "ready"; submission: SubmissionRecord }
+  | { kind: "terminal-failed"; submission: SubmissionRecord }
+  | { kind: "inspect"; submission: SubmissionRecord }
+  | { kind: "unknown-interruption"; submission: SubmissionRecord }
+  | { kind: "proceed"; submission?: SubmissionRecord };
+
+/**
+ * Shared start-of-ensure decision for M0 asset jobs and M1 concept ImageGen.
+ * Live restart after a provider call has started stays submission-unknown.
+ * A typed preflight refusal leaves the intent retryable.
+ */
+export const decideDurableSubmission = (
+  prior: SubmissionRecord | undefined,
+  mode: ProviderMode,
+): DurableSubmissionDecision => {
+  if (!prior) return { kind: "proceed" };
+  if (prior.status === "ready") return { kind: "ready", submission: prior };
+  if (prior.status === "failed" || prior.status === "submission-unknown")
+    return { kind: "terminal-failed", submission: prior };
+  if (prior.status === "pending" && prior.externalJobId)
+    return { kind: "inspect", submission: prior };
+  if (
+    mode === "live" &&
+    prior.status === "intent-recorded" &&
+    preflightCodeFromPayload(prior.payload) &&
+    !providerCallStartedAtFromPayload(prior.payload)
+  )
+    return { kind: "proceed", submission: prior };
+  if (
+    mode === "live" &&
+    (prior.status === "intent-recorded" ||
+      (prior.status === "pending" && !prior.externalJobId))
+  )
+    return { kind: "unknown-interruption", submission: prior };
+  return { kind: "proceed", submission: prior };
+};

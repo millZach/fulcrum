@@ -2,8 +2,14 @@ import { randomUUID } from "node:crypto";
 
 import {
   classifyFocusedDirectionChange,
+  isM1LiveAuthorized,
+  m1LiveAuthorizationMessage,
   M1CreativeDevelopment,
 } from "@fulcrum/creative";
+import {
+  runCodexSubscriptionImage,
+  type SubscriptionImageRunner,
+} from "@fulcrum/execution";
 import { z } from "zod";
 
 import {
@@ -35,21 +41,34 @@ const now = (): string => new Date().toISOString();
 
 const publicActor = "local-creative-director";
 
+export type M1CoordinatorOptions = {
+  imageRunner?: SubscriptionImageRunner;
+};
+
 export class M1Coordinator {
   private readonly creative: M1CreativeDevelopment;
 
-  constructor(readonly repository: ProjectRepository) {
-    this.creative = new M1CreativeDevelopment(repository);
+  constructor(
+    readonly repository: ProjectRepository,
+    options: M1CoordinatorOptions = {},
+  ) {
+    this.creative = new M1CreativeDevelopment(
+      repository,
+      options.imageRunner ?? runCodexSubscriptionImage,
+    );
   }
 
   async create(input: unknown): Promise<ProjectSnapshot> {
     const parsed = CreateProjectInputSchema.parse(input);
     if (parsed.milestone !== "m1")
       throw new Error("M1 project creation requires milestone m1.");
-    if (parsed.mode !== "replay")
-      throw new Error(
-        "Live M1 is not yet authorized or supported. Use replay mode for this implementation slice.",
-      );
+    if (parsed.mode === "live") {
+      if (!isM1LiveAuthorized()) throw new Error(m1LiveAuthorizationMessage());
+      if (parsed.imageProvider !== "openai-subscription")
+        throw new Error(
+          "Live M1 concept generation uses the signed-in OpenAI subscription ImageGen route. Set imageProvider to openai-subscription. M1 does not start a paid image-to-3D job.",
+        );
+    }
 
     const projectId = randomUUID();
     const runId = randomUUID();
@@ -95,7 +114,7 @@ export class M1Coordinator {
     });
     this.event(projectId, runId, "project.created", {
       milestone: "m1",
-      mode: "replay",
+      mode: parsed.mode,
       budgetUsd: parsed.budgetUsd,
       rightsConfirmed: true,
     });
@@ -435,22 +454,6 @@ export class M1Coordinator {
           newDirectionRevisionId: selected.revisionId,
         })
       : undefined;
-    if (rebasedConceptSet) {
-      const rebased = ConceptSetSchema.parse(
-        this.repository.resolveRevision(rebasedConceptSet),
-      );
-      const exhausted = rebased.slots.filter(
-        (slot) =>
-          !slot.selectedRevisionId &&
-          (state.conceptRegenerationCounts?.[slot.slotId] ?? 0) >= 1,
-      );
-      if (exhausted.length > 0)
-        throw new Error(
-          `The direction change would stale concept slots whose regeneration allowance is already used: ${exhausted
-            .map((slot) => slot.slotId)
-            .join(", ")}.`,
-        );
-    }
     const {
       directionApproval: _priorDirectionApproval,
       conceptSetApproval: _priorConceptSetApproval,
@@ -625,12 +628,15 @@ export class M1Coordinator {
       directionSet,
       selectedDirectionRevisionId,
       conceptPlan,
+      mode: state.mode,
+      imageProvider: state.imageProvider,
     });
     const concepts = ConceptSetSchema.parse(
       this.repository.resolveRevision(conceptSet),
     );
+    const latest = this.repository.getProject(projectId);
     this.repository.saveProject({
-      ...state,
+      ...latest,
       conceptSet,
       conceptRegenerationCounts: Object.fromEntries(
         concepts.slots.map((slot) => [slot.slotId, 0]),
@@ -663,11 +669,6 @@ export class M1Coordinator {
       parsed.conceptSetRevisionId,
       "concept set",
     );
-    const count = state.conceptRegenerationCounts?.[parsed.slotId] ?? 0;
-    if (count >= 1)
-      throw new Error(
-        `Concept slot ${parsed.slotId} has already been regenerated.`,
-      );
     const setBefore = ConceptSetSchema.parse(
       this.repository.resolveRevision(current),
     );
@@ -690,13 +691,17 @@ export class M1Coordinator {
       ),
       conceptSet: current,
       slotId: parsed.slotId,
+      mode: state.mode,
+      imageProvider: state.imageProvider,
       ...(parsed.notes ? { notes: parsed.notes } : {}),
     });
+    const latest = this.repository.getProject(projectId);
+    const count = latest.conceptRegenerationCounts?.[parsed.slotId] ?? 0;
     this.repository.saveProject({
-      ...state,
+      ...latest,
       conceptSet: next,
       conceptRegenerationCounts: {
-        ...(state.conceptRegenerationCounts ?? {}),
+        ...(latest.conceptRegenerationCounts ?? {}),
         [parsed.slotId]: count + 1,
       },
     });
@@ -870,6 +875,16 @@ export class M1Coordinator {
         : {}),
       ...(gameDesignSpec ? { gameDesignSpec } : {}),
       ...(visualDirections ? { visualDirections } : {}),
+      ...(visualDirections
+        ? {
+            visualDirectionRevisions: Object.fromEntries(
+              visualDirections.directions.map((direction) => [
+                direction.revisionId,
+                this.repository.getRevision(direction.revisionId),
+              ]),
+            ),
+          }
+        : {}),
       ...(selectedBible ? { visualBible: selectedBible } : {}),
       ...(conceptPlan ? { conceptPlan } : {}),
       ...(conceptSet ? { conceptSet, conceptDocuments } : {}),
