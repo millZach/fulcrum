@@ -1,3 +1,20 @@
+export class ApiError extends Error {
+  readonly status: number;
+  readonly detail: string;
+  readonly code: string | undefined;
+
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = message;
+    if (code !== undefined) this.code = code;
+  }
+}
+
+export const isApiError = (error: unknown): error is ApiError =>
+  error instanceof ApiError;
+
 export const api = async <T>(
   path: string,
   options?: RequestInit,
@@ -9,8 +26,17 @@ export const api = async <T>(
     ...options,
     headers,
   });
-  const payload = (await response.json()) as T & { detail?: string };
-  if (!response.ok)
-    throw new Error(payload.detail ?? `Request failed (${response.status}).`);
+  const payload = (await response.json()) as T & {
+    detail?: string;
+    error?: string;
+    code?: string;
+  };
+  if (!response.ok) {
+    const message =
+      payload.detail ?? payload.error ?? `Request failed (${response.status}).`;
+    if (typeof payload.code === "string")
+      throw new ApiError(message, response.status, payload.code);
+    throw new ApiError(message, response.status);
+  }
   return payload;
 };

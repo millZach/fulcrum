@@ -22,6 +22,32 @@ import OpenAI from "openai";
 import sharp from "sharp";
 
 export * from "./m1.js";
+export {
+  ensureDurableSubscriptionImage,
+  isM1LiveAuthorized,
+  m1ConceptImageIdempotencyKey,
+  m1LiveAuthorizationMessage,
+  M1_LIVE_AUTHORIZATION_ENV,
+} from "./durable-image.js";
+export {
+  DEFAULT_ELEVENLABS_SFX_COST_USD,
+  ELEVENLABS_API_KEY_ENV,
+  ELEVENLABS_OUTPUT_FORMAT,
+  ELEVENLABS_PROMPT_INFLUENCE,
+  ELEVENLABS_SFX_COST_ENV,
+  ELEVENLABS_SOUND_MODEL,
+  ELEVENLABS_SOUND_URL,
+  FULCRUM_WAV_MODEL,
+  elevenLabsSfxCostUsd,
+  elevenLabsSoundGenerationRequest,
+  ensureDurableSound,
+  m1SoundIdempotencyKey,
+  promptHashFor,
+  renderDeterministicWav,
+  runElevenLabsSound,
+  type SoundGenerationRunner,
+} from "./durable-sound.js";
+export { deriveSoundPlan, SoundPalette } from "./sound-palette.js";
 
 const replayCreativeOutput: CreativeOutput = CreativeOutputSchema.parse({
   gameDesign: {

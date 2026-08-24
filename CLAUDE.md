@@ -1,32 +1,39 @@
 # Fulcrum — project instructions
 
-## Subagents: Grok only (overrules the global Opus 5 rule)
+## Subagents: GPT (gpt-5.6-sol) only (overrules the global Opus 5 rule)
 
 In this project, ALL subagent work — coding, research, verification,
-audits, writing, design review — runs on **Grok** through the Grok Build
-CLI. Do not use Claude (Opus 5) subagents here; this deliberately
-overrules the global user CLAUDE.md rule. Claude orchestrates the Grok
-subagents and reviews their output; Grok does the work.
+audits, writing, design review — runs on **gpt-5.6-sol** through the
+Codex CLI at **xhigh** reasoning effort. Do not use Claude (Opus 5) or
+Grok subagents here; this deliberately overrules the global user
+CLAUDE.md rule. Claude orchestrates the GPT subagents and reviews their
+output; GPT does the work. (Replaced the Grok-only rule on 2026-08-22
+at Zach's request. A Grok run already in flight when this rule landed
+finishes normally.)
 
 Standard invocation (headless, single-turn):
 
 ```bash
-grok --model grok-4.6 --reasoning-effort xhigh --prompt-file <task.md> \
-  --cwd /home/zach/projects/Fulcrum --permission-mode auto --max-turns 150
+codex exec --model gpt-5.6-sol -c model_reasoning_effort="xhigh" \
+  --cd /home/zach/projects/Fulcrum -s workspace-write \
+  -o <last-message.txt> - < <task.md>
 ```
 
-- Model is **grok-4.6** at **xhigh** reasoning effort, for every subagent.
-- **Permission mode must be `auto` for headless runs.** In print mode
-  (`-p` / `--prompt-file`) the first tool call that needs interactive
-  approval cancels the whole run with `stopReason: "cancelled"` and
-  exit 0 — `acceptEdits` and `dontAsk` both hit this and the agent
-  silently does nothing (verified 2026-08-21). `--always-approve` is
-  blocked by the Claude Code permission classifier; don't use it.
-- Prefer `--prompt-file` over `-p` for multi-paragraph task briefs;
-  `--output-format json` (or `--json-schema`) when the result needs to
-  be parsed; run several in parallel as background Bash tasks when the
-  work is independent.
-- Review Grok's output before accepting it into the repo — orchestrator
+- Model is **gpt-5.6-sol** at **xhigh** effort for every subagent.
+  Verified 2026-08-22: `-s workspace-write` headless runs really do
+  edit files (no silent-cancel failure mode), and `--strict-config`
+  accepts `model_reasoning_effort="xhigh"`.
+- **No fast mode headless** (checked 2026-08-22): the account rejects a
+  `gpt-5.6-sol-fast` model with a 400, `fast_mode` is not a config key,
+  and the `features.fast_mode` flag (already enabled) only affects the
+  interactive UI. If a fast variant appears later, prefer it for
+  mechanical tasks.
+- Pipe multi-paragraph task briefs via stdin (`- < task.md`); use
+  `--output-schema <file>` when the result must be parsed, and
+  `-o <file>` to capture the final message. Run independent tasks in
+  parallel as background Bash tasks.
+- If a run stalls on approvals, add `--approve-for-me` before reaching
+  for anything more permissive; never use
+  `--dangerously-bypass-approvals-and-sandbox`.
+- Review GPT's output before accepting it into the repo — orchestrator
   reviews everything.
-- (Context: as of 2026-08-20 the account's CLI exposes only `grok-4.6`
-  and `grok-4.5`; the `grok-4.6-fast` variant is not available.)

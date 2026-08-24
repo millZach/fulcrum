@@ -1,22 +1,38 @@
+import type {
+  SoundGenerationRunner,
+  StructuredModelExecution,
+} from "@fulcrum/creative";
 import {
   CreateProjectInputSchema,
+  hasMeteredRoutes,
+  IncreaseBudgetInputSchema,
   type ApprovalInput,
   type CreateProjectInput,
   type ProjectSnapshot,
 } from "@fulcrum/domain";
+import type { SubscriptionImageRunner } from "@fulcrum/execution";
 import { ProjectRepository } from "@fulcrum/project";
 
 import { M0Coordinator } from "./coordinator.js";
 import { M1Coordinator } from "./m1-coordinator.js";
+
+export type ProjectCoordinatorOptions = {
+  imageRunner?: SubscriptionImageRunner;
+  execution?: StructuredModelExecution;
+  soundRunner?: SoundGenerationRunner;
+};
 
 /** Routes a project to its milestone-specific state machine. */
 export class ProjectCoordinator {
   readonly m0: M0Coordinator;
   readonly m1: M1Coordinator;
 
-  constructor(readonly repository: ProjectRepository) {
+  constructor(
+    readonly repository: ProjectRepository,
+    options: ProjectCoordinatorOptions = {},
+  ) {
     this.m0 = new M0Coordinator(repository);
-    this.m1 = new M1Coordinator(repository);
+    this.m1 = new M1Coordinator(repository, options);
   }
 
   configuration() {
@@ -59,9 +75,7 @@ export class ProjectCoordinator {
 
   approveSlice(projectId: string, input: ApprovalInput): ProjectSnapshot {
     if (this.isM1(projectId))
-      throw new Error(
-        "M1 ends at concept-set approval and has no visual slice.",
-      );
+      throw new Error("M1 ends at sound-set approval and has no visual slice.");
     return this.m0.approveSlice(projectId, input);
   }
 
@@ -69,6 +83,33 @@ export class ProjectCoordinator {
     if (this.isM1(projectId))
       throw new Error("M1 does not produce a 3D scene review image.");
     return this.m0.storeReviewImage(projectId, dataUrl);
+  }
+
+  increaseBudget(projectId: string, input: unknown): ProjectSnapshot {
+    const parsed = IncreaseBudgetInputSchema.parse(input);
+    const state = this.repository.getProject(projectId);
+    if (state.stage === "complete" || state.stage === "blocked")
+      throw new Error(
+        "A completed or blocked project cannot raise its budget.",
+      );
+    if (state.milestone === "m1" && !hasMeteredRoutes(state))
+      throw new Error("This project has no metered routes to budget.");
+    if (!(parsed.budgetUsd > state.budgetUsd))
+      throw new Error(
+        `The new budget must be greater than the current $${state.budgetUsd.toFixed(2)} cap.`,
+      );
+    const previousBudgetUsd = state.budgetUsd;
+    this.repository.saveProject({
+      ...state,
+      budgetUsd: parsed.budgetUsd,
+    });
+    this.repository.appendEvent({
+      projectId,
+      runId: state.runId,
+      type: "budget.increased",
+      payload: { previousBudgetUsd, budgetUsd: parsed.budgetUsd },
+    });
+    return this.snapshot(projectId);
   }
 
   private isM1(projectId: string): boolean {

@@ -40,6 +40,12 @@ import * as THREE from "three";
 
 const mascotModelUrl = "/m1-prototype/rusty-rover.glb";
 
+/** R3F's delta comes from its clock, so it includes wall time lost while the
+ *  browser throttles animation frames. Keep that time instead of turning a
+ *  hidden 12-second interval into one 60 ms frame. */
+export const mascotFrameSeconds = (delta: number): number =>
+  Math.max(delta, 0);
+
 /* The contract is written in Blender metres; three.js gets (x, y, z) →
    (x, z, -y). Park him at `stand` while Poof and Wave play and at `seat` for
    everything after — ClimbUp's own root track carries him between the two. */
@@ -106,7 +112,7 @@ const mascotView = {
 const frameView = { azimuth: 45, elevation: 32 };
 
 /** Which kind of frame he has been handed, written on the frame itself. */
-type DockMode = "capture" | "panel" | "finale";
+type DockMode = "capture" | "panel" | "finale" | "perch";
 
 /** How big his blocks are next to the diorama's, per frame. 1 would be honest
  *  — and would make him three diorama-blocks tall, which owns the frame — so
@@ -117,6 +123,9 @@ const frameFit: Record<DockMode, { min: number; max: number }> = {
   capture: { min: 0.38, max: 0.62 },
   panel: { min: 0.4, max: 0.9 },
   finale: { min: 0.22, max: 0.36 },
+  /* A perch has no diorama to scale against — the workshop simply fits its
+     box — so these numbers are never read. */
+  perch: { min: 0, max: 0 },
 };
 
 function frameBasis(azimuth: number, elevation: number) {
@@ -260,12 +269,8 @@ function measureDock(host: HTMLDivElement): MascotDock | null {
   const parent = host.offsetParent as HTMLElement | null;
   if (!parent) return null;
   const frame = parent.querySelector<HTMLElement>("[data-mascot-frame]");
-  const world = frame?.querySelector<HTMLElement>(".vx-world");
-  if (!frame || !world) return null;
+  if (!frame) return null;
   const mode = (frame.dataset.mascotFrame ?? "capture") as DockMode;
-  const unit = Number.parseFloat(
-    getComputedStyle(world).getPropertyValue("--u"),
-  );
   /* Laid-out geometry, not painted geometry: the stage plays a 0.5 s entrance
      transform on every screen change, and a dock measured off a rectangle that
      is still sliding would land him next to the frame and then have to correct
@@ -284,14 +289,53 @@ function measureDock(host: HTMLDivElement): MascotDock | null {
     box.left += node.offsetLeft;
     box.top += node.offsetTop;
   }
-  if (
-    !Number.isFinite(unit) ||
-    unit <= 0 ||
-    box.width < 40 ||
-    box.height < 40
-  ) {
-    return null;
+  if (box.width < 40 || box.height < 40) return null;
+
+  if (mode === "perch") {
+    /* A perch is a plain box in the layout with no diorama inside — the M1
+       studio hangs one in a card's header band so he sits with that card at
+       every viewport width and scrolls with it. The workshop simply fits the
+       box, parked against its bottom-right corner; `still` (below) keeps his
+       decisions from walking him off the shelf. */
+    const stage = stageGeometry(frameStageYaw);
+    const pad = 10;
+    const zoom = Math.min(
+      (box.width - pad * 2) / (stage.span.x1 - stage.span.x0),
+      (box.height - pad) / (stage.span.y1 - stage.span.y0),
+    );
+    if (!Number.isFinite(zoom) || zoom <= 0) return null;
+    const seatX = box.width - pad - stage.span.x1 * zoom;
+    const seatY = box.height - 2 - stage.span.y1 * zoom;
+    const { right, up } = frameBasis(frameView.azimuth, frameView.elevation);
+    const target = new THREE.Vector3()
+      .addScaledVector(right, -(seatX - box.width / 2) / zoom)
+      .addScaledVector(up, (seatY - box.height / 2) / zoom);
+    return {
+      mode,
+      left: box.left,
+      top: box.top,
+      width: box.width,
+      height: box.height,
+      zoom,
+      target: [target.x, target.y, target.z],
+      /* No diorama, so there is no block edge to hand over to. Nothing reads
+         this in perch mode: the snap target search finds no cubes and the
+         block dissolves in his hands. */
+      unit: 0,
+      yaw: stage.yaw,
+    };
   }
+
+  const world = frame.querySelector<HTMLElement>(".vx-world");
+  if (!world) return null;
+  /* Custom properties preserve their token stream, so responsive values such
+     as `clamp(...)` cannot be parsed as a number. A laid-out plate tile has
+     already resolved that expression to pixels. */
+  const tile = world.querySelector<HTMLElement>(".vx-plate i");
+  const unit = tile
+    ? Number.parseFloat(getComputedStyle(tile).width)
+    : Number.NaN;
+  if (!Number.isFinite(unit) || unit <= 0) return null;
 
   /* The near corner of the plate: the front of the world, the lowest thing in
      the frame, and the only edge of the grid he can reach without standing in
@@ -1015,12 +1059,10 @@ function MascotRover({
   }, [blocks, restock]);
 
   useFrame((_state, delta) => {
-    const step = Math.min(delta, 0.06);
+    const step = mascotFrameSeconds(delta);
 
-    /* The opening pause is counted off the render clock rather than a timer, so
-       the beat before he lands is a beat of *animation*: if the tab is
-       throttled or the frame loop is being stepped, the whole intro stays in
-       step. */
+    /* The opening pause follows the render clock, including elapsed wall time
+       after a throttled tab resumes. */
     if (!started.current) {
       waited.current += step * 1000;
       if (waited.current < pause) return;
@@ -1174,6 +1216,8 @@ export function MascotStage({
   decisions,
   onFlagPlaced,
   onPlace,
+  placeLevel,
+  queue = false,
   screen,
   startDelay = 1150,
 }: {
@@ -1182,6 +1226,15 @@ export function MascotStage({
   /** Called once, when the flag he carries lands on the finished world. */
   onFlagPlaced?: () => void;
   onPlace?: () => void;
+  /** Which diorama level the block he is carrying lands on. Optional and
+   *  additive: without it the snap aim stays `decisions`, the prototype's
+   *  contract. The studio passes its shown-level + 1 so that queued trips
+   *  land one level at a time in order. */
+  placeLevel?: number;
+  /** true keeps the whole backlog: one trip per queued decision, in order,
+   *  instead of collapsing a backlog to a single run (the default, which
+   *  the prototype relies on). */
+  queue?: boolean;
   /** Which World Forge screen is on: CSS parks him in that screen's free corner. */
   screen: string;
   startDelay?: number;
@@ -1189,8 +1242,8 @@ export function MascotStage({
   const host = useRef<HTMLDivElement>(null);
   const pending = useRef(0);
   const seen = useRef(decisions);
-  const level = useRef(decisions);
-  level.current = decisions;
+  const level = useRef(placeLevel ?? decisions);
+  level.current = placeLevel ?? decisions;
   const [dock, setDock] = useState<MascotDock | null>(null);
   const docked = useRef(dock);
   docked.current = dock;
@@ -1257,11 +1310,15 @@ export function MascotStage({
   useEffect(() => {
     if (decisions > seen.current) {
       /* Collapse a backlog: however many decisions land while he is out, he
-         only makes one more trip when he gets back. */
-      pending.current = 1;
+         only makes one more trip when he gets back. In queue mode every
+         queued decision keeps its own trip, so a multi-answer round lands
+         its blocks one walk at a time, in order. */
+      pending.current = queue
+        ? pending.current + (decisions - seen.current)
+        : 1;
     }
     seen.current = decisions;
-  }, [decisions]);
+  }, [decisions, queue]);
 
   /* The finale is the one performance nobody clicks for: the moment he is
      standing in the finished world's panel he goes and gets the flag. */
@@ -1300,11 +1357,21 @@ export function MascotStage({
     observer.observe(parent);
     const frame = parent.querySelector("[data-mascot-frame]");
     if (frame) observer.observe(frame);
+    /* Layout can also shift with nothing resizing: an error banner mounting
+       at the top of the stage pushes the whole screen — frame included —
+       down by its own height while the stage and the frame both keep their
+       boxes, which no ResizeObserver ever sees (and the banner does not
+       animate, so animationend never fires either). Structural changes are
+       the only way that happens, so watch for them directly; measureDock is
+       cheap and setDock already swallows a no-op re-measure. */
+    const mutations = new MutationObserver(measure);
+    mutations.observe(parent, { childList: true, subtree: true });
     /* Belt and braces for anything that settles late — a font swap, the
        scrollbar appearing, the stage entrance finishing. */
     parent.addEventListener("animationend", measure);
     return () => {
       parent.removeEventListener("animationend", measure);
+      mutations.disconnect();
       observer.disconnect();
     };
   }, [decisions, screen]);
@@ -1398,7 +1465,7 @@ export function MascotStage({
             pending={pending}
             snapTarget={snapTarget}
             startDelay={startDelay}
-            still={mode === "panel"}
+            still={mode === "panel" || mode === "perch"}
             yaw={dock?.yaw ?? 0}
           />
           {/* y must stay *below* 0: drei renders its blur passes against a

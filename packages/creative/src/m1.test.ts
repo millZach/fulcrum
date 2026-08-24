@@ -7,23 +7,41 @@ import {
   GameDesignSpecSchema,
   InterrogationStateSchema,
   M1ConceptDocumentSchema,
+  ProviderPreflightError,
+  ProviderUsageError,
   VisualDirectionSetSchema,
   type GameDesignSpec,
   type InterrogationState,
   type RevisionRef,
 } from "@fulcrum/domain";
 import { ProjectRepository } from "@fulcrum/project";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { m1ConceptImageIdempotencyKey } from "./durable-image.js";
 import {
+  hashText,
+  interrogationTranscriptKey,
+  m1TextIdempotencyKey,
+} from "./m1-live-text.js";
+import {
+  fitConceptPrompt,
   M1CreativeDevelopment,
+  M1_INTERROGATION_ROUND_CAP,
+  M1_TEXT_OPERATIONS,
   classifyFocusedDirectionChange,
+  pinnedAspectValuesEqual,
   type ArchitectureDecisionRecord,
   type ConceptPlan,
   type FocusedDirectionChange,
   type ProjectGlossary,
   type SkillProvisioningRecord,
+  type StructuredModelExecution,
 } from "./m1.js";
+
+const PNG_1x1 = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
 
 const roots: string[] = [];
 const repositories: ProjectRepository[] = [];
@@ -73,14 +91,14 @@ const answerValue = (branchId: string): string => {
   return values[branchId] ?? `Resolve ${branchId}`;
 };
 
-const resolveInterrogation = (
+const resolveInterrogation = async (
   repository: ProjectRepository,
   creative: M1CreativeDevelopment,
   context: { projectId: string; runId: string },
   brief: string,
   initial: RevisionRef,
   answer: (branchId: string) => string = answerValue,
-): RevisionRef => {
+): Promise<RevisionRef> => {
   let revision = initial;
   for (let guard = 0; guard < 10; guard += 1) {
     const state = InterrogationStateSchema.parse(
@@ -88,7 +106,7 @@ const resolveInterrogation = (
     );
     if (state.frontier.length === 0) return revision;
     const round = state.rounds.at(-1)!;
-    revision = creative.answerCurrentFrontier({
+    revision = await creative.answerCurrentFrontier({
       ...context,
       brief,
       interrogation: revision,
@@ -102,15 +120,15 @@ const resolveInterrogation = (
   throw new Error("Interrogation did not converge.");
 };
 
-const createApprovedIntent = (
+const createApprovedIntent = async (
   repository: ProjectRepository,
   creative: M1CreativeDevelopment,
   context: { projectId: string; runId: string },
   brief: string,
   answer: (branchId: string) => string = answerValue,
 ) => {
-  const started = creative.beginInterrogation({ ...context, brief });
-  const resolved = resolveInterrogation(
+  const started = await creative.beginInterrogation({ ...context, brief });
+  const resolved = await resolveInterrogation(
     repository,
     creative,
     context,
@@ -118,7 +136,7 @@ const createApprovedIntent = (
     started.interrogation,
     answer,
   );
-  return creative.confirmSharedUnderstanding({
+  return await creative.confirmSharedUnderstanding({
     ...context,
     brief,
     interrogation: resolved,
@@ -130,9 +148,9 @@ const CONSTRAINT_BRIEF =
   "Design a strict top-down survival game where a lone storm keeper restores a beacon in a flooded arena; routes must remain readable while dense weather sells the danger.";
 
 describe("M1CreativeDevelopment interrogation", () => {
-  it("provisions internal capabilities and follows the decision tree until its frontier is empty", () => {
+  it("provisions internal capabilities and follows the decision tree until its frontier is empty", async () => {
     const { repository, creative, context } = createHarness();
-    const started = creative.beginInterrogation({
+    const started = await creative.beginInterrogation({
       ...context,
       brief: CONSTRAINT_BRIEF,
     });
@@ -156,16 +174,16 @@ describe("M1CreativeDevelopment interrogation", () => {
     expect(initial.frontier.every(({ recommendation }) => recommendation)).toBe(
       true,
     );
-    expect(() =>
+    await expect(
       creative.confirmSharedUnderstanding({
         ...context,
         brief: CONSTRAINT_BRIEF,
         interrogation: started.interrogation,
         confirmedBy: "Zach",
       }),
-    ).toThrow(/frontier is unresolved/);
+    ).rejects.toThrow(/frontier is unresolved/);
 
-    const resolved = resolveInterrogation(
+    const resolved = await resolveInterrogation(
       repository,
       creative,
       context,
@@ -185,7 +203,7 @@ describe("M1CreativeDevelopment interrogation", () => {
     ).toBe(true);
     expect(finalState.frontier).toEqual([]);
 
-    const shared = creative.confirmSharedUnderstanding({
+    const shared = await creative.confirmSharedUnderstanding({
       ...context,
       brief: CONSTRAINT_BRIEF,
       interrogation: resolved,
@@ -212,16 +230,16 @@ describe("M1CreativeDevelopment interrogation", () => {
     );
   });
 
-  it("rejects a partial frontier instead of silently dropping decisions", () => {
+  it("rejects a partial frontier instead of silently dropping decisions", async () => {
     const { repository, creative, context } = createHarness();
-    const started = creative.beginInterrogation({
+    const started = await creative.beginInterrogation({
       ...context,
       brief: CONSTRAINT_BRIEF,
     });
     const state = InterrogationStateSchema.parse(
       repository.resolveRevision(started.interrogation),
     );
-    expect(() =>
+    await expect(
       creative.answerCurrentFrontier({
         ...context,
         brief: CONSTRAINT_BRIEF,
@@ -234,14 +252,14 @@ describe("M1CreativeDevelopment interrogation", () => {
           },
         ],
       }),
-    ).toThrow(/Every question/);
+    ).rejects.toThrow(/Every question/);
   });
 
-  it("creates an ADR only for a durable and surprising tradeoff", () => {
+  it("creates an ADR only for a durable and surprising tradeoff", async () => {
     const ordinary = createHarness();
     const ordinaryBrief =
       "Create a compact puzzle about reconnecting a clock through a small sequence of clear interactions in an abstract room.";
-    const ordinaryIntent = createApprovedIntent(
+    const ordinaryIntent = await createApprovedIntent(
       ordinary.repository,
       ordinary.creative,
       ordinary.context,
@@ -254,7 +272,7 @@ describe("M1CreativeDevelopment interrogation", () => {
     expect(ordinaryIntent.adr).toBeUndefined();
 
     const reversible = createHarness();
-    const reversibleIntent = createApprovedIntent(
+    const reversibleIntent = await createApprovedIntent(
       reversible.repository,
       reversible.creative,
       reversible.context,
@@ -267,7 +285,7 @@ describe("M1CreativeDevelopment interrogation", () => {
     expect(reversibleIntent.adr).toBeUndefined();
 
     const material = createHarness();
-    const materialIntent = createApprovedIntent(
+    const materialIntent = await createApprovedIntent(
       material.repository,
       material.creative,
       material.context,
@@ -276,9 +294,9 @@ describe("M1CreativeDevelopment interrogation", () => {
     expect(materialIntent.adr).toBeDefined();
   });
 
-  it("revises the Game Design Spec as a traceable immutable descendant", () => {
+  it("revises the Game Design Spec as a traceable immutable descendant", async () => {
     const { repository, creative, context } = createHarness();
-    const intent = createApprovedIntent(
+    const intent = await createApprovedIntent(
       repository,
       creative,
       context,
@@ -287,7 +305,7 @@ describe("M1CreativeDevelopment interrogation", () => {
     const before = repository.readArtifact(intent.gameDesignSpec.artifact);
     const change =
       "The beacon must remain readable through the storm from every safe route";
-    const revision = creative.reviseGameDesignSpec({
+    const revision = await creative.reviseGameDesignSpec({
       ...context,
       gameDesignSpec: intent.gameDesignSpec,
       change,
@@ -315,9 +333,40 @@ describe("M1CreativeDevelopment interrogation", () => {
 });
 
 describe("M1CreativeDevelopment visual direction", () => {
+  it("treats pin ordering, whitespace, and casing as non-material", () => {
+    const beforePalette = JSON.stringify([
+      { name: "Deep Pine", hex: "#173B36", role: "primary mass" },
+      { name: "Lantern", hex: "#F6D36B", role: "gameplay focus" },
+    ]);
+    const reorderedPalette = JSON.stringify([
+      { name: " lantern ", hex: "#f6d36b", role: "GAMEPLAY FOCUS" },
+      { name: "DEEP   PINE", hex: "#173b36", role: "Primary Mass" },
+    ]);
+    expect(
+      pinnedAspectValuesEqual("palette", beforePalette, reorderedPalette),
+    ).toBe(true);
+    expect(
+      pinnedAspectValuesEqual(
+        "lighting",
+        "Soft overcast fill with a warm objective glow",
+        "  SOFT   overcast fill with a WARM objective glow  ",
+      ),
+    ).toBe(true);
+    expect(
+      pinnedAspectValuesEqual(
+        "palette",
+        beforePalette,
+        JSON.stringify([
+          { name: "Deep Pine", hex: "#173B36", role: "primary mass" },
+          { name: "Lantern", hex: "#FFFFFF", role: "gameplay focus" },
+        ]),
+      ),
+    ).toBe(false);
+  });
+
   it("creates three distinct previews, replaces only an unselected direction, and preserves pinned aspects", async () => {
     const { repository, creative, context } = createHarness();
-    const intent = createApprovedIntent(
+    const intent = await createApprovedIntent(
       repository,
       creative,
       context,
@@ -406,12 +455,78 @@ describe("M1CreativeDevelopment visual direction", () => {
       record.pinnedAspects.every(({ before, after }) => before === after),
     ).toBe(true);
   });
+
+  it("allows a focused-change note to repeat an unchanged pinned value", async () => {
+    const { repository, creative, context } = createHarness();
+    const intent = await createApprovedIntent(
+      repository,
+      creative,
+      context,
+      CONSTRAINT_BRIEF,
+    );
+    const directionSet = await creative.generateVisualDirections({
+      ...context,
+      gameDesignSpec: intent.gameDesignSpec,
+    });
+    const selected = VisualDirectionSetSchema.parse(
+      repository.resolveRevision(directionSet),
+    ).directions[0]!;
+
+    const focused = await creative.makeFocusedDirectionChange({
+      ...context,
+      gameDesignSpec: intent.gameDesignSpec,
+      directionSet,
+      directionRevisionId: selected.revisionId,
+      change:
+        "Keep the palette exactly as it is and add restrained wind streaks around the objective",
+      pinnedAspects: ["palette"],
+    });
+    const record = repository.resolveRevision<FocusedDirectionChange>(
+      focused.changeRecord,
+    );
+    expect(record.pinnedAspects).toEqual([
+      expect.objectContaining({
+        name: "palette",
+        before: JSON.stringify(selected.visualBible.palette),
+        after: JSON.stringify(selected.visualBible.palette),
+      }),
+    ]);
+  });
+
+  it("refuses only after a focused change materially alters a pinned value", async () => {
+    const { repository, creative, context } = createHarness();
+    const intent = await createApprovedIntent(
+      repository,
+      creative,
+      context,
+      CONSTRAINT_BRIEF,
+    );
+    const directionSet = await creative.generateVisualDirections({
+      ...context,
+      gameDesignSpec: intent.gameDesignSpec,
+    });
+    const selected = VisualDirectionSetSchema.parse(
+      repository.resolveRevision(directionSet),
+    ).directions[0]!;
+
+    await expect(
+      creative.makeFocusedDirectionChange({
+        ...context,
+        gameDesignSpec: intent.gameDesignSpec,
+        directionSet,
+        directionRevisionId: selected.revisionId,
+        change:
+          "Replace the soft overcast lighting with a hard midnight moonlight key",
+        pinnedAspects: ["lighting"],
+      }),
+    ).rejects.toThrow(/altered pinned aspect lighting/i);
+  });
 });
 
 describe("M1CreativeDevelopment concept inheritance", () => {
   it("plans only demanded slots and regenerates one without changing its siblings", async () => {
     const { repository, creative, context } = createHarness();
-    const intent = createApprovedIntent(
+    const intent = await createApprovedIntent(
       repository,
       creative,
       context,
@@ -544,7 +659,12 @@ describe("M1CreativeDevelopment concept inheritance", () => {
     const { repository, creative, context } = createHarness();
     const brief =
       "Create a concise puzzle about reconnecting a broken clock through three repeatable interactions in a quiet abstract space.";
-    const intent = createApprovedIntent(repository, creative, context, brief);
+    const intent = await createApprovedIntent(
+      repository,
+      creative,
+      context,
+      brief,
+    );
     const directionSet = await creative.generateVisualDirections({
       ...context,
       gameDesignSpec: intent.gameDesignSpec,
@@ -566,7 +686,12 @@ describe("M1CreativeDevelopment concept inheritance", () => {
     const { repository, creative, context } = createHarness();
     const brief =
       "Design a top-down puzzle arena where rotating mirrors redirect a storm beam into a sealed observatory while every traversable path stays readable.";
-    const intent = createApprovedIntent(repository, creative, context, brief);
+    const intent = await createApprovedIntent(
+      repository,
+      creative,
+      context,
+      brief,
+    );
     const directionSetRevision = await creative.generateVisualDirections({
       ...context,
       gameDesignSpec: intent.gameDesignSpec,
@@ -677,7 +802,11 @@ describe("M1CreativeDevelopment concept inheritance", () => {
     );
     expect(refreshedDocument.name).toBe("Gameplay Anchor r02");
     expect(refreshedDocument.prompt).not.toBe(originalDocument.prompt);
-    expect(refreshedDocument.prompt).toContain("wind streaks");
+    expect(refreshedDocument.basePrompt).toBe(originalDocument.basePrompt);
+    expect(refreshedDocument.prompt).toBe(
+      `${originalDocument.basePrompt} Focused alternate request: Keep the streaks tight to the energized mirror.`,
+    );
+    expect(refreshedDocument.prompt).not.toContain("wind streaks");
     expect(refreshedDocument.sourceRevisionIds).toContain(
       focusedDirection.revisionId,
     );
@@ -717,7 +846,12 @@ describe("M1CreativeDevelopment validation brief matrix", () => {
     "produces schema-valid, brief-faithful creative artifacts for %s input",
     async (_shape, brief) => {
       const { repository, creative, context } = createHarness();
-      const intent = createApprovedIntent(repository, creative, context, brief);
+      const intent = await createApprovedIntent(
+        repository,
+        creative,
+        context,
+        brief,
+      );
       const spec = GameDesignSpecSchema.parse(
         repository.resolveRevision(intent.gameDesignSpec),
       );
@@ -791,11 +925,11 @@ describe("M1CreativeDevelopment validation brief matrix", () => {
 });
 
 describe("M1CreativeDevelopment correctness cluster", () => {
-  it("does not infer a negated camera from keyword array order", () => {
+  it("does not infer a negated camera from keyword array order", async () => {
     const { repository, creative, context } = createHarness();
     const brief =
       "Design a strict side-scrolling platformer where a runner clears collapsing ledges; the side-scrolling framing must never change.";
-    const intent = createApprovedIntent(
+    const intent = await createApprovedIntent(
       repository,
       creative,
       context,
@@ -829,6 +963,16 @@ describe("M1CreativeDevelopment correctness cluster", () => {
         "Add restrained wind streaks around the active objective",
       ),
     ).toBe("vfx");
+    expect(
+      classifyFocusedDirectionChange(
+        "Keep the palette exactly as it is and add deeper volumetric shapes",
+      ),
+    ).toBe("shape");
+    expect(
+      classifyFocusedDirectionChange(
+        "Add chipped volumetric forms while preserving the palette",
+      ),
+    ).toBe("shape");
     expect(() =>
       classifyFocusedDirectionChange(
         "Rebalance the emphasis toward the objective",
@@ -836,7 +980,7 @@ describe("M1CreativeDevelopment correctness cluster", () => {
     ).toThrow(/Recognizable categories: .*lighting.*vfx/);
 
     const { repository, creative, context } = createHarness();
-    const intent = createApprovedIntent(
+    const intent = await createApprovedIntent(
       repository,
       creative,
       context,
@@ -892,7 +1036,7 @@ describe("M1CreativeDevelopment correctness cluster", () => {
 
   it("replaces superseded lighting instead of concatenating it into compiled prompts", async () => {
     const { repository, creative, context } = createHarness();
-    const intent = createApprovedIntent(
+    const intent = await createApprovedIntent(
       repository,
       creative,
       context,
@@ -961,7 +1105,7 @@ describe("M1CreativeDevelopment correctness cluster", () => {
 
   it("compiles camera tokens from the approved spec instead of a three-quarter default", async () => {
     const { repository, creative, context } = createHarness();
-    const intent = createApprovedIntent(
+    const intent = await createApprovedIntent(
       repository,
       creative,
       context,
@@ -1011,5 +1155,1350 @@ describe("M1CreativeDevelopment correctness cluster", () => {
     ).prompt;
     expect(prompt).toMatch(/camera(?: \([^)]+\))?: [^.]*top-down/i);
     expect(prompt).not.toMatch(/three-quarter/i);
+  });
+});
+
+const planApprovedConcepts = async (brief = CONSTRAINT_BRIEF) => {
+  const { repository, creative, context } = createHarness();
+  const intent = await createApprovedIntent(
+    repository,
+    creative,
+    context,
+    brief,
+  );
+  const directionSet = await creative.generateVisualDirections({
+    ...context,
+    gameDesignSpec: intent.gameDesignSpec,
+  });
+  const directions = VisualDirectionSetSchema.parse(
+    repository.resolveRevision(directionSet),
+  );
+  const selected = directions.directions[0]!;
+  const planRevision = creative.planConcepts({
+    ...context,
+    brief,
+    gameDesignSpec: intent.gameDesignSpec,
+    directionSet,
+    selectedDirectionRevisionId: selected.revisionId,
+  });
+  return {
+    repository,
+    creative,
+    context,
+    intent,
+    directionSet,
+    selected,
+    planRevision,
+    plan: repository.resolveRevision<ConceptPlan>(planRevision),
+  };
+};
+
+describe("M1CreativeDevelopment plan-time concept prompts", () => {
+  it("stores the assembled prompt on each planned slot and sends it unchanged", async () => {
+    const planned = await planApprovedConcepts();
+    expect(planned.plan.slots.every((slot) => slot.prompt)).toBe(true);
+    const conceptSetRevision = await planned.creative.generateConceptSet({
+      ...planned.context,
+      gameDesignSpec: planned.intent.gameDesignSpec,
+      directionSet: planned.directionSet,
+      selectedDirectionRevisionId: planned.selected.revisionId,
+      conceptPlan: planned.planRevision,
+    });
+    const conceptSet = ConceptSetSchema.parse(
+      planned.repository.resolveRevision(conceptSetRevision),
+    );
+    for (const [index, slot] of conceptSet.slots.entries()) {
+      const document = M1ConceptDocumentSchema.parse(
+        planned.repository.resolveRevision(slot.revisions[0]!.revision),
+      );
+      expect(document.prompt).toBe(planned.plan.slots[index]!.prompt);
+      expect(document.basePrompt).toBe(planned.plan.slots[index]!.prompt);
+    }
+  });
+
+  it("sends an edited slot prompt byte-for-byte and keeps that base across regens", async () => {
+    const planned = await planApprovedConcepts();
+    const target = planned.plan.slots[0]!;
+    const edited =
+      "TASK-J-REPLAY-EDIT pixel-perfect lunar airlock, send this verbatim.";
+    const overridden = planned.creative.applyConceptPlanPromptOverrides({
+      ...planned.context,
+      conceptPlan: planned.planRevision,
+      overrides: [{ slotId: target.slotId, prompt: `  ${edited}  ` }],
+    });
+    const editedPlan =
+      planned.repository.resolveRevision<ConceptPlan>(overridden);
+    expect(editedPlan.slots[0]!.prompt).toBe(edited);
+    const conceptSetRevision = await planned.creative.generateConceptSet({
+      ...planned.context,
+      gameDesignSpec: planned.intent.gameDesignSpec,
+      directionSet: planned.directionSet,
+      selectedDirectionRevisionId: planned.selected.revisionId,
+      conceptPlan: overridden,
+    });
+    const first = M1ConceptDocumentSchema.parse(
+      planned.repository.resolveRevision(
+        ConceptSetSchema.parse(
+          planned.repository.resolveRevision(conceptSetRevision),
+        ).slots[0]!.revisions[0]!.revision,
+      ),
+    );
+    expect(first.prompt).toBe(edited);
+    expect(first.basePrompt).toBe(edited);
+
+    const regeneratedRevision = await planned.creative.regenerateConceptSlot({
+      ...planned.context,
+      gameDesignSpec: planned.intent.gameDesignSpec,
+      conceptSet: conceptSetRevision,
+      slotId: target.slotId,
+      notes: "Make the airlock taller",
+    });
+    const regenerated = ConceptSetSchema.parse(
+      planned.repository.resolveRevision(regeneratedRevision),
+    );
+    const second = M1ConceptDocumentSchema.parse(
+      planned.repository.resolveRevision(
+        regenerated.slots[0]!.revisions[1]!.revision,
+      ),
+    );
+    expect(second.basePrompt).toBe(edited);
+    expect(second.prompt).toBe(
+      `${edited} Focused alternate request: Make the airlock taller.`,
+    );
+
+    const twice = await planned.creative.regenerateConceptSlot({
+      ...planned.context,
+      gameDesignSpec: planned.intent.gameDesignSpec,
+      conceptSet: regeneratedRevision,
+      slotId: target.slotId,
+      notes: "Shift the key light left",
+    });
+    const third = M1ConceptDocumentSchema.parse(
+      planned.repository.resolveRevision(
+        ConceptSetSchema.parse(planned.repository.resolveRevision(twice))
+          .slots[0]!.revisions[2]!.revision,
+      ),
+    );
+    expect(third.basePrompt).toBe(edited);
+    expect(third.prompt).toBe(
+      `${edited} Focused alternate request: Shift the key light left.`,
+    );
+    expect(third.prompt).not.toContain("Make the airlock taller");
+  });
+
+  it("rejects unknown slot ids and whitespace-only prompts", async () => {
+    const planned = await planApprovedConcepts();
+    expect(() =>
+      planned.creative.applyConceptPlanPromptOverrides({
+        ...planned.context,
+        conceptPlan: planned.planRevision,
+        overrides: [{ slotId: "not-a-slot", prompt: "A valid prompt." }],
+      }),
+    ).toThrow(/no slot not-a-slot/);
+    expect(() =>
+      planned.creative.applyConceptPlanPromptOverrides({
+        ...planned.context,
+        conceptPlan: planned.planRevision,
+        overrides: [{ slotId: planned.plan.slots[0]!.slotId, prompt: "   " }],
+      }),
+    ).toThrow(/is empty/);
+  });
+
+  it("generates a plan without slot prompts via the legacy assembly", async () => {
+    const planned = await planApprovedConcepts();
+    const legacyPlan = planned.repository.writeRevision({
+      projectId: planned.context.projectId,
+      entityId: `${planned.context.projectId}:concept-plan`,
+      kind: "concept-plan",
+      value: {
+        sourceGameDesignRevisionId: planned.plan.sourceGameDesignRevisionId,
+        sourceDirectionRevisionId: planned.plan.sourceDirectionRevisionId,
+        slots: planned.plan.slots.map(({ prompt: _prompt, ...slot }) => slot),
+      },
+      runId: planned.context.runId,
+    });
+    expect(
+      planned.repository
+        .resolveRevision<ConceptPlan>(legacyPlan)
+        .slots.every((slot) => slot.prompt === undefined),
+    ).toBe(true);
+    const conceptSetRevision = await planned.creative.generateConceptSet({
+      ...planned.context,
+      gameDesignSpec: planned.intent.gameDesignSpec,
+      directionSet: planned.directionSet,
+      selectedDirectionRevisionId: planned.selected.revisionId,
+      conceptPlan: legacyPlan,
+    });
+    const conceptSet = ConceptSetSchema.parse(
+      planned.repository.resolveRevision(conceptSetRevision),
+    );
+    const document = M1ConceptDocumentSchema.parse(
+      planned.repository.resolveRevision(
+        conceptSet.slots[0]!.revisions[0]!.revision,
+      ),
+    );
+    expect(document.prompt).toBe(planned.plan.slots[0]!.prompt);
+    expect(document.basePrompt).toBe(planned.plan.slots[0]!.prompt);
+  });
+
+  it("regenerates a document without basePrompt via the legacy assembly", async () => {
+    const planned = await planApprovedConcepts();
+    const conceptSetRevision = await planned.creative.generateConceptSet({
+      ...planned.context,
+      gameDesignSpec: planned.intent.gameDesignSpec,
+      directionSet: planned.directionSet,
+      selectedDirectionRevisionId: planned.selected.revisionId,
+      conceptPlan: planned.planRevision,
+    });
+    const conceptSet = ConceptSetSchema.parse(
+      planned.repository.resolveRevision(conceptSetRevision),
+    );
+    const target = conceptSet.slots[0]!;
+    const original = M1ConceptDocumentSchema.parse(
+      planned.repository.resolveRevision(target.revisions[0]!.revision),
+    );
+    const { basePrompt: _basePrompt, ...legacyBody } = original;
+    const legacyDocument = planned.repository.writeRevision({
+      projectId: planned.context.projectId,
+      entityId: `${planned.context.projectId}:concept:${target.slotId}`,
+      kind: "concept-document",
+      value: legacyBody,
+      runId: planned.context.runId,
+    });
+    const legacySet = planned.repository.writeRevision({
+      projectId: planned.context.projectId,
+      entityId: `${planned.context.projectId}:concept-set`,
+      kind: "concept-set",
+      value: {
+        ...conceptSet,
+        slots: conceptSet.slots.map((slot) =>
+          slot.slotId === target.slotId
+            ? {
+                ...slot,
+                revisions: [
+                  {
+                    revision: legacyDocument,
+                    inheritedVisualTokens:
+                      slot.revisions[0]!.inheritedVisualTokens,
+                  },
+                ],
+              }
+            : slot,
+        ),
+        sourceRevisionIds: [legacyDocument.revisionId],
+      },
+      runId: planned.context.runId,
+    });
+    const regeneratedRevision = await planned.creative.regenerateConceptSlot({
+      ...planned.context,
+      gameDesignSpec: planned.intent.gameDesignSpec,
+      conceptSet: legacySet,
+      slotId: target.slotId,
+      notes: "Widen the door",
+    });
+    const regenerated = ConceptSetSchema.parse(
+      planned.repository.resolveRevision(regeneratedRevision),
+    );
+    const latest = M1ConceptDocumentSchema.parse(
+      planned.repository.resolveRevision(
+        regenerated.slots[0]!.revisions[1]!.revision,
+      ),
+    );
+    expect(latest.prompt).toContain(
+      "Focused alternate request: Widen the door.",
+    );
+    expect(latest.prompt).toMatch(
+      /Focused alternate request: Widen the door\. No text, UI, logos/,
+    );
+    expect(latest.basePrompt).toBe(original.prompt);
+  });
+
+  it("changes the live idempotency key when the confirmed prompt is edited", async () => {
+    const { repository, context } = createHarness();
+    const runner = vi.fn(async ({ prompt }: { prompt: string }) => {
+      expect(prompt.length).toBeGreaterThan(0);
+      return { bytes: PNG_1x1, model: "gpt-image-2", costUsd: 0 };
+    });
+    const creative = new M1CreativeDevelopment(repository, runner);
+    const createdAt = new Date().toISOString();
+    const brief = repository.writeRevision({
+      projectId: context.projectId,
+      entityId: `${context.projectId}:brief`,
+      kind: "game-brief",
+      value: { text: CONSTRAINT_BRIEF, rightsConfirmed: true },
+      runId: context.runId,
+    });
+    repository.createProject({
+      schemaVersion: 1,
+      milestone: "m1",
+      projectId: context.projectId,
+      name: "M1 live prompt fixture",
+      mode: "live",
+      assetProvider: "meshy",
+      orchestratorProvider: "openai",
+      implementationProvider: "openai",
+      imageProvider: "openai-subscription",
+      status: "awaiting-input",
+      stage: "concept-planning",
+      runId: context.runId,
+      budgetUsd: 10,
+      spentUsd: 0,
+      conceptReplacementCount: 0,
+      brief,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    const intent = await createApprovedIntent(
+      repository,
+      creative,
+      context,
+      CONSTRAINT_BRIEF,
+    );
+    const directionSet = await creative.generateVisualDirections({
+      ...context,
+      gameDesignSpec: intent.gameDesignSpec,
+    });
+    const directions = VisualDirectionSetSchema.parse(
+      repository.resolveRevision(directionSet),
+    );
+    const selected = directions.directions[0]!;
+    const planRevision = creative.planConcepts({
+      ...context,
+      brief: CONSTRAINT_BRIEF,
+      gameDesignSpec: intent.gameDesignSpec,
+      directionSet,
+      selectedDirectionRevisionId: selected.revisionId,
+    });
+    const plan = repository.resolveRevision<ConceptPlan>(planRevision);
+    const first = await creative.generateConceptSet({
+      ...context,
+      gameDesignSpec: intent.gameDesignSpec,
+      directionSet,
+      selectedDirectionRevisionId: selected.revisionId,
+      conceptPlan: planRevision,
+      mode: "live",
+      imageProvider: "openai-subscription",
+    });
+    const firstSet = ConceptSetSchema.parse(repository.resolveRevision(first));
+    const slot = firstSet.slots[0]!;
+    const firstDocument = M1ConceptDocumentSchema.parse(
+      repository.resolveRevision(slot.revisions[0]!.revision),
+    );
+    const firstKey = m1ConceptImageIdempotencyKey({
+      projectId: context.projectId,
+      slotId: slot.slotId,
+      sourceRevisionIds: [
+        intent.gameDesignSpec.revisionId,
+        selected.revisionId,
+        planRevision.revisionId,
+      ],
+      attempt: 0,
+      mode: "live",
+      imageProvider: "openai-subscription",
+      prompt: firstDocument.prompt,
+    });
+    expect(repository.getSubmissionByKey(firstKey)?.resultRevisionId).toBe(
+      slot.revisions[0]!.revision.revisionId,
+    );
+
+    const edited = "TASK-J-LIVE-EDIT never reuse the unedited greenhouse image";
+    const overridden = creative.applyConceptPlanPromptOverrides({
+      ...context,
+      conceptPlan: planRevision,
+      overrides: [{ slotId: slot.slotId, prompt: edited }],
+    });
+    const second = await creative.generateConceptSet({
+      ...context,
+      gameDesignSpec: intent.gameDesignSpec,
+      directionSet,
+      selectedDirectionRevisionId: selected.revisionId,
+      conceptPlan: overridden,
+      mode: "live",
+      imageProvider: "openai-subscription",
+    });
+    const secondSet = ConceptSetSchema.parse(
+      repository.resolveRevision(second),
+    );
+    const secondDocument = M1ConceptDocumentSchema.parse(
+      repository.resolveRevision(secondSet.slots[0]!.revisions[0]!.revision),
+    );
+    expect(secondDocument.prompt).toBe(edited);
+    const secondKey = m1ConceptImageIdempotencyKey({
+      projectId: context.projectId,
+      slotId: slot.slotId,
+      sourceRevisionIds: [
+        intent.gameDesignSpec.revisionId,
+        selected.revisionId,
+        overridden.revisionId,
+      ],
+      attempt: 0,
+      mode: "live",
+      imageProvider: "openai-subscription",
+      prompt: edited,
+    });
+    expect(secondKey).not.toBe(firstKey);
+    expect(repository.getSubmissionByKey(secondKey)?.resultRevisionId).toBe(
+      secondSet.slots[0]!.revisions[0]!.revision.revisionId,
+    );
+    expect(repository.getSubmissionByKey(firstKey)?.resultRevisionId).toBe(
+      slot.revisions[0]!.revision.revisionId,
+    );
+    expect(runner.mock.calls.some((call) => call[0].prompt === edited)).toBe(
+      true,
+    );
+    expect(
+      runner.mock.calls.filter((call) => call[0].prompt === edited),
+    ).toHaveLength(1);
+    expect(plan.slots[0]!.prompt).not.toBe(edited);
+  });
+});
+
+const liveText = {
+  mode: "live" as const,
+  orchestratorProvider: "openai" as const,
+};
+
+const firstRoundQuestions = () => ({
+  questions: [
+    liveQuestion(
+      "experience.player-promise",
+      "What accomplishment closes one successful keeper session?",
+      "Name one observable rescue.",
+    ),
+    liveQuestion(
+      "gameplay.core-loop",
+      "Which actions form the smallest flooded-arena loop?",
+      "Choose three to five actions.",
+    ),
+  ],
+});
+
+const firstRoundKey = (projectId: string, provider: "openai" | "openai-api") =>
+  m1TextIdempotencyKey({
+    operation: M1_TEXT_OPERATIONS.interrogationRound,
+    projectId,
+    inputHash: hashText(
+      `${interrogationTranscriptKey(CONSTRAINT_BRIEF, [])}:1`,
+    ),
+    mode: "live",
+    provider,
+  });
+
+const liveQuestion = (
+  branchId: string,
+  prompt: string,
+  recommendation: string,
+) => ({ branchId, prompt, recommendation });
+
+const liveSpec = (title = "Storm Beacon"): GameDesignSpec => ({
+  title,
+  genre: "Top-down survival",
+  camera: "Top-down camera with a stable gameplay horizon",
+  coreFantasy: "Restore the storm beacon and guide the stranded fleet home.",
+  coreLoop: [
+    "Explore the flooded arena",
+    "Collect charge",
+    "Defend the beacon",
+  ],
+  playerVerbs: ["move", "defend", "escape"],
+  objective: "The fleet arrives when the beacon fills.",
+  sessionMinutes: 12,
+  gameplayConstraints: [
+    "One keeper, one flooded arena, and one complete beacon defense.",
+  ],
+  facts: [
+    {
+      statementId: "fact-brief",
+      text: "A lone storm keeper restores a beacon in a flooded arena.",
+      kind: "fact",
+      origin: { source: "brief", reference: "initial brief" },
+    },
+  ],
+  assumptions: [
+    {
+      statementId: "assumption-scope",
+      text: "One keeper is enough for the proof slice.",
+      kind: "assumption",
+      origin: { source: "user", reference: "scope.proof-boundary" },
+    },
+  ],
+});
+
+const liveDirection = (
+  slug: string,
+  name: string,
+  style: string,
+  hex: [string, string, string],
+) => ({
+  slug,
+  name,
+  rationale: `${name} interprets the approved storm-keeper fantasy.`,
+  overallStyle: style,
+  shapeLanguage: "Stacked readable masses with one directional gesture",
+  materials: ["painted timber", "matte stone", "soft emission"],
+  palette: [
+    { name: "Deep pine", hex: hex[0], role: "primary mass" },
+    { name: "Clay", hex: hex[1], role: "warm accent" },
+    { name: "Lantern", hex: hex[2], role: "gameplay focus" },
+  ],
+  lighting: "Soft overcast fill with a warm objective glow",
+  atmosphere: "Quiet drifting pollen and shallow teal haze",
+  textureLanguage: "Broad brush planes, visible carved edges",
+});
+
+type ScriptedInput = {
+  provider: string;
+  systemPrompt: string;
+  prompt: string;
+  schema: {
+    safeParse: (
+      value: unknown,
+    ) => { success: true; data: unknown } | { success: false };
+  };
+};
+
+const scriptedExecution = (
+  resolve: (input: ScriptedInput) => unknown,
+): StructuredModelExecution & { calls: ScriptedInput[] } => {
+  const calls: ScriptedInput[] = [];
+  return {
+    calls,
+    generateStructured: (async (input) => {
+      const scripted = input as ScriptedInput;
+      calls.push(scripted);
+      const raw = resolve(scripted);
+      if (raw instanceof Error) throw raw;
+      const parsed = scripted.schema.safeParse(raw);
+      if (!parsed.success)
+        throw new Error(
+          "The selected execution provider returned no valid structured result.",
+        );
+      return {
+        value: parsed.data,
+        model: "fake-m1-text",
+        provider: input.provider,
+      };
+    }) as StructuredModelExecution["generateStructured"],
+  };
+};
+
+const queuedExecution = (turns: unknown[]) =>
+  scriptedExecution(() => {
+    const next = turns.shift();
+    if (next === undefined) throw new Error("Scripted execution is exhausted.");
+    return next;
+  });
+
+describe("M1CreativeDevelopment live creative text", () => {
+  it("generates the first live round at create and the next round from answers", async () => {
+    const execution = queuedExecution([
+      {
+        questions: [
+          liveQuestion(
+            "experience.player-promise",
+            "What should a successful beacon defense let the keeper say they accomplished?",
+            "Name one observable fleet-rescue accomplishment.",
+          ),
+          liveQuestion(
+            "gameplay.core-loop",
+            "Which flooded-arena actions form the smallest satisfying loop?",
+            "Choose three to five actions with failure pressure.",
+          ),
+        ],
+      },
+      {
+        understandingComplete: false,
+        questions: [
+          liveQuestion(
+            "scope.proof-boundary",
+            "What is the smallest flooded-arena slice that still proves the idea?",
+            "Limit the slice to one keeper, one arena, one complete defense.",
+          ),
+          liveQuestion(
+            "presentation.camera-readability",
+            "Which camera keeps routes, threats, and the beacon readable together?",
+            "Use the least complex camera that preserves route silhouettes.",
+          ),
+        ],
+      },
+      { understandingComplete: true, questions: [] },
+    ]);
+    const { repository, context } = createHarness();
+    const creative = new M1CreativeDevelopment(
+      repository,
+      undefined,
+      execution,
+    );
+    const started = await creative.beginInterrogation({
+      ...context,
+      ...liveText,
+      brief: CONSTRAINT_BRIEF,
+    });
+    const first = InterrogationStateSchema.parse(
+      repository.resolveRevision(started.interrogation),
+    );
+    expect(first.frontier).toHaveLength(2);
+    expect(first.frontier[0]?.prompt).toMatch(/beacon defense/);
+    expect(execution.calls).toHaveLength(1);
+
+    const afterFirst = await creative.answerCurrentFrontier({
+      ...context,
+      ...liveText,
+      brief: CONSTRAINT_BRIEF,
+      interrogation: started.interrogation,
+      roundId: first.rounds[0]!.roundId,
+      answers: first.frontier.map((question) => ({
+        questionId: question.questionId,
+        value: answerValue(question.branchId),
+      })),
+    });
+    const second = InterrogationStateSchema.parse(
+      repository.resolveRevision(afterFirst),
+    );
+    expect(second.frontier).toHaveLength(2);
+    expect(second.frontier[0]?.branchId).toBe("scope.proof-boundary");
+    expect(execution.calls).toHaveLength(2);
+
+    const afterSecond = await creative.answerCurrentFrontier({
+      ...context,
+      ...liveText,
+      brief: CONSTRAINT_BRIEF,
+      interrogation: afterFirst,
+      roundId: second.rounds.at(-1)!.roundId,
+      answers: second.frontier.map((question) => ({
+        questionId: question.questionId,
+        value: answerValue(question.branchId),
+      })),
+    });
+    const complete = InterrogationStateSchema.parse(
+      repository.resolveRevision(afterSecond),
+    );
+    expect(complete.frontier).toEqual([]);
+    expect(execution.calls).toHaveLength(3);
+  });
+
+  it("reuses a completed live interrogation submission instead of calling the model again", async () => {
+    const execution = queuedExecution([
+      {
+        questions: [
+          liveQuestion(
+            "experience.player-promise",
+            "What accomplishment closes one successful keeper session?",
+            "Name one observable rescue.",
+          ),
+          liveQuestion(
+            "gameplay.core-loop",
+            "Which actions form the smallest flooded-arena loop?",
+            "Choose three to five actions.",
+          ),
+        ],
+      },
+    ]);
+    const { repository, context } = createHarness();
+    const first = new M1CreativeDevelopment(repository, undefined, execution);
+    const started = await first.beginInterrogation({
+      ...context,
+      ...liveText,
+      brief: CONSTRAINT_BRIEF,
+    });
+    const restart = new M1CreativeDevelopment(repository, undefined, execution);
+    const again = await restart.beginInterrogation({
+      ...context,
+      ...liveText,
+      brief: CONSTRAINT_BRIEF,
+    });
+    expect(again.interrogation.revisionId).toBe(
+      started.interrogation.revisionId,
+    );
+    expect(execution.calls).toHaveLength(1);
+    const submissions = repository
+      .listEvents(context.projectId)
+      .filter(
+        (event) =>
+          event.type === `${M1_TEXT_OPERATIONS.interrogationRound}.completed`,
+      );
+    expect(submissions).toHaveLength(1);
+  });
+
+  it("forces an empty frontier after six live rounds even if the model keeps asking", async () => {
+    const execution = scriptedExecution((input) => {
+      const n = String(execution.calls.length);
+      if (input.systemPrompt.includes("[m1-game-design]")) return liveSpec();
+      if (input.systemPrompt.includes("[m1-interrogation-round]")) {
+        return {
+          questions: [
+            liveQuestion(
+              `topic.pressure${n}`,
+              "What remaining flooded-arena pressure still needs a concrete rule?",
+              "Name one remaining pressure with a testable rule.",
+            ),
+            liveQuestion(
+              `topic.constraint${n}`,
+              "Which leftover constraint still changes how the beacon is read?",
+              "Write one leftover constraint as a production rule.",
+            ),
+          ],
+        };
+      }
+      return {
+        understandingComplete: false,
+        questions: [
+          liveQuestion(
+            `topic.route${n}`,
+            "What still-open route decision should the keeper resolve now?",
+            "Pick one remaining route decision.",
+          ),
+          liveQuestion(
+            `topic.weather${n}`,
+            "Which leftover camera or weather rule still needs a yes-or-no call?",
+            "Choose one remaining presentation rule.",
+          ),
+        ],
+      };
+    });
+    const { repository, context } = createHarness();
+    const creative = new M1CreativeDevelopment(
+      repository,
+      undefined,
+      execution,
+    );
+    let revision = (
+      await creative.beginInterrogation({
+        ...context,
+        ...liveText,
+        brief: CONSTRAINT_BRIEF,
+      })
+    ).interrogation;
+    for (let round = 0; round < M1_INTERROGATION_ROUND_CAP; round += 1) {
+      const state = InterrogationStateSchema.parse(
+        repository.resolveRevision<InterrogationState>(revision),
+      );
+      expect(state.frontier.length).toBeGreaterThan(0);
+      const current = state.rounds.at(-1)!;
+      revision = await creative.answerCurrentFrontier({
+        ...context,
+        ...liveText,
+        brief: CONSTRAINT_BRIEF,
+        interrogation: revision,
+        roundId: current.roundId,
+        answers: state.frontier.map((question) => ({
+          questionId: question.questionId,
+          value: `Resolved ${question.branchId} with a concrete keeper rule.`,
+        })),
+      });
+    }
+    const capped = InterrogationStateSchema.parse(
+      repository.resolveRevision<InterrogationState>(revision),
+    );
+    expect(capped.rounds).toHaveLength(M1_INTERROGATION_ROUND_CAP);
+    expect(capped.frontier).toEqual([]);
+    expect(execution.calls).toHaveLength(M1_INTERROGATION_ROUND_CAP);
+    expect(
+      repository
+        .listEvents(context.projectId)
+        .some((event) => event.type === "interrogation.round-cap-reached"),
+    ).toBe(true);
+    const confirmed = await creative.confirmSharedUnderstanding({
+      ...context,
+      ...liveText,
+      brief: CONSTRAINT_BRIEF,
+      interrogation: revision,
+      confirmedBy: "Zach",
+    });
+    expect(
+      GameDesignSpecSchema.parse(
+        repository.resolveRevision(confirmed.gameDesignSpec),
+      ).title,
+    ).toBe("Storm Beacon");
+  });
+
+  it("writes a schema-valid live spec and retries after invalid structured output", async () => {
+    const turns: unknown[] = [
+      {
+        questions: [
+          liveQuestion(
+            "experience.player-promise",
+            "What accomplishment closes one successful keeper session?",
+            "Name one observable rescue.",
+          ),
+          liveQuestion(
+            "gameplay.core-loop",
+            "Which actions form the smallest flooded-arena loop?",
+            "Choose three to five actions.",
+          ),
+        ],
+      },
+      { understandingComplete: true, questions: [] },
+      {},
+      liveSpec("Retryable Beacon Spec"),
+    ];
+    const execution = queuedExecution(turns);
+    const { repository, context } = createHarness();
+    const creative = new M1CreativeDevelopment(
+      repository,
+      undefined,
+      execution,
+    );
+    const started = await creative.beginInterrogation({
+      ...context,
+      ...liveText,
+      brief: CONSTRAINT_BRIEF,
+    });
+    const first = InterrogationStateSchema.parse(
+      repository.resolveRevision(started.interrogation),
+    );
+    const resolved = await creative.answerCurrentFrontier({
+      ...context,
+      ...liveText,
+      brief: CONSTRAINT_BRIEF,
+      interrogation: started.interrogation,
+      roundId: first.rounds[0]!.roundId,
+      answers: first.frontier.map((question) => ({
+        questionId: question.questionId,
+        value: answerValue(question.branchId),
+      })),
+    });
+    await expect(
+      creative.confirmSharedUnderstanding({
+        ...context,
+        ...liveText,
+        brief: CONSTRAINT_BRIEF,
+        interrogation: resolved,
+        confirmedBy: "Zach",
+      }),
+    ).rejects.toThrow(/could not parse a valid m1-game-design result/);
+    const stillOpen = InterrogationStateSchema.parse(
+      repository.resolveRevision(resolved),
+    );
+    expect(stillOpen.sharedUnderstanding).toBeUndefined();
+    const confirmed = await creative.confirmSharedUnderstanding({
+      ...context,
+      ...liveText,
+      brief: CONSTRAINT_BRIEF,
+      interrogation: resolved,
+      confirmedBy: "Zach",
+    });
+    const spec = GameDesignSpecSchema.parse(
+      repository.resolveRevision(confirmed.gameDesignSpec),
+    );
+    expect(spec.title).toBe("Retryable Beacon Spec");
+    expect(spec.coreFantasy).toMatch(/storm beacon/);
+    const again = await creative.confirmSharedUnderstanding({
+      ...context,
+      ...liveText,
+      brief: CONSTRAINT_BRIEF,
+      interrogation: resolved,
+      confirmedBy: "Zach",
+    });
+    expect(again.gameDesignSpec.revisionId).toBe(
+      confirmed.gameDesignSpec.revisionId,
+    );
+    expect(
+      execution.calls.filter((call) =>
+        call.systemPrompt.includes("[m1-game-design]"),
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("invents three live directions, honors replacement notes, and preserves pinned aspects", async () => {
+    const echoedPalette = [
+      { name: " LANTERN ", hex: "#f6d36b", role: "GAMEPLAY FOCUS" },
+      { name: "clay", hex: "#b76647", role: "WARM ACCENT" },
+      { name: "DEEP   PINE", hex: "#173b36", role: "primary mass" },
+    ];
+    const execution = queuedExecution([
+      {
+        questions: [
+          liveQuestion(
+            "experience.player-promise",
+            "What accomplishment closes one successful keeper session?",
+            "Name one observable rescue.",
+          ),
+          liveQuestion(
+            "gameplay.core-loop",
+            "Which actions form the smallest flooded-arena loop?",
+            "Choose three to five actions.",
+          ),
+        ],
+      },
+      { understandingComplete: true, questions: [] },
+      liveSpec(),
+      {
+        directions: [
+          liveDirection(
+            "luminous-channel",
+            "Luminous Channel",
+            "LIVE-DIRECTION-STYLE carved ice lanterns with graphite joints",
+            ["#173B36", "#B76647", "#F6D36B"],
+          ),
+          liveDirection(
+            "monumental-tide",
+            "Monumental Tide",
+            "Graphic tide-ink masses with one hard signal color",
+            ["#11131A", "#D8D0B8", "#E05A47"],
+          ),
+          liveDirection(
+            "weathered-harbor",
+            "Weathered Harbor",
+            "Weathered harbor plaster with quiet storm wear",
+            ["#33475B", "#5E9C8B", "#F0B95A"],
+          ),
+        ],
+      },
+      liveDirection(
+        "paper-theatre",
+        "Paper Theatre",
+        "Material-theatre paper planes honoring a copper storm lantern",
+        ["#33263F", "#77A98F", "#F1A85B"],
+      ),
+      {
+        title: "Mutated Focused Title",
+        rationale: "Honor the pins while changing the wind treatment.",
+        overallStyle: "Revised carved ice lanterns with graphite joints",
+        shapeLanguage:
+          "  STACKED readable masses with one directional gesture  ",
+        materials: ["wrong plastic"],
+        palette: echoedPalette,
+        lighting: "Hard midnight moonlight through the storm",
+        atmosphere: "Mutated atmosphere",
+        textureLanguage: "Mutated texture",
+        cameraLanguage: "Mutated camera",
+        readabilityRules: [
+          "one keeper, one flooded arena, and one complete beacon defense.",
+          " KEEP traversal edges distinct from decorative surfaces ",
+          "preserve the dominant silhouette at thumbnail size",
+          "RESERVE the gameplay-focus color for actionable goals",
+        ],
+      },
+    ]);
+    const { repository, context } = createHarness();
+    const creative = new M1CreativeDevelopment(
+      repository,
+      undefined,
+      execution,
+    );
+    const started = await creative.beginInterrogation({
+      ...context,
+      ...liveText,
+      brief: CONSTRAINT_BRIEF,
+    });
+    const first = InterrogationStateSchema.parse(
+      repository.resolveRevision(started.interrogation),
+    );
+    const resolved = await creative.answerCurrentFrontier({
+      ...context,
+      ...liveText,
+      brief: CONSTRAINT_BRIEF,
+      interrogation: started.interrogation,
+      roundId: first.rounds[0]!.roundId,
+      answers: first.frontier.map((question) => ({
+        questionId: question.questionId,
+        value: answerValue(question.branchId),
+      })),
+    });
+    const intent = await creative.confirmSharedUnderstanding({
+      ...context,
+      ...liveText,
+      brief: CONSTRAINT_BRIEF,
+      interrogation: resolved,
+      confirmedBy: "Zach",
+    });
+    const directionSet = await creative.generateVisualDirections({
+      ...context,
+      ...liveText,
+      gameDesignSpec: intent.gameDesignSpec,
+    });
+    const set = VisualDirectionSetSchema.parse(
+      repository.resolveRevision(directionSet),
+    );
+    expect(
+      new Set(set.directions.map((direction) => direction.name)).size,
+    ).toBe(3);
+    expect(
+      set.directions.some((direction) =>
+        direction.visualBible.overallStyle.includes("LIVE-DIRECTION-STYLE"),
+      ),
+    ).toBe(true);
+    const reused = await creative.generateVisualDirections({
+      ...context,
+      ...liveText,
+      gameDesignSpec: intent.gameDesignSpec,
+    });
+    expect(reused.revisionId).toBe(directionSet.revisionId);
+
+    const selected = set.directions[0]!;
+    const planRevision = creative.planConcepts({
+      ...context,
+      brief: CONSTRAINT_BRIEF,
+      gameDesignSpec: intent.gameDesignSpec,
+      directionSet,
+      selectedDirectionRevisionId: selected.revisionId,
+    });
+    const conceptSetRevision = await creative.generateConceptSet({
+      ...context,
+      gameDesignSpec: intent.gameDesignSpec,
+      directionSet,
+      selectedDirectionRevisionId: selected.revisionId,
+      conceptPlan: planRevision,
+    });
+    const document = M1ConceptDocumentSchema.parse(
+      repository.resolveRevision(
+        ConceptSetSchema.parse(repository.resolveRevision(conceptSetRevision))
+          .slots[0]!.revisions[0]!.revision,
+      ),
+    );
+    expect(document.prompt).toContain("LIVE-DIRECTION-STYLE");
+    expect(document.prompt).toMatch(/camera(?: \([^)]+\))?: [^.]*top-down/i);
+
+    const target = set.directions[2]!;
+    const replaced = await creative.replaceUnselectedDirection({
+      ...context,
+      ...liveText,
+      gameDesignSpec: intent.gameDesignSpec,
+      directionSet,
+      directionRevisionId: target.revisionId,
+      selectedDirectionRevisionId: selected.revisionId,
+      notes: "Use a copper storm lantern in a paper-theatre material language",
+    });
+    const replacedSet = VisualDirectionSetSchema.parse(
+      repository.resolveRevision(replaced),
+    );
+    expect(
+      replacedSet.directions.some(
+        (direction) => direction.name === "Paper Theatre",
+      ),
+    ).toBe(true);
+    expect(
+      replacedSet.directions.some((direction) =>
+        /paper|theatre|copper storm lantern/i.test(
+          direction.visualBible.overallStyle,
+        ),
+      ),
+    ).toBe(true);
+
+    const beforePalette = JSON.stringify(selected.visualBible.palette);
+    const beforeShape = selected.visualBible.shapeLanguage;
+    const beforeReadability = JSON.stringify(
+      selected.visualBible.readabilityRules,
+    );
+    const focused = await creative.makeFocusedDirectionChange({
+      ...context,
+      ...liveText,
+      gameDesignSpec: intent.gameDesignSpec,
+      directionSet: replaced,
+      directionRevisionId: selected.revisionId,
+      change: "Add restrained wind streaks around the active objective",
+      pinnedAspects: ["palette", "shape language", "readability"],
+    });
+    const changed = VisualDirectionSetSchema.parse(
+      repository.resolveRevision(focused.directionSet),
+    ).directions[0]!;
+    expect(JSON.stringify(changed.visualBible.palette)).toBe(beforePalette);
+    expect(changed.visualBible.shapeLanguage).toBe(beforeShape);
+    expect(JSON.stringify(changed.visualBible.readabilityRules)).toBe(
+      beforeReadability,
+    );
+    expect(changed.visualBible.palette).not.toEqual(echoedPalette);
+    const record = repository.resolveRevision<FocusedDirectionChange>(
+      focused.changeRecord,
+    );
+    expect(
+      record.pinnedAspects.every((aspect) => aspect.before === aspect.after),
+    ).toBe(true);
+    const focusedCall = execution.calls.find((call) =>
+      call.systemPrompt.includes("[m1-direction-focused-change]"),
+    );
+    expect(focusedCall?.prompt).toContain('"field":"palette"');
+    expect(focusedCall?.prompt).toContain('"field":"shapeLanguage"');
+    expect(focusedCall?.prompt).toContain(
+      "Copy every pinned value verbatim into its named field",
+    );
+  });
+
+  it("reserves openai-api text budget and surfaces a typed preflight error", async () => {
+    const execution = queuedExecution([
+      {
+        questions: [
+          liveQuestion(
+            "experience.player-promise",
+            "What accomplishment closes one successful keeper session?",
+            "Name one observable rescue.",
+          ),
+          liveQuestion(
+            "gameplay.core-loop",
+            "Which actions form the smallest flooded-arena loop?",
+            "Choose three to five actions.",
+          ),
+        ],
+      },
+    ]);
+    const { repository, context } = createHarness();
+    const createdAt = new Date().toISOString();
+    const brief = repository.writeRevision({
+      projectId: context.projectId,
+      entityId: `${context.projectId}:brief`,
+      kind: "game-brief",
+      value: { text: CONSTRAINT_BRIEF, rightsConfirmed: true },
+      runId: context.runId,
+    });
+    repository.createProject({
+      schemaVersion: 1,
+      milestone: "m1",
+      projectId: context.projectId,
+      name: "M1 live text budget",
+      mode: "live",
+      assetProvider: "meshy",
+      orchestratorProvider: "openai-api",
+      implementationProvider: "openai",
+      imageProvider: "none",
+      status: "awaiting-input",
+      stage: "interrogation",
+      runId: context.runId,
+      budgetUsd: 10,
+      spentUsd: 0,
+      conceptReplacementCount: 0,
+      brief,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    const creative = new M1CreativeDevelopment(
+      repository,
+      undefined,
+      execution,
+    );
+    await creative.beginInterrogation({
+      ...context,
+      mode: "live",
+      orchestratorProvider: "openai-api",
+      brief: CONSTRAINT_BRIEF,
+    });
+    expect(repository.getProject(context.projectId).spentUsd).toBeCloseTo(0.25);
+    expect(
+      repository
+        .listEvents(context.projectId)
+        .some((event) => event.type === "budget.reserved"),
+    ).toBe(true);
+
+    const missing = scriptedExecution(() => {
+      throw new Error("codex is not installed.");
+    });
+    const { repository: missingRepo, context: missingContext } =
+      createHarness();
+    const missingCreative = new M1CreativeDevelopment(
+      missingRepo,
+      undefined,
+      missing,
+    );
+    await expect(
+      missingCreative.beginInterrogation({
+        ...missingContext,
+        ...liveText,
+        brief: CONSTRAINT_BRIEF,
+      }),
+    ).rejects.toBeInstanceOf(ProviderPreflightError);
+  });
+
+  it("retries a subscription live text failure after a transient provider error", async () => {
+    const execution = queuedExecution([
+      new Error("codex CLI timed out"),
+      firstRoundQuestions(),
+    ]);
+    const { repository, context } = createHarness();
+    const creative = new M1CreativeDevelopment(
+      repository,
+      undefined,
+      execution,
+    );
+    await expect(
+      creative.beginInterrogation({
+        ...context,
+        ...liveText,
+        brief: CONSTRAINT_BRIEF,
+      }),
+    ).rejects.toThrow(/can be retried/);
+    const failed = repository.getSubmissionByKey(
+      firstRoundKey(context.projectId, "openai"),
+    );
+    expect(failed?.status).toBe("failed");
+    expect(failed?.payload.errorKind).toBe("transient-provider-error");
+    expect(failed?.payload.error).toMatch(/codex CLI timed out/);
+
+    const started = await creative.beginInterrogation({
+      ...context,
+      ...liveText,
+      brief: CONSTRAINT_BRIEF,
+    });
+    const state = InterrogationStateSchema.parse(
+      repository.resolveRevision(started.interrogation),
+    );
+    expect(state.frontier).toHaveLength(2);
+    expect(execution.calls).toHaveLength(2);
+    expect(
+      repository.getSubmissionByKey(firstRoundKey(context.projectId, "openai"))
+        ?.status,
+    ).toBe("ready");
+  });
+
+  it("propagates subscription quota pressure with a retryable typed error", async () => {
+    const execution = queuedExecution([
+      Object.assign(new Error("rate_limit_exceeded"), { statusCode: 429 }),
+      firstRoundQuestions(),
+    ]);
+    const { repository, context } = createHarness();
+    const creative = new M1CreativeDevelopment(
+      repository,
+      undefined,
+      execution,
+    );
+
+    await expect(
+      creative.beginInterrogation({
+        ...context,
+        ...liveText,
+        brief: CONSTRAINT_BRIEF,
+      }),
+    ).rejects.toSatisfy(
+      (error) =>
+        error instanceof ProviderUsageError &&
+        error.code === "subscription-quota" &&
+        /subscription usage.*limited/i.test(error.message),
+    );
+    const failed = repository.getSubmissionByKey(
+      firstRoundKey(context.projectId, "openai"),
+    );
+    expect(failed?.status).toBe("failed");
+    expect(failed?.payload).toEqual(
+      expect.objectContaining({
+        errorKind: "subscription-quota",
+        usageCode: "subscription-quota",
+      }),
+    );
+    expect(
+      repository
+        .listEvents(context.projectId)
+        .some((event) => event.type === "budget.reserved"),
+    ).toBe(false);
+
+    await expect(
+      creative.beginInterrogation({
+        ...context,
+        ...liveText,
+        brief: CONSTRAINT_BRIEF,
+      }),
+    ).resolves.toBeDefined();
+    expect(execution.calls).toHaveLength(2);
+  });
+
+  it("keeps a metered openai-api live text failure blocked", async () => {
+    const execution = queuedExecution([
+      new Error("codex CLI timed out"),
+      firstRoundQuestions(),
+    ]);
+    const { repository, context } = createHarness();
+    const createdAt = new Date().toISOString();
+    const brief = repository.writeRevision({
+      projectId: context.projectId,
+      entityId: `${context.projectId}:brief`,
+      kind: "game-brief",
+      value: { text: CONSTRAINT_BRIEF, rightsConfirmed: true },
+      runId: context.runId,
+    });
+    repository.createProject({
+      schemaVersion: 1,
+      milestone: "m1",
+      projectId: context.projectId,
+      name: "M1 metered text block",
+      mode: "live",
+      assetProvider: "meshy",
+      orchestratorProvider: "openai-api",
+      implementationProvider: "openai",
+      imageProvider: "none",
+      status: "awaiting-input",
+      stage: "interrogation",
+      runId: context.runId,
+      budgetUsd: 10,
+      spentUsd: 0,
+      conceptReplacementCount: 0,
+      brief,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    const creative = new M1CreativeDevelopment(
+      repository,
+      undefined,
+      execution,
+    );
+    const liveApi = {
+      mode: "live" as const,
+      orchestratorProvider: "openai-api" as const,
+    };
+    await expect(
+      creative.beginInterrogation({
+        ...context,
+        ...liveApi,
+        brief: CONSTRAINT_BRIEF,
+      }),
+    ).rejects.toThrow(/codex CLI timed out/);
+    const blocked = repository.getSubmissionByKey(
+      firstRoundKey(context.projectId, "openai-api"),
+    );
+    expect(blocked?.status).toBe("submission-unknown");
+    expect(blocked?.payload.errorKind).toBeUndefined();
+
+    await expect(
+      creative.beginInterrogation({
+        ...context,
+        ...liveApi,
+        brief: CONSTRAINT_BRIEF,
+      }),
+    ).rejects.toThrow(/will not spend again automatically/);
+    expect(execution.calls).toHaveLength(1);
+    expect(
+      repository.getSubmissionByKey(
+        firstRoundKey(context.projectId, "openai-api"),
+      )?.status,
+    ).toBe("submission-unknown");
+  });
+});
+
+describe("fitConceptPrompt", () => {
+  const guard = "No text, UI, logos, or unrelated project history.";
+
+  it("joins short parts unchanged, guard last", () => {
+    expect(fitConceptPrompt(["Alpha.", "Beta."], guard)).toBe(
+      `Alpha. Beta. ${guard}`,
+    );
+  });
+
+  it("caps a live-length spec at the domain limit without losing the guard", () => {
+    const parts = [
+      "Production concept for Gameplay Anchor.",
+      `project-world (approved premise): ${"open-world recovery district with rain-dark asphalt and honest tow work ".repeat(80)}.`,
+      `lighting: ${"cool overcast daylight with restrained shop fluorescents ".repeat(60)}.`,
+      "readability: the objective color survives thumbnail size.",
+    ];
+    const prompt = fitConceptPrompt(parts, guard);
+    expect(prompt.length).toBeLessThanOrEqual(4000);
+    expect(prompt.endsWith(guard)).toBe(true);
+    expect(prompt.startsWith("Production concept for Gameplay Anchor.")).toBe(
+      true,
+    );
+    expect(prompt).toContain("…");
+  });
+
+  it("keeps a focused-alternate tail intact under overflow", () => {
+    const tail = `Focused alternate request: Make the tower taller. ${guard}`;
+    const prompt = fitConceptPrompt(
+      [`style: ${"painterly folkcraft with hand-carved forms ".repeat(200)}.`],
+      tail,
+    );
+    expect(prompt.length).toBeLessThanOrEqual(4000);
+    expect(prompt.endsWith(tail)).toBe(true);
+  });
+
+  it("never exceeds the cap even when the first part alone overflows", () => {
+    const prompt = fitConceptPrompt(["x".repeat(6000)], guard);
+    expect(prompt.length).toBeLessThanOrEqual(4000);
+    expect(prompt.endsWith(guard)).toBe(true);
   });
 });

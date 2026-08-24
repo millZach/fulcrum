@@ -55,6 +55,64 @@ describe("ModelExecution", () => {
     expect(result.model).toBe("subscription-default");
   });
 
+  it("removes only Claude's unsupported schema draft marker", async () => {
+    let claudeSchema: unknown;
+    let codexSchema: unknown;
+    const runner: CommandRunner = vi.fn(async ({ command, args }) => {
+      if (command === "claude") {
+        const schemaIndex = args.indexOf("--json-schema");
+        const schemaPayload = args[schemaIndex + 1];
+        if (!schemaPayload) throw new Error("Missing Claude schema payload.");
+        claudeSchema = JSON.parse(schemaPayload);
+        return {
+          status: 0,
+          stdout: JSON.stringify({
+            structured_output: { name: "reliquary", count: 1 },
+          }),
+          stderr: "",
+        };
+      }
+      if (command === "codex") {
+        const schemaIndex = args.indexOf("--output-schema");
+        const schemaPath = args[schemaIndex + 1];
+        const outputIndex = args.indexOf("--output-last-message");
+        const outputPath = args[outputIndex + 1];
+        if (!schemaPath || !outputPath)
+          throw new Error("Missing Codex structured output paths.");
+        codexSchema = JSON.parse(readFileSync(schemaPath, "utf8"));
+        writeFileSync(
+          outputPath,
+          JSON.stringify({ name: "reliquary", count: 1 }),
+        );
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    const execution = new ModelExecution(runner);
+
+    await execution.generateStructured({
+      provider: "claude",
+      cwd: process.cwd(),
+      systemPrompt: "Plan the asset.",
+      prompt: "One hero prop.",
+      schema: ResultSchema,
+    });
+    await execution.generateStructured({
+      provider: "openai",
+      cwd: process.cwd(),
+      systemPrompt: "Plan the asset.",
+      prompt: "One hero prop.",
+      schema: ResultSchema,
+    });
+
+    const expectedCodexSchema = z.toJSONSchema(ResultSchema);
+    const expectedClaudeSchema = { ...expectedCodexSchema };
+    delete expectedClaudeSchema.$schema;
+    expect(claudeSchema).toEqual(expectedClaudeSchema);
+    expect(claudeSchema).not.toHaveProperty("$schema");
+    expect(codexSchema).toEqual(expectedCodexSchema);
+  });
+
   it("uses the OpenAI API adapter through the same structured interface", async () => {
     process.env.OPENAI_API_KEY = "test-key";
     const api = vi.fn(async () =>

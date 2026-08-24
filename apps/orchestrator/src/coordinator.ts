@@ -8,6 +8,7 @@ import {
   CreateProjectInputSchema,
   ExecutionProviderSchema,
   ImageProviderSchema,
+  SoundProviderSchema,
   ProjectSnapshotSchema,
   type ApprovalInput,
   type ConfigurationStatus,
@@ -25,6 +26,8 @@ import { ProjectRepository } from "@fulcrum/project";
 import { SceneAuthoring } from "@fulcrum/scene";
 import { createStep, createWorkflow } from "@mastra/core/workflows";
 import { z } from "zod";
+
+import { workflowErrorMessage } from "./workflow-error.js";
 
 const WorkflowInputSchema = z.object({ projectId: z.string().min(1) });
 const WorkflowOutputSchema = z.object({
@@ -160,6 +163,23 @@ export class M0Coordinator {
       missingConfiguration: imageProviderMissing[provider],
       detail: imageProviderDetail[provider],
     }));
+    const elevenLabsKey = Boolean(process.env.ELEVENLABS_API_KEY?.trim());
+    const soundProviderMissing = {
+      elevenlabs: elevenLabsKey ? [] : ["ELEVENLABS_API_KEY"],
+      none: [] as string[],
+    };
+    const soundProviderDetail = {
+      elevenlabs: elevenLabsKey
+        ? "ElevenLabs · text-to-sound v2"
+        : "ElevenLabs needs ELEVENLABS_API_KEY",
+      none: "Disabled · deterministic WAV renderer",
+    };
+    const soundProviders = SoundProviderSchema.options.map((provider) => ({
+      provider,
+      ready: soundProviderMissing[provider].length === 0,
+      missingConfiguration: soundProviderMissing[provider],
+      detail: soundProviderDetail[provider],
+    }));
     const assetProviders = (["meshy", "tripo"] as const).map((provider) => {
       const missingConfiguration = providerMissing[provider];
       return {
@@ -196,6 +216,7 @@ export class M0Coordinator {
       missingLiveConfiguration,
       executionProviders,
       imageProviders,
+      soundProviders,
       assetProviders,
       fixtureBrief: process.env.FULCRUM_FIXTURE_BRIEF,
       ...(Number.isFinite(configuredBudget) && configuredBudget > 0
@@ -206,6 +227,9 @@ export class M0Coordinator {
 
   async create(input: CreateProjectInput): Promise<ProjectSnapshot> {
     const parsed = CreateProjectInputSchema.parse(input);
+    const budgetUsd = parsed.budgetUsd;
+    if (budgetUsd === undefined)
+      throw new Error("M0 project creation requires a positive USD budget.");
     if (parsed.mode === "live") {
       const configuration = this.configuration();
       const assetReadiness = configuration.assetProviders.find(
@@ -227,10 +251,7 @@ export class M0Coordinator {
       if (missing.length > 0) {
         throw new Error(`Live mode is not configured: ${missing.join(", ")}.`);
       }
-      if (
-        !configuration.m0BudgetUsd ||
-        parsed.budgetUsd > configuration.m0BudgetUsd
-      ) {
+      if (!configuration.m0BudgetUsd || budgetUsd > configuration.m0BudgetUsd) {
         throw new Error(
           `Live M0 budget must be positive and no greater than the configured $${configuration.m0BudgetUsd?.toFixed(2) ?? "0.00"} cap.`,
         );
@@ -260,7 +281,7 @@ export class M0Coordinator {
       status: "active",
       stage: "creative-development",
       runId,
-      budgetUsd: parsed.budgetUsd,
+      budgetUsd,
       spentUsd: 0,
       conceptReplacementCount: 0,
       brief,
@@ -277,7 +298,7 @@ export class M0Coordinator {
         orchestratorProvider: parsed.orchestratorProvider,
         implementationProvider: parsed.implementationProvider,
         imageProvider: parsed.imageProvider,
-        budgetUsd: parsed.budgetUsd,
+        budgetUsd,
         rightsConfirmed: true,
       },
     });
@@ -298,10 +319,7 @@ export class M0Coordinator {
       });
       const result = await run.start({ inputData: { projectId } });
       if (result.status === "failed") {
-        const message =
-          result.error instanceof Error
-            ? result.error.message
-            : String(result.error ?? "Unknown workflow failure");
+        const message = workflowErrorMessage(result.error);
         this.block(projectId, "workflow-phase-failed", message, true);
         break;
       }

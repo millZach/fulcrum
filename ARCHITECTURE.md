@@ -377,6 +377,16 @@ plan_and_produce_concept_set
   ↓
 AWAIT CONCEPT-SET APPROVAL
   ↓
+plan_sound_palette
+  ↓
+AWAIT SOUND-PLAN CONFIRMATION
+  │ optional: edit slot prompts (new plan revision)
+  ↓
+produce_sound_palette
+  │ optional: regenerate one slot with a focused note
+  ↓
+AWAIT SOUND-SET APPROVAL
+  ↓
 COMPLETE M1
 ```
 

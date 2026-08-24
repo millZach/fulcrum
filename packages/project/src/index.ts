@@ -7,9 +7,11 @@ import {
   ApprovalDecisionSchema,
   ArtifactRefSchema,
   ProjectStateSchema,
+  ProviderPreflightError,
   type ApprovalDecision,
   type ArtifactRef,
   type ProjectState,
+  type ProjectStateInput,
   type RevisionRef,
   type SubmissionRecord,
   type SubmissionStatus,
@@ -57,6 +59,8 @@ const extensionFor = (mediaType: string): string => {
     "image/webp": "webp",
     "image/svg+xml": "svg",
     "text/plain": "txt",
+    "audio/wav": "wav",
+    "audio/mpeg": "mp3",
   };
   return known[mediaType] ?? "bin";
 };
@@ -163,7 +167,7 @@ export class ProjectRepository {
       );
   }
 
-  createProject(state: ProjectState): ProjectState {
+  createProject(state: ProjectStateInput): ProjectState {
     const parsed = ProjectStateSchema.parse(state);
     const existing = this.database
       .prepare("SELECT state_json FROM projects WHERE project_id = ?")
@@ -533,16 +537,29 @@ export class ProjectRepository {
     label: string,
   ): ProjectState {
     if (amountUsd < 0 || !Number.isFinite(amountUsd)) {
-      throw new Error(
+      throw new ProviderPreflightError(
+        "payload-invalid",
         "Budget reservation must be a finite non-negative number.",
       );
     }
     const project = this.getProject(projectId);
     if (project.spentUsd + amountUsd > project.budgetUsd) {
-      throw new Error(
-        `Budget exhausted: ${label} requires $${amountUsd.toFixed(2)}, but only $${(
-          project.budgetUsd - project.spentUsd
-        ).toFixed(2)} remains.`,
+      const remainingUsd = project.budgetUsd - project.spentUsd;
+      this.appendEvent({
+        projectId,
+        runId: project.runId,
+        type: "budget.refused",
+        payload: {
+          label,
+          amountUsd,
+          remainingUsd,
+          budgetUsd: project.budgetUsd,
+          spentUsd: project.spentUsd,
+        },
+      });
+      throw new ProviderPreflightError(
+        "budget-refused",
+        `Budget exhausted: ${label} requires $${amountUsd.toFixed(2)}, but only $${remainingUsd.toFixed(2)} remains.`,
       );
     }
     const saved = this.saveProject({

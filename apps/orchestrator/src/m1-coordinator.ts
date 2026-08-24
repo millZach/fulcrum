@@ -2,8 +2,16 @@ import { randomUUID } from "node:crypto";
 
 import {
   classifyFocusedDirectionChange,
+  isM1LiveAuthorized,
+  m1LiveAuthorizationMessage,
   M1CreativeDevelopment,
+  type SoundGenerationRunner,
+  type StructuredModelExecution,
 } from "@fulcrum/creative";
+import {
+  runCodexSubscriptionImage,
+  type SubscriptionImageRunner,
+} from "@fulcrum/execution";
 import { z } from "zod";
 
 import {
@@ -13,6 +21,7 @@ import {
   ConceptPlanSchema,
   ConfirmConceptPlanInputSchema,
   ConfirmSharedUnderstandingInputSchema,
+  ConfirmSoundPlanInputSchema,
   CreateProjectInputSchema,
   GameDesignSpecSchema,
   InterrogationStateSchema,
@@ -20,11 +29,17 @@ import {
   M1ApprovalInputSchema,
   ProjectSnapshotSchema,
   RegenerateConceptInputSchema,
+  RegenerateSoundInputSchema,
+  SoundDocumentSchema,
+  SoundPlanSchema,
+  SoundSetSchema,
   ReplaceVisualDirectionInputSchema,
   ReviseGameDesignSpecInputSchema,
   SelectConceptRevisionInputSchema,
   VisualDirectionSetSchema,
   type ApprovalDecision,
+  type M1InFlight,
+  type M1InFlightAction,
   type ProjectSnapshot,
   type ProjectState,
   type RevisionRef,
@@ -33,23 +48,106 @@ import { ProjectRepository } from "@fulcrum/project";
 
 const now = (): string => new Date().toISOString();
 
+const replayLatencyMs = (): number => {
+  // FULCRUM_REPLAY_LATENCY_MS slows replay-only creative actions so wait states can be tested without paid calls.
+  const value = Number(process.env.FULCRUM_REPLAY_LATENCY_MS ?? "0");
+  return Number.isFinite(value) && value > 0 ? value : 0;
+};
+
+const delay = async (milliseconds: number): Promise<void> => {
+  if (milliseconds <= 0) return;
+  await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+};
+
 const publicActor = "local-creative-director";
+
+export type M1CoordinatorOptions = {
+  imageRunner?: SubscriptionImageRunner;
+  execution?: StructuredModelExecution;
+  soundRunner?: SoundGenerationRunner;
+};
 
 export class M1Coordinator {
   private readonly creative: M1CreativeDevelopment;
+  private readonly inFlight = new Map<
+    string,
+    {
+      marker: M1InFlight;
+      dedupeKey: string;
+      promise: Promise<ProjectSnapshot>;
+    }
+  >();
 
-  constructor(readonly repository: ProjectRepository) {
-    this.creative = new M1CreativeDevelopment(repository);
+  constructor(
+    readonly repository: ProjectRepository,
+    options: M1CoordinatorOptions = {},
+  ) {
+    this.creative = new M1CreativeDevelopment(
+      repository,
+      options.imageRunner ?? runCodexSubscriptionImage,
+      options.execution,
+      options.soundRunner,
+    );
+  }
+
+  private creativeContext(state: {
+    projectId: string;
+    runId: string;
+    mode: ProjectState["mode"];
+    orchestratorProvider: ProjectState["orchestratorProvider"];
+  }) {
+    return {
+      projectId: state.projectId,
+      runId: state.runId,
+      mode: state.mode,
+      orchestratorProvider: state.orchestratorProvider,
+    };
+  }
+
+  private runModelAction(
+    projectId: string,
+    action: M1InFlightAction,
+    input: unknown,
+    run: () => Promise<ProjectSnapshot>,
+  ): Promise<ProjectSnapshot> {
+    const dedupeKey = `${action}:${JSON.stringify(input)}`;
+    const current = this.inFlight.get(projectId);
+    if (current) {
+      if (current.dedupeKey === dedupeKey) return current.promise;
+      return Promise.reject(
+        new Error(
+          `Project ${projectId} is already processing ${current.marker.action}.`,
+        ),
+      );
+    }
+
+    const marker: M1InFlight = { action, startedAt: now() };
+    let promise!: Promise<ProjectSnapshot>;
+    promise = Promise.resolve()
+      .then(async () => {
+        const state = this.requireM1(projectId);
+        if (state.mode === "replay") await delay(replayLatencyMs());
+        return await run();
+      })
+      .finally(() => {
+        if (this.inFlight.get(projectId)?.promise === promise)
+          this.inFlight.delete(projectId);
+      });
+    this.inFlight.set(projectId, { marker, dedupeKey, promise });
+    return promise;
   }
 
   async create(input: unknown): Promise<ProjectSnapshot> {
     const parsed = CreateProjectInputSchema.parse(input);
     if (parsed.milestone !== "m1")
       throw new Error("M1 project creation requires milestone m1.");
-    if (parsed.mode !== "replay")
-      throw new Error(
-        "Live M1 is not yet authorized or supported. Use replay mode for this implementation slice.",
-      );
+    if (parsed.mode === "live") {
+      if (!isM1LiveAuthorized()) throw new Error(m1LiveAuthorizationMessage());
+      if (parsed.imageProvider !== "openai-subscription")
+        throw new Error(
+          "Live M1 concept generation uses the signed-in OpenAI subscription ImageGen route. Set imageProvider to openai-subscription. M1 does not start a paid image-to-3D job.",
+        );
+    }
 
     const projectId = randomUUID();
     const runId = randomUUID();
@@ -62,10 +160,13 @@ export class M1Coordinator {
       value: { text: parsed.brief, rightsConfirmed: parsed.rightsConfirmed },
       runId,
     });
-    const started = this.creative.beginInterrogation({
+    if (parsed.mode === "replay") await delay(replayLatencyMs());
+    const started = await this.creative.beginInterrogation({
       projectId,
       runId,
       brief: parsed.brief,
+      mode: parsed.mode,
+      orchestratorProvider: parsed.orchestratorProvider,
     });
     this.repository.createProject({
       schemaVersion: 1,
@@ -77,10 +178,11 @@ export class M1Coordinator {
       orchestratorProvider: parsed.orchestratorProvider,
       implementationProvider: parsed.implementationProvider,
       imageProvider: parsed.imageProvider,
+      soundProvider: parsed.mode === "replay" ? "none" : parsed.soundProvider,
       status: "awaiting-input",
       stage: "interrogation",
       runId,
-      budgetUsd: parsed.budgetUsd,
+      budgetUsd: parsed.budgetUsd ?? 0,
       spentUsd: 0,
       conceptReplacementCount: 0,
       directionReplacementCount: 0,
@@ -95,8 +197,10 @@ export class M1Coordinator {
     });
     this.event(projectId, runId, "project.created", {
       milestone: "m1",
-      mode: "replay",
-      budgetUsd: parsed.budgetUsd,
+      mode: parsed.mode,
+      ...(parsed.budgetUsd !== undefined
+        ? { budgetUsd: parsed.budgetUsd }
+        : {}),
       rightsConfirmed: true,
     });
     this.event(projectId, runId, "creative.capabilities-provisioned", {
@@ -114,7 +218,10 @@ export class M1Coordinator {
     return this.snapshot(projectId);
   }
 
-  answerFrontier(projectId: string, input: unknown): ProjectSnapshot {
+  async answerFrontier(
+    projectId: string,
+    input: unknown,
+  ): Promise<ProjectSnapshot> {
     const parsed = AnswerFrontierRoundInputSchema.parse(input);
     const state = this.requireStage(projectId, "interrogation");
     const interrogation = this.requireRef(
@@ -127,32 +234,33 @@ export class M1Coordinator {
       "interrogation",
     );
     const brief = this.briefText(state);
-    const next = this.creative.answerCurrentFrontier({
-      projectId,
-      runId: state.runId,
-      brief,
-      interrogation,
-      roundId: parsed.roundId,
-      answers: parsed.answers,
+    return this.runModelAction(projectId, "answers", parsed, async () => {
+      const next = await this.creative.answerCurrentFrontier({
+        ...this.creativeContext(state),
+        brief,
+        interrogation,
+        roundId: parsed.roundId,
+        answers: parsed.answers,
+      });
+      this.repository.saveProject({
+        ...state,
+        interrogation: next,
+        status: "awaiting-input",
+      });
+      this.event(projectId, state.runId, "interrogation.frontier-answered", {
+        roundId: parsed.roundId,
+        previousRevisionId: interrogation.revisionId,
+        revisionId: next.revisionId,
+        answerCount: parsed.answers.length,
+      });
+      return this.snapshot(projectId);
     });
-    this.repository.saveProject({
-      ...state,
-      interrogation: next,
-      status: "awaiting-input",
-    });
-    this.event(projectId, state.runId, "interrogation.frontier-answered", {
-      roundId: parsed.roundId,
-      previousRevisionId: interrogation.revisionId,
-      revisionId: next.revisionId,
-      answerCount: parsed.answers.length,
-    });
-    return this.snapshot(projectId);
   }
 
-  confirmSharedUnderstanding(
+  async confirmSharedUnderstanding(
     projectId: string,
     input: unknown,
-  ): ProjectSnapshot {
+  ): Promise<ProjectSnapshot> {
     const parsed = ConfirmSharedUnderstandingInputSchema.parse(input);
     const state = this.requireStage(projectId, "interrogation");
     const current = this.requireRef(
@@ -164,33 +272,34 @@ export class M1Coordinator {
       parsed.interrogationRevisionId,
       "interrogation",
     );
-    const artifacts = this.creative.confirmSharedUnderstanding({
-      projectId,
-      runId: state.runId,
-      brief: this.briefText(state),
-      interrogation: current,
-      confirmedBy: publicActor,
+    return this.runModelAction(projectId, "confirm", parsed, async () => {
+      const artifacts = await this.creative.confirmSharedUnderstanding({
+        ...this.creativeContext(state),
+        brief: this.briefText(state),
+        interrogation: current,
+        confirmedBy: publicActor,
+      });
+      this.repository.saveProject({
+        ...state,
+        interrogation: artifacts.interrogation,
+        gameDesignSpec: artifacts.gameDesignSpec,
+        projectGlossary: artifacts.glossary,
+        decisionRecords: artifacts.adr
+          ? [...(state.decisionRecords ?? []), artifacts.adr]
+          : (state.decisionRecords ?? []),
+        status: "awaiting-approval",
+        stage: "game-design-approval",
+      });
+      this.event(projectId, state.runId, "interrogation.shared-understanding", {
+        interrogationRevisionId: artifacts.interrogation.revisionId,
+        gameDesignSpecRevisionId: artifacts.gameDesignSpec.revisionId,
+        glossaryRevisionId: artifacts.glossary.revisionId,
+        ...(artifacts.adr
+          ? { decisionRecordRevisionId: artifacts.adr.revisionId }
+          : {}),
+      });
+      return this.snapshot(projectId);
     });
-    this.repository.saveProject({
-      ...state,
-      interrogation: artifacts.interrogation,
-      gameDesignSpec: artifacts.gameDesignSpec,
-      projectGlossary: artifacts.glossary,
-      decisionRecords: artifacts.adr
-        ? [...(state.decisionRecords ?? []), artifacts.adr]
-        : (state.decisionRecords ?? []),
-      status: "awaiting-approval",
-      stage: "game-design-approval",
-    });
-    this.event(projectId, state.runId, "interrogation.shared-understanding", {
-      interrogationRevisionId: artifacts.interrogation.revisionId,
-      gameDesignSpecRevisionId: artifacts.gameDesignSpec.revisionId,
-      glossaryRevisionId: artifacts.glossary.revisionId,
-      ...(artifacts.adr
-        ? { decisionRecordRevisionId: artifacts.adr.revisionId }
-        : {}),
-    });
-    return this.snapshot(projectId);
   }
 
   async approveGameDesign(
@@ -219,6 +328,33 @@ export class M1Coordinator {
       throw new Error(
         "Revise the Game Design Spec before approving a changes-requested revision.",
       );
+    if (parsed.decision === "approved")
+      return this.runModelAction(projectId, "approve-gds", parsed, async () => {
+        const decision = this.recordDecision(state, parsed);
+        this.event(projectId, state.runId, "approval.game-design-decided", {
+          decision: decision.decision,
+          targetRevisionId: decision.targetRevisionId,
+        });
+        const visualDirectionSet = await this.creative.generateVisualDirections(
+          {
+            ...this.creativeContext(state),
+            gameDesignSpec: target,
+          },
+        );
+        this.repository.saveProject({
+          ...state,
+          gameDesignApproval: decision,
+          visualDirectionSet,
+          status: "awaiting-approval",
+          stage: "visual-direction-approval",
+        });
+        this.event(projectId, state.runId, "visual-directions.generated", {
+          directionSetRevisionId: visualDirectionSet.revisionId,
+          count: 3,
+        });
+        return this.snapshot(projectId);
+      });
+
     const decision = this.recordDecision(state, parsed);
     this.event(projectId, state.runId, "approval.game-design-decided", {
       decision: decision.decision,
@@ -241,26 +377,13 @@ export class M1Coordinator {
         "The Game Design Spec must be approved before visual directions can be generated.",
       );
 
-    const visualDirectionSet = await this.creative.generateVisualDirections({
-      projectId,
-      runId: state.runId,
-      gameDesignSpec: target,
-    });
-    this.repository.saveProject({
-      ...state,
-      gameDesignApproval: decision,
-      visualDirectionSet,
-      status: "awaiting-approval",
-      stage: "visual-direction-approval",
-    });
-    this.event(projectId, state.runId, "visual-directions.generated", {
-      directionSetRevisionId: visualDirectionSet.revisionId,
-      count: 3,
-    });
-    return this.snapshot(projectId);
+    throw new Error("Unsupported Game Design Spec approval decision.");
   }
 
-  reviseGameDesign(projectId: string, input: unknown): ProjectSnapshot {
+  async reviseGameDesign(
+    projectId: string,
+    input: unknown,
+  ): Promise<ProjectSnapshot> {
     const parsed = ReviseGameDesignSpecInputSchema.parse(input);
     const state = this.requireStage(projectId, "game-design-approval");
     const current = this.requireRef(
@@ -276,24 +399,25 @@ export class M1Coordinator {
       throw new Error(
         "The Game Design Spec can be revised here only after changes are requested.",
       );
-    const revised = this.creative.reviseGameDesignSpec({
-      projectId,
-      runId: state.runId,
-      gameDesignSpec: current,
-      change: parsed.change,
+    return this.runModelAction(projectId, "revise", parsed, async () => {
+      const revised = await this.creative.reviseGameDesignSpec({
+        ...this.creativeContext(state),
+        gameDesignSpec: current,
+        change: parsed.change,
+      });
+      const { gameDesignApproval: _priorApproval, ...base } = state;
+      this.repository.saveProject({
+        ...base,
+        gameDesignSpec: revised,
+        status: "awaiting-approval",
+        stage: "game-design-approval",
+      });
+      this.event(projectId, state.runId, "game-design.revised", {
+        sourceRevisionId: current.revisionId,
+        revisionId: revised.revisionId,
+      });
+      return this.snapshot(projectId);
     });
-    const { gameDesignApproval: _priorApproval, ...base } = state;
-    this.repository.saveProject({
-      ...base,
-      gameDesignSpec: revised,
-      status: "awaiting-approval",
-      stage: "game-design-approval",
-    });
-    this.event(projectId, state.runId, "game-design.revised", {
-      sourceRevisionId: current.revisionId,
-      revisionId: revised.revisionId,
-    });
-    return this.snapshot(projectId);
   }
 
   async replaceDirection(
@@ -330,28 +454,29 @@ export class M1Coordinator {
       )?.revisionId;
     if (!comparisonDirection)
       throw new Error("A comparison direction is required before replacement.");
-    const replacement = await this.creative.replaceUnselectedDirection({
-      projectId,
-      runId: state.runId,
-      gameDesignSpec: this.requireRef(
-        state.gameDesignSpec,
-        "The project has no approved Game Design Spec.",
-      ),
-      directionSet,
-      directionRevisionId: target.revisionId,
-      selectedDirectionRevisionId: comparisonDirection,
-      notes: parsed.notes,
+    return this.runModelAction(projectId, "replace", parsed, async () => {
+      const replacement = await this.creative.replaceUnselectedDirection({
+        ...this.creativeContext(state),
+        gameDesignSpec: this.requireRef(
+          state.gameDesignSpec,
+          "The project has no approved Game Design Spec.",
+        ),
+        directionSet,
+        directionRevisionId: target.revisionId,
+        selectedDirectionRevisionId: comparisonDirection,
+        notes: parsed.notes,
+      });
+      this.repository.saveProject({
+        ...state,
+        visualDirectionSet: replacement,
+        directionReplacementCount: (state.directionReplacementCount ?? 0) + 1,
+      });
+      this.event(projectId, state.runId, "visual-direction.replaced", {
+        sourceDirectionRevisionId: target.revisionId,
+        directionSetRevisionId: replacement.revisionId,
+      });
+      return this.snapshot(projectId);
     });
-    this.repository.saveProject({
-      ...state,
-      visualDirectionSet: replacement,
-      directionReplacementCount: (state.directionReplacementCount ?? 0) + 1,
-    });
-    this.event(projectId, state.runId, "visual-direction.replaced", {
-      sourceDirectionRevisionId: target.revisionId,
-      directionSetRevisionId: replacement.revisionId,
-    });
-    return this.snapshot(projectId);
   }
 
   async changeDirection(
@@ -402,82 +527,68 @@ export class M1Coordinator {
         },
       ]);
     }
-    const changed = await this.creative.makeFocusedDirectionChange({
-      projectId,
-      runId: state.runId,
-      gameDesignSpec: this.requireRef(
-        state.gameDesignSpec,
-        "The project has no approved Game Design Spec.",
-      ),
-      directionSet: currentSet,
-      directionRevisionId: parsed.directionRevisionId,
-      change: parsed.change,
-      pinnedAspects: parsed.pinnedAspects,
-    });
-    const after = VisualDirectionSetSchema.parse(
-      this.repository.resolveRevision(changed.directionSet),
-    );
-    const selected = after.directions.find(
-      (direction) => direction.directionId === source.directionId,
-    );
-    if (!selected)
-      throw new Error(
-        "The focused direction revision is missing from its set.",
+    return this.runModelAction(projectId, "change", parsed, async () => {
+      const changed = await this.creative.makeFocusedDirectionChange({
+        ...this.creativeContext(state),
+        gameDesignSpec: this.requireRef(
+          state.gameDesignSpec,
+          "The project has no approved Game Design Spec.",
+        ),
+        directionSet: currentSet,
+        directionRevisionId: parsed.directionRevisionId,
+        change: parsed.change,
+        pinnedAspects: parsed.pinnedAspects,
+      });
+      const after = VisualDirectionSetSchema.parse(
+        this.repository.resolveRevision(changed.directionSet),
       );
-    const visualBible = this.repository.getRevision(selected.revisionId);
-    const rebasedConceptSet = state.conceptSet
-      ? this.creative.rebaseConceptSetForDirectionChange({
-          projectId,
-          runId: state.runId,
-          conceptSet: state.conceptSet,
-          directionSet: changed.directionSet,
-          previousDirectionRevisionId: source.revisionId,
-          newDirectionRevisionId: selected.revisionId,
-        })
-      : undefined;
-    if (rebasedConceptSet) {
-      const rebased = ConceptSetSchema.parse(
-        this.repository.resolveRevision(rebasedConceptSet),
+      const selected = after.directions.find(
+        (direction) => direction.directionId === source.directionId,
       );
-      const exhausted = rebased.slots.filter(
-        (slot) =>
-          !slot.selectedRevisionId &&
-          (state.conceptRegenerationCounts?.[slot.slotId] ?? 0) >= 1,
-      );
-      if (exhausted.length > 0)
+      if (!selected)
         throw new Error(
-          `The direction change would stale concept slots whose regeneration allowance is already used: ${exhausted
-            .map((slot) => slot.slotId)
-            .join(", ")}.`,
+          "The focused direction revision is missing from its set.",
         );
-    }
-    const {
-      directionApproval: _priorDirectionApproval,
-      conceptSetApproval: _priorConceptSetApproval,
-      ...base
-    } = state;
-    this.repository.saveProject({
-      ...base,
-      visualDirectionSet: changed.directionSet,
-      selectedVisualDirectionRevisionId: selected.revisionId,
-      visualBible,
-      focusedDirectionChange: changed.changeRecord,
-      focusedDirectionChangeCount: (state.focusedDirectionChangeCount ?? 0) + 1,
-      ...(rebasedConceptSet ? { conceptSet: rebasedConceptSet } : {}),
-      status: "awaiting-approval",
-      stage: "visual-direction-approval",
+      const visualBible = this.repository.getRevision(selected.revisionId);
+      const rebasedConceptSet = state.conceptSet
+        ? this.creative.rebaseConceptSetForDirectionChange({
+            projectId,
+            runId: state.runId,
+            conceptSet: state.conceptSet,
+            directionSet: changed.directionSet,
+            previousDirectionRevisionId: source.revisionId,
+            newDirectionRevisionId: selected.revisionId,
+          })
+        : undefined;
+      const {
+        directionApproval: _priorDirectionApproval,
+        conceptSetApproval: _priorConceptSetApproval,
+        ...base
+      } = state;
+      this.repository.saveProject({
+        ...base,
+        visualDirectionSet: changed.directionSet,
+        selectedVisualDirectionRevisionId: selected.revisionId,
+        visualBible,
+        focusedDirectionChange: changed.changeRecord,
+        focusedDirectionChangeCount:
+          (state.focusedDirectionChangeCount ?? 0) + 1,
+        ...(rebasedConceptSet ? { conceptSet: rebasedConceptSet } : {}),
+        status: "awaiting-approval",
+        stage: "visual-direction-approval",
+      });
+      this.event(projectId, state.runId, "visual-direction.focused-change", {
+        sourceDirectionRevisionId: source.revisionId,
+        resultDirectionRevisionId: selected.revisionId,
+        directionSetRevisionId: changed.directionSet.revisionId,
+        changeRecordRevisionId: changed.changeRecord.revisionId,
+        pinnedAspectCount: parsed.pinnedAspects.length,
+        ...(rebasedConceptSet
+          ? { conceptSetRevisionId: rebasedConceptSet.revisionId }
+          : {}),
+      });
+      return this.snapshot(projectId);
     });
-    this.event(projectId, state.runId, "visual-direction.focused-change", {
-      sourceDirectionRevisionId: source.revisionId,
-      resultDirectionRevisionId: selected.revisionId,
-      directionSetRevisionId: changed.directionSet.revisionId,
-      changeRecordRevisionId: changed.changeRecord.revisionId,
-      pinnedAspectCount: parsed.pinnedAspects.length,
-      ...(rebasedConceptSet
-        ? { conceptSetRevisionId: rebasedConceptSet.revisionId }
-        : {}),
-    });
-    return this.snapshot(projectId);
   }
 
   async approveDirection(
@@ -599,7 +710,7 @@ export class M1Coordinator {
   ): Promise<ProjectSnapshot> {
     const parsed = ConfirmConceptPlanInputSchema.parse(input);
     const state = this.requireStage(projectId, "concept-planning");
-    const conceptPlan = this.requireRef(
+    let conceptPlan = this.requireRef(
       state.conceptPlan,
       "The project has no concept plan.",
     );
@@ -615,37 +726,76 @@ export class M1Coordinator {
     const selectedDirectionRevisionId = state.selectedVisualDirectionRevisionId;
     if (!selectedDirectionRevisionId)
       throw new Error("The project has no selected visual direction.");
-    const conceptSet = await this.creative.generateConceptSet({
-      projectId,
-      runId: state.runId,
-      gameDesignSpec: this.requireRef(
-        state.gameDesignSpec,
-        "The project has no approved Game Design Spec.",
-      ),
-      directionSet,
-      selectedDirectionRevisionId,
-      conceptPlan,
+    return this.runModelAction(projectId, "generate", parsed, async () => {
+      const shownPlan = ConceptPlanSchema.parse(
+        this.repository.resolveRevision(conceptPlan),
+      );
+      const effectiveOverrides = (parsed.promptOverrides ?? []).filter(
+        (override) => {
+          const slot = shownPlan.slots.find(
+            (candidate) => candidate.slotId === override.slotId,
+          );
+          const trimmed = override.prompt.trim();
+          if (!trimmed) return true;
+          if (!slot) return true;
+          return trimmed !== slot.prompt;
+        },
+      );
+      if (effectiveOverrides.length > 0) {
+        const editedSlotIds = [
+          ...new Set(effectiveOverrides.map((override) => override.slotId)),
+        ];
+        conceptPlan = this.creative.applyConceptPlanPromptOverrides({
+          projectId,
+          runId: state.runId,
+          conceptPlan,
+          overrides: effectiveOverrides,
+        });
+        this.repository.saveProject({
+          ...this.repository.getProject(projectId),
+          conceptPlan,
+        });
+        this.event(projectId, state.runId, "concept-plan.edited", {
+          conceptPlanRevisionId: conceptPlan.revisionId,
+          editedSlotIds,
+        });
+      }
+      const conceptSet = await this.creative.generateConceptSet({
+        projectId,
+        runId: state.runId,
+        gameDesignSpec: this.requireRef(
+          state.gameDesignSpec,
+          "The project has no approved Game Design Spec.",
+        ),
+        directionSet,
+        selectedDirectionRevisionId,
+        conceptPlan,
+        mode: state.mode,
+        imageProvider: state.imageProvider,
+      });
+      const concepts = ConceptSetSchema.parse(
+        this.repository.resolveRevision(conceptSet),
+      );
+      const latest = this.repository.getProject(projectId);
+      this.repository.saveProject({
+        ...latest,
+        conceptPlan,
+        conceptSet,
+        conceptRegenerationCounts: Object.fromEntries(
+          concepts.slots.map((slot) => [slot.slotId, 0]),
+        ),
+        status: "awaiting-approval",
+        stage: "concept-set-approval",
+      });
+      this.event(projectId, state.runId, "concept-plan.confirmed", {
+        conceptPlanRevisionId: conceptPlan.revisionId,
+      });
+      this.event(projectId, state.runId, "concept-set.completed", {
+        conceptSetRevisionId: conceptSet.revisionId,
+        sourceDirectionRevisionId: selectedDirectionRevisionId,
+      });
+      return this.snapshot(projectId);
     });
-    const concepts = ConceptSetSchema.parse(
-      this.repository.resolveRevision(conceptSet),
-    );
-    this.repository.saveProject({
-      ...state,
-      conceptSet,
-      conceptRegenerationCounts: Object.fromEntries(
-        concepts.slots.map((slot) => [slot.slotId, 0]),
-      ),
-      status: "awaiting-approval",
-      stage: "concept-set-approval",
-    });
-    this.event(projectId, state.runId, "concept-plan.confirmed", {
-      conceptPlanRevisionId: conceptPlan.revisionId,
-    });
-    this.event(projectId, state.runId, "concept-set.completed", {
-      conceptSetRevisionId: conceptSet.revisionId,
-      sourceDirectionRevisionId: selectedDirectionRevisionId,
-    });
-    return this.snapshot(projectId);
   }
 
   async regenerateConcept(
@@ -663,11 +813,6 @@ export class M1Coordinator {
       parsed.conceptSetRevisionId,
       "concept set",
     );
-    const count = state.conceptRegenerationCounts?.[parsed.slotId] ?? 0;
-    if (count >= 1)
-      throw new Error(
-        `Concept slot ${parsed.slotId} has already been regenerated.`,
-      );
     const setBefore = ConceptSetSchema.parse(
       this.repository.resolveRevision(current),
     );
@@ -681,31 +826,37 @@ export class M1Coordinator {
       );
     if (!setBefore.slots.some((slot) => slot.slotId === parsed.slotId))
       throw new Error(`Concept slot ${parsed.slotId} does not exist.`);
-    const next = await this.creative.regenerateConceptSlot({
-      projectId,
-      runId: state.runId,
-      gameDesignSpec: this.requireRef(
-        state.gameDesignSpec,
-        "The project has no approved Game Design Spec.",
-      ),
-      conceptSet: current,
-      slotId: parsed.slotId,
-      ...(parsed.notes ? { notes: parsed.notes } : {}),
+    return this.runModelAction(projectId, "regenerate", parsed, async () => {
+      const next = await this.creative.regenerateConceptSlot({
+        projectId,
+        runId: state.runId,
+        gameDesignSpec: this.requireRef(
+          state.gameDesignSpec,
+          "The project has no approved Game Design Spec.",
+        ),
+        conceptSet: current,
+        slotId: parsed.slotId,
+        mode: state.mode,
+        imageProvider: state.imageProvider,
+        ...(parsed.notes ? { notes: parsed.notes } : {}),
+      });
+      const latest = this.repository.getProject(projectId);
+      const count = latest.conceptRegenerationCounts?.[parsed.slotId] ?? 0;
+      this.repository.saveProject({
+        ...latest,
+        conceptSet: next,
+        conceptRegenerationCounts: {
+          ...(latest.conceptRegenerationCounts ?? {}),
+          [parsed.slotId]: count + 1,
+        },
+      });
+      this.event(projectId, state.runId, "concept.regenerated", {
+        slotId: parsed.slotId,
+        previousConceptSetRevisionId: current.revisionId,
+        conceptSetRevisionId: next.revisionId,
+      });
+      return this.snapshot(projectId);
     });
-    this.repository.saveProject({
-      ...state,
-      conceptSet: next,
-      conceptRegenerationCounts: {
-        ...(state.conceptRegenerationCounts ?? {}),
-        [parsed.slotId]: count + 1,
-      },
-    });
-    this.event(projectId, state.runId, "concept.regenerated", {
-      slotId: parsed.slotId,
-      previousConceptSetRevisionId: current.revisionId,
-      conceptSetRevisionId: next.revisionId,
-    });
-    return this.snapshot(projectId);
   }
 
   selectConcept(projectId: string, input: unknown): ProjectSnapshot {
@@ -810,9 +961,261 @@ export class M1Coordinator {
         "concept-set-not-approved",
         "The concept set was not approved.",
       );
+    const directionSet = this.requireRef(
+      state.visualDirectionSet,
+      "The project has no visual direction set.",
+    );
+    const selectedDirectionRevisionId = state.selectedVisualDirectionRevisionId;
+    if (!selectedDirectionRevisionId)
+      throw new Error("The project has no selected visual direction.");
+    const soundPlan = this.creative.planSounds({
+      projectId,
+      runId: state.runId,
+      gameDesignSpec: this.requireRef(
+        state.gameDesignSpec,
+        "The project has no approved Game Design Spec.",
+      ),
+      directionSet,
+      selectedDirectionRevisionId,
+    });
     this.repository.saveProject({
       ...state,
       conceptSetApproval: decision,
+      soundPlan,
+      soundRegenerationCounts: {},
+      status: "awaiting-input",
+      stage: "sound-planning",
+    });
+    this.event(projectId, state.runId, "sound-plan.created", {
+      soundPlanRevisionId: soundPlan.revisionId,
+      slotCount: SoundPlanSchema.parse(
+        this.repository.resolveRevision(soundPlan),
+      ).slots.length,
+    });
+    return this.snapshot(projectId);
+  }
+
+  async confirmSoundPlan(
+    projectId: string,
+    input: unknown,
+  ): Promise<ProjectSnapshot> {
+    const parsed = ConfirmSoundPlanInputSchema.parse(input);
+    const state = this.requireStage(projectId, "sound-planning");
+    let soundPlan = this.requireRef(
+      state.soundPlan,
+      "The project has no sound plan.",
+    );
+    this.requireExpectedRevision(
+      soundPlan,
+      parsed.soundPlanRevisionId,
+      "sound plan",
+    );
+    const directionSet = this.requireRef(
+      state.visualDirectionSet,
+      "The project has no visual direction set.",
+    );
+    const selectedDirectionRevisionId = state.selectedVisualDirectionRevisionId;
+    if (!selectedDirectionRevisionId)
+      throw new Error("The project has no selected visual direction.");
+    const shownPlan = SoundPlanSchema.parse(
+      this.repository.resolveRevision(soundPlan),
+    );
+    const effectiveOverrides = (parsed.promptOverrides ?? []).filter(
+      (override) => {
+        const slot = shownPlan.slots.find(
+          (candidate) => candidate.slotId === override.slotId,
+        );
+        const trimmed = override.prompt.trim();
+        if (!trimmed) return true;
+        if (!slot) return true;
+        return trimmed !== slot.prompt;
+      },
+    );
+    return this.runModelAction(
+      projectId,
+      "generate-sounds",
+      parsed,
+      async () => {
+        if (effectiveOverrides.length > 0) {
+          const editedSlotIds = [
+            ...new Set(effectiveOverrides.map((override) => override.slotId)),
+          ];
+          soundPlan = this.creative.applySoundPlanPromptOverrides({
+            projectId,
+            runId: state.runId,
+            soundPlan,
+            overrides: effectiveOverrides,
+          });
+          this.repository.saveProject({
+            ...this.repository.getProject(projectId),
+            soundPlan,
+          });
+          this.event(projectId, state.runId, "sound-plan.edited", {
+            soundPlanRevisionId: soundPlan.revisionId,
+            editedSlotIds,
+          });
+        }
+        const soundSet = await this.creative.generateSoundSet({
+          projectId,
+          runId: state.runId,
+          gameDesignSpec: this.requireRef(
+            state.gameDesignSpec,
+            "The project has no approved Game Design Spec.",
+          ),
+          directionSet,
+          selectedDirectionRevisionId,
+          soundPlan,
+          mode: state.mode,
+          soundProvider: state.soundProvider,
+        });
+        const sounds = SoundSetSchema.parse(
+          this.repository.resolveRevision(soundSet),
+        );
+        const latest = this.repository.getProject(projectId);
+        this.repository.saveProject({
+          ...latest,
+          soundPlan,
+          soundSet,
+          soundRegenerationCounts: Object.fromEntries(
+            sounds.slots.map((slot) => [slot.slotId, 0]),
+          ),
+          status: "awaiting-approval",
+          stage: "sound-set-approval",
+        });
+        this.event(projectId, state.runId, "sound-plan.confirmed", {
+          soundPlanRevisionId: soundPlan.revisionId,
+        });
+        this.event(projectId, state.runId, "sound-set.completed", {
+          soundSetRevisionId: soundSet.revisionId,
+          sourceDirectionRevisionId: selectedDirectionRevisionId,
+        });
+        return this.snapshot(projectId);
+      },
+    );
+  }
+
+  async regenerateSound(
+    projectId: string,
+    input: unknown,
+  ): Promise<ProjectSnapshot> {
+    const parsed = RegenerateSoundInputSchema.parse(input);
+    const state = this.requireStage(projectId, "sound-set-approval");
+    const current = this.requireRef(
+      state.soundSet,
+      "The project has no sound set.",
+    );
+    this.requireExpectedRevision(
+      current,
+      parsed.soundSetRevisionId,
+      "sound set",
+    );
+    const setBefore = SoundSetSchema.parse(
+      this.repository.resolveRevision(current),
+    );
+    if (!setBefore.slots.some((slot) => slot.slotId === parsed.slotId))
+      throw new Error(`Sound slot ${parsed.slotId} does not exist.`);
+    return this.runModelAction(
+      projectId,
+      "regenerate-sound",
+      parsed,
+      async () => {
+        const next = await this.creative.regenerateSoundSlot({
+          projectId,
+          runId: state.runId,
+          soundSet: current,
+          slotId: parsed.slotId,
+          mode: state.mode,
+          soundProvider: state.soundProvider,
+          ...(parsed.notes ? { notes: parsed.notes } : {}),
+        });
+        const latest = this.repository.getProject(projectId);
+        const count = latest.soundRegenerationCounts?.[parsed.slotId] ?? 0;
+        this.repository.saveProject({
+          ...latest,
+          soundSet: next,
+          soundRegenerationCounts: {
+            ...(latest.soundRegenerationCounts ?? {}),
+            [parsed.slotId]: count + 1,
+          },
+        });
+        this.event(projectId, state.runId, "sound.regenerated", {
+          slotId: parsed.slotId,
+          previousSoundSetRevisionId: current.revisionId,
+          soundSetRevisionId: next.revisionId,
+        });
+        return this.snapshot(projectId);
+      },
+    );
+  }
+
+  approveSoundSet(projectId: string, input: unknown): ProjectSnapshot {
+    const parsed = M1ApprovalInputSchema.parse({
+      ...(input as object),
+      targetType: "sound-set",
+    });
+    const state = this.requireStage(projectId, "sound-set-approval");
+    const target = this.requireRef(
+      state.soundSet,
+      "The project has no sound set.",
+    );
+    this.requireApprovalTarget(
+      target,
+      parsed.targetRevisionId,
+      parsed.targetSha256,
+    );
+    const set = SoundSetSchema.parse(this.repository.resolveRevision(target));
+    if (
+      state.conceptSetApproval?.decision !== "approved" ||
+      !state.selectedVisualDirectionRevisionId ||
+      set.sourceDirectionRevisionId !== state.selectedVisualDirectionRevisionId
+    )
+      throw new Error(
+        "The sound set does not descend from the current approved visual direction.",
+      );
+    if (
+      state.soundPlan &&
+      set.sourceSoundPlanRevisionId !== state.soundPlan.revisionId
+    )
+      throw new Error(
+        "The sound set does not descend from the current sound plan.",
+      );
+    for (const slot of set.slots) {
+      if (!slot.selectedRevisionId)
+        throw new Error("Every sound slot must have a selected revision.");
+      const selected = slot.revisions.find(
+        ({ revision }) => revision.revisionId === slot.selectedRevisionId,
+      );
+      if (!selected)
+        throw new Error(`Sound slot ${slot.slotId} has an invalid selection.`);
+      if (selected.staleReason)
+        throw new Error(
+          `Sound slot ${slot.slotId} has a stale selected revision: ${selected.staleReason}`,
+        );
+    }
+    const decision = this.recordDecision(state, parsed);
+    this.event(projectId, state.runId, "approval.sound-set-decided", {
+      decision: decision.decision,
+      targetRevisionId: decision.targetRevisionId,
+    });
+    if (decision.decision === "changes-requested") {
+      this.repository.saveProject({
+        ...state,
+        soundSetApproval: decision,
+        status: "awaiting-approval",
+        stage: "sound-set-approval",
+      });
+      return this.snapshot(projectId);
+    }
+    if (decision.decision === "rejected")
+      return this.blockAfterDecision(
+        state,
+        { soundSetApproval: decision },
+        "sound-set-not-approved",
+        "The sound set was not approved.",
+      );
+    this.repository.saveProject({
+      ...state,
+      soundSetApproval: decision,
       status: "complete",
       stage: "complete",
     });
@@ -846,6 +1249,24 @@ export class M1Coordinator {
           this.repository.resolveRevision(state.conceptPlan),
         )
       : undefined;
+    const soundPlan = state.soundPlan
+      ? SoundPlanSchema.parse(this.repository.resolveRevision(state.soundPlan))
+      : undefined;
+    const soundSet = state.soundSet
+      ? SoundSetSchema.parse(this.repository.resolveRevision(state.soundSet))
+      : undefined;
+    const soundDocuments = soundSet
+      ? Object.fromEntries(
+          soundSet.slots.map((slot) => [
+            slot.slotId,
+            slot.revisions.map(({ revision }) =>
+              SoundDocumentSchema.parse(
+                this.repository.resolveRevision(revision),
+              ),
+            ),
+          ]),
+        )
+      : undefined;
     const conceptDocuments = conceptSet
       ? Object.fromEntries(
           conceptSet.slots.map((slot) => [
@@ -861,6 +1282,9 @@ export class M1Coordinator {
     return ProjectSnapshotSchema.parse({
       state,
       briefText,
+      ...(this.inFlight.get(projectId)
+        ? { inFlight: this.inFlight.get(projectId)!.marker }
+        : {}),
       ...(state.interrogation
         ? {
             interrogation: InterrogationStateSchema.parse(
@@ -870,9 +1294,21 @@ export class M1Coordinator {
         : {}),
       ...(gameDesignSpec ? { gameDesignSpec } : {}),
       ...(visualDirections ? { visualDirections } : {}),
+      ...(visualDirections
+        ? {
+            visualDirectionRevisions: Object.fromEntries(
+              visualDirections.directions.map((direction) => [
+                direction.revisionId,
+                this.repository.getRevision(direction.revisionId),
+              ]),
+            ),
+          }
+        : {}),
       ...(selectedBible ? { visualBible: selectedBible } : {}),
       ...(conceptPlan ? { conceptPlan } : {}),
       ...(conceptSet ? { conceptSet, conceptDocuments } : {}),
+      ...(soundPlan ? { soundPlan } : {}),
+      ...(soundSet ? { soundSet, soundDocuments } : {}),
     });
   }
 
@@ -942,7 +1378,8 @@ export class M1Coordinator {
   private recordDecision(
     state: ProjectState,
     input: {
-      targetType: "game-design" | "visual-direction" | "concept-set";
+      targetType:
+        "game-design" | "visual-direction" | "concept-set" | "sound-set";
       targetRevisionId: string;
       targetSha256: string;
       decision: "approved" | "rejected" | "changes-requested";
@@ -967,7 +1404,10 @@ export class M1Coordinator {
     decision: Partial<
       Pick<
         ProjectState,
-        "gameDesignApproval" | "directionApproval" | "conceptSetApproval"
+        | "gameDesignApproval"
+        | "directionApproval"
+        | "conceptSetApproval"
+        | "soundSetApproval"
       >
     >,
     code: string,

@@ -3,6 +3,9 @@ import { randomUUID } from "node:crypto";
 import {
   AssetDocumentSchema,
   AssetEvaluationSchema,
+  decideDurableSubmission,
+  isProviderPreflightError,
+  ProviderPreflightError,
   type AssetProvider,
   type AssetDocument,
   type AssetEvaluation,
@@ -10,6 +13,7 @@ import {
   type ProductionOutcome,
   type ProviderMode,
   type RevisionRef,
+  type SubmissionRecord,
 } from "@fulcrum/domain";
 import { ProjectRepository } from "@fulcrum/project";
 import { Document, getBounds, NodeIO, Primitive } from "@gltf-transform/core";
@@ -156,42 +160,52 @@ export class AssetProduction {
   }): Promise<ProductionOutcome<RevisionRef>> {
     const idempotencyKey = `asset:${input.projectId}:${input.concept.artifact.sha256}:${input.mode}:${input.assetProvider}`;
     const prior = this.repository.getSubmissionByKey(idempotencyKey);
-    if (prior?.status === "ready" && prior.resultRevisionId) {
+    const decision = decideDurableSubmission(prior, input.mode);
+    if (decision.kind === "ready") {
+      if (!decision.submission.resultRevisionId) {
+        return {
+          status: "failed",
+          requestId: decision.submission.requestId,
+          error: {
+            code: "asset-generation-failed",
+            message:
+              "The previous asset job is marked ready without a result revision.",
+            recoverable: true,
+          },
+        };
+      }
       return {
         status: "ready",
-        requestId: prior.requestId,
-        value: this.repository.getRevision(prior.resultRevisionId),
+        requestId: decision.submission.requestId,
+        value: this.repository.getRevision(
+          decision.submission.resultRevisionId,
+        ),
       };
     }
-    if (prior?.status === "failed" || prior?.status === "submission-unknown") {
+    if (decision.kind === "terminal-failed") {
       return {
         status: "failed",
-        requestId: prior.requestId,
+        requestId: decision.submission.requestId,
         error: {
           code:
-            prior.status === "submission-unknown"
+            decision.submission.status === "submission-unknown"
               ? "submission-unknown"
               : "asset-generation-failed",
           message:
-            prior.status === "submission-unknown"
+            decision.submission.status === "submission-unknown"
               ? `The ${input.assetProvider} submission outcome is ambiguous; Fulcrum will not create another paid job automatically.`
               : "The previous asset job failed and requires user-directed regeneration.",
           recoverable: true,
         },
       };
     }
-    if (
-      input.mode === "live" &&
-      prior &&
-      (prior.status === "intent-recorded" ||
-        (prior.status === "pending" && !prior.externalJobId))
-    ) {
-      this.repository.updateSubmission(prior.requestId, {
+    if (decision.kind === "unknown-interruption") {
+      this.repository.updateSubmission(decision.submission.requestId, {
         status: "submission-unknown",
       });
       return {
         status: "failed",
-        requestId: prior.requestId,
+        requestId: decision.submission.requestId,
         error: {
           code: "submission-unknown",
           message: `${input.assetProvider} may have accepted this request before interruption; Fulcrum will not risk duplicate spend.`,
@@ -203,18 +217,20 @@ export class AssetProduction {
       input.concept,
     );
     const submission =
-      prior ??
-      this.repository.recordSubmissionIntent({
-        projectId: input.projectId,
-        operation: "image-to-model",
-        provider:
-          input.mode === "replay" ? "fulcrum-replay" : input.assetProvider,
-        idempotencyKey,
-        payload: {
-          conceptRevisionId: input.concept.revisionId,
-          imageArtifactId: concept.image.artifactId,
-        },
-      });
+      decision.kind === "inspect"
+        ? decision.submission
+        : (decision.submission ??
+          this.repository.recordSubmissionIntent({
+            projectId: input.projectId,
+            operation: "image-to-model",
+            provider:
+              input.mode === "replay" ? "fulcrum-replay" : input.assetProvider,
+            idempotencyKey,
+            payload: {
+              conceptRevisionId: input.concept.revisionId,
+              imageArtifactId: concept.image.artifactId,
+            },
+          }));
     try {
       let generated: GeneratedAsset | undefined;
       if (input.mode === "replay") {
@@ -225,13 +241,13 @@ export class AssetProduction {
           externalJobId: `replay-${input.concept.artifact.sha256.slice(0, 12)}`,
           costUsd: 0,
         };
-      } else if (submission.status === "pending" && submission.externalJobId) {
+      } else if (decision.kind === "inspect") {
         let inspected;
         try {
           inspected =
             input.assetProvider === "meshy"
-              ? await this.inspectMeshyJob(submission.externalJobId)
-              : await this.inspectTripoJob(submission.externalJobId);
+              ? await this.inspectMeshyJob(submission.externalJobId!)
+              : await this.inspectTripoJob(submission.externalJobId!);
         } catch (error) {
           this.repository.updateSubmission(submission.requestId, {
             status: "pending",
@@ -274,10 +290,22 @@ export class AssetProduction {
         }
         generated = inspected.asset;
       } else {
+        try {
+          this.preflightPaidAssetJob(input.projectId, input.assetProvider);
+        } catch (error) {
+          if (isProviderPreflightError(error))
+            return this.refuseBeforeProviderCall(submission, error);
+          throw error;
+        }
+        const {
+          preflightCode: _preflightCode,
+          error: _preflightError,
+          ...intentPayload
+        } = submission.payload;
         this.repository.updateSubmission(submission.requestId, {
           status: "pending",
           payload: {
-            ...submission.payload,
+            ...intentPayload,
             providerCallStartedAt: new Date().toISOString(),
           },
         });
@@ -285,8 +313,8 @@ export class AssetProduction {
         try {
           job =
             input.assetProvider === "meshy"
-              ? await this.submitMeshyJob(input.projectId, concept)
-              : await this.submitTripoJob(input.projectId, concept);
+              ? await this.submitMeshyJob(concept)
+              : await this.submitTripoJob(concept);
         } catch (error) {
           const message =
             error instanceof Error ? error.message : String(error);
@@ -361,6 +389,8 @@ export class AssetProduction {
         value: revision,
       };
     } catch (error) {
+      if (isProviderPreflightError(error))
+        return this.refuseBeforeProviderCall(submission, error);
       const message = error instanceof Error ? error.message : String(error);
       this.repository.updateSubmission(submission.requestId, {
         status: "failed",
@@ -374,21 +404,104 @@ export class AssetProduction {
     }
   }
 
-  private async submitMeshyJob(
+  private refuseBeforeProviderCall(
+    submission: SubmissionRecord,
+    error: ProviderPreflightError,
+  ): ProductionOutcome<RevisionRef> {
+    this.repository.updateSubmission(submission.requestId, {
+      status: "intent-recorded",
+      payload: {
+        ...submission.payload,
+        preflightCode: error.code,
+        error: error.message,
+      },
+    });
+    return {
+      status: "failed",
+      requestId: submission.requestId,
+      error: {
+        code: error.code,
+        message: error.message,
+        recoverable: true,
+      },
+    };
+  }
+
+  private preflightPaidAssetJob(
     projectId: string,
-    concept: ConceptDocument,
-  ): Promise<{ taskId: string }> {
+    assetProvider: AssetProvider,
+  ): void {
+    if (assetProvider === "meshy") {
+      const { reservedCost } = this.requireMeshyConfiguration();
+      this.repository.reserveBudget(
+        projectId,
+        reservedCost,
+        "Meshy image-to-3D",
+      );
+      return;
+    }
+    const { reservedCost } = this.requireTripoConfiguration();
+    this.repository.reserveBudget(
+      projectId,
+      reservedCost,
+      "Tripo image-to-model",
+    );
+  }
+
+  private requireMeshyConfiguration(): {
+    apiKey: string;
+    model: string;
+    reservedCost: number;
+  } {
     const apiKey = process.env.MESHY_API_KEY;
     const model = process.env.FULCRUM_MESHY_MODEL;
     if (!apiKey || !model) {
-      throw new Error(
+      throw new ProviderPreflightError(
+        "provider-unconfigured",
         "Live Meshy generation requires MESHY_API_KEY and FULCRUM_MESHY_MODEL.",
       );
     }
     const reservedCost = Number(
       process.env.FULCRUM_MESHY_RESERVE_USD ?? "0.50",
     );
-    this.repository.reserveBudget(projectId, reservedCost, "Meshy image-to-3D");
+    if (!Number.isFinite(reservedCost) || reservedCost < 0) {
+      throw new ProviderPreflightError(
+        "payload-invalid",
+        "FULCRUM_MESHY_RESERVE_USD must be a finite non-negative number.",
+      );
+    }
+    return { apiKey, model, reservedCost };
+  }
+
+  private requireTripoConfiguration(): {
+    apiKey: string;
+    modelVersion: string;
+    reservedCost: number;
+  } {
+    const apiKey = process.env.TRIPO_API_KEY;
+    const modelVersion = process.env.FULCRUM_TRIPO_MODEL_VERSION;
+    if (!apiKey || !modelVersion) {
+      throw new ProviderPreflightError(
+        "provider-unconfigured",
+        "Live asset generation requires TRIPO_API_KEY and FULCRUM_TRIPO_MODEL_VERSION.",
+      );
+    }
+    const reservedCost = Number(
+      process.env.FULCRUM_TRIPO_RESERVE_USD ?? "0.50",
+    );
+    if (!Number.isFinite(reservedCost) || reservedCost < 0) {
+      throw new ProviderPreflightError(
+        "payload-invalid",
+        "FULCRUM_TRIPO_RESERVE_USD must be a finite non-negative number.",
+      );
+    }
+    return { apiKey, modelVersion, reservedCost };
+  }
+
+  private async submitMeshyJob(
+    concept: ConceptDocument,
+  ): Promise<{ taskId: string }> {
+    const { apiKey, model } = this.requireMeshyConfiguration();
     const imageBytes = this.repository.readArtifact(concept.image);
     const imageUrl = `data:${concept.image.mediaType};base64,${Buffer.from(imageBytes).toString("base64")}`;
     const response = await fetch(
@@ -503,23 +616,9 @@ export class AssetProduction {
   }
 
   private async submitTripoJob(
-    projectId: string,
     concept: ConceptDocument,
   ): Promise<{ taskId: string }> {
-    const apiKey = process.env.TRIPO_API_KEY;
-    const modelVersion = process.env.FULCRUM_TRIPO_MODEL_VERSION;
-    if (!apiKey || !modelVersion)
-      throw new Error(
-        "Live asset generation requires TRIPO_API_KEY and FULCRUM_TRIPO_MODEL_VERSION.",
-      );
-    const reservedCost = Number(
-      process.env.FULCRUM_TRIPO_RESERVE_USD ?? "0.50",
-    );
-    this.repository.reserveBudget(
-      projectId,
-      reservedCost,
-      "Tripo image-to-model",
-    );
+    const { apiKey, modelVersion } = this.requireTripoConfiguration();
     const imageBytes = this.repository.readArtifact(concept.image);
     const imageBuffer = new ArrayBuffer(imageBytes.byteLength);
     new Uint8Array(imageBuffer).set(imageBytes);

@@ -3079,7 +3079,7 @@ const voxelDrawOrder = [...voxelBlueprint].sort(
   (a, b) => a.x + a.y + a.z - (b.x + b.y + b.z),
 );
 
-const voxelMaxLevel = 6;
+export const voxelMaxLevel = 6;
 
 /** Height of the finished stack on a tile, so the builder stands on top of
  *  whatever is already there instead of hovering in mid air. */
@@ -3225,7 +3225,7 @@ function voxelLevel(props: VariantProps) {
   );
 }
 
-function VoxelCube({
+export function VoxelCube({
   tone = "stone",
   className = "",
 }: {
@@ -3246,7 +3246,7 @@ function VoxelCube({
    choreography and the other prototypes still reference its styles. */
 void VoxelBuilder;
 
-function VoxelWorld({
+export function VoxelWorld({
   level,
   direction,
   styled,
@@ -3254,7 +3254,7 @@ function VoxelWorld({
   follows = true,
 }: {
   level: number;
-  direction: Direction;
+  direction: Pick<Direction, "palette">;
   styled: boolean;
   size?: "sm" | "md" | "lg";
   /** false for the finale diorama, which is a fixed tableau rather than a

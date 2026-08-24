@@ -3,31 +3,91 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import {
+  CONCEPT_PROMPT_MAX_CHARS,
   ConceptSetSchema,
   ConceptPlanSchema,
   GameDesignSpecSchema,
   InterrogationStateSchema,
   M1ConceptDocumentSchema,
+  ProviderPreflightCodeSchema,
+  ProviderPreflightError,
+  ProviderUsageCodeSchema,
+  ProviderUsageError,
   StructuredVisualBibleSchema,
   VisualDirectionSetSchema,
   type ConceptSet,
   type ConceptPlan,
+  type ExecutionProvider,
   type GameDesignSpec,
+  type ImageProvider,
   type InformationOrigin,
   type InterrogationAnswer,
   type InterrogationQuestion,
   type InterrogationState,
   type M1ConceptDocument,
+  type ProviderMode,
   type RevisionRef,
+  type SoundProvider,
   type StructuredVisualBible,
   type VisualDirection,
   type VisualDirectionSet,
   type VisualToken,
 } from "@fulcrum/domain";
+import {
+  ModelExecution,
+  runCodexSubscriptionImage,
+  type SubscriptionImageRunner,
+} from "@fulcrum/execution";
 import { ProjectRepository } from "@fulcrum/project";
 import sharp from "sharp";
 
+import {
+  ensureDurableSubscriptionImage,
+  m1ConceptImageIdempotencyKey,
+} from "./durable-image.js";
+import { SoundPalette } from "./sound-palette.js";
+import type { SoundGenerationRunner } from "./durable-sound.js";
+import {
+  assertDistinctDirectionIdentities,
+  ensureDurableStructured,
+  focusedDirectionPrompt,
+  focusedDirectionSystemPrompt,
+  gameDesignSpecPrompt,
+  gameDesignSystemPrompt,
+  gameDesignReviseSystemPrompt,
+  interrogationFirstRoundPrompt,
+  interrogationFirstRoundSystemPrompt,
+  interrogationNextRoundPrompt,
+  interrogationNextRoundSystemPrompt,
+  interrogationTranscriptKey,
+  LiveDirectionSetOutputSchema,
+  LiveDirectionTemplateSchema,
+  LiveFocusedDirectionOutputSchema,
+  LiveGameDesignSpecOutputSchema,
+  LiveInterrogationFirstRoundSchema,
+  LiveInterrogationNextRoundSchema,
+  M1_INTERROGATION_ROUND_CAP,
+  M1_TEXT_OPERATIONS,
+  materializeLiveQuestions,
+  m1TextIdempotencyKey,
+  hashText,
+  nextRoundQuestions,
+  replaceDirectionPrompt,
+  replaceDirectionSystemPrompt,
+  reviseGameDesignPrompt,
+  directionsSystemPrompt,
+  visualDirectionSetPrompt,
+  type LiveDirectionTemplate,
+  type LiveFocusedDirectionOutput,
+  type StructuredModelExecution,
+} from "./m1-live-text.js";
+
 export type { ConceptPlan } from "@fulcrum/domain";
+export type { StructuredModelExecution } from "./m1-live-text.js";
+export {
+  M1_INTERROGATION_ROUND_CAP,
+  M1_TEXT_OPERATIONS,
+} from "./m1-live-text.js";
 
 const SKILL_NAMES = ["grill-with-docs", "grilling", "domain-modeling"] as const;
 
@@ -36,6 +96,8 @@ type SkillName = (typeof SKILL_NAMES)[number];
 export type M1CreativeContext = {
   projectId: string;
   runId: string;
+  mode?: ProviderMode;
+  orchestratorProvider?: ExecutionProvider;
 };
 
 export type SkillProvisioningRecord = {
@@ -523,18 +585,7 @@ const qualifiesForAdr = (decision: string, qualification: string): boolean => {
   );
 };
 
-type DirectionTemplate = {
-  slug: string;
-  name: string;
-  rationale: string;
-  overallStyle: string;
-  shapeLanguage: string;
-  materials: string[];
-  palette: StructuredVisualBible["palette"];
-  lighting: string;
-  atmosphere: string;
-  textureLanguage: string;
-};
+type DirectionTemplate = LiveDirectionTemplate;
 
 const DIRECTION_TEMPLATES: DirectionTemplate[] = [
   {
@@ -827,6 +878,176 @@ const PINNED_ASPECTS: Record<string, (bible: StructuredVisualBible) => string> =
     readability: (bible) => JSON.stringify(bible.readabilityRules),
   };
 
+type PinnedAspectField =
+  | "overallStyle"
+  | "shapeLanguage"
+  | "palette"
+  | "materials"
+  | "lighting"
+  | "atmosphere"
+  | "cameraLanguage"
+  | "readabilityRules";
+
+const PINNED_ASPECT_FIELDS: Record<string, PinnedAspectField> = {
+  "overall style": "overallStyle",
+  style: "overallStyle",
+  "shape language": "shapeLanguage",
+  shape: "shapeLanguage",
+  palette: "palette",
+  materials: "materials",
+  lighting: "lighting",
+  atmosphere: "atmosphere",
+  camera: "cameraLanguage",
+  readability: "readabilityRules",
+};
+
+type PinnedAspectSnapshot = {
+  name: string;
+  field: PinnedAspectField;
+  accessor: (bible: StructuredVisualBible) => string;
+  before: string;
+};
+
+const normalizePinnedText = (value: string): string =>
+  value.trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US");
+
+const canonicalPinnedValue = (value: unknown): unknown => {
+  if (typeof value === "string") return normalizePinnedText(value);
+  if (Array.isArray(value))
+    return value
+      .map(canonicalPinnedValue)
+      .sort((left, right) =>
+        JSON.stringify(left).localeCompare(JSON.stringify(right)),
+      );
+  if (typeof value === "object" && value !== null)
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, canonicalPinnedValue(entry)]),
+    );
+  return value;
+};
+
+const pinnedAspectCanonicalValue = (name: string, value: string): string => {
+  if (["palette", "materials", "readability"].includes(normalize(name))) {
+    try {
+      return JSON.stringify(canonicalPinnedValue(JSON.parse(value)));
+    } catch {
+      // Stored pin snapshots come from JSON.stringify. Fall back to text so a
+      // malformed legacy value fails safely instead of bypassing the guard.
+    }
+  }
+  return normalizePinnedText(value);
+};
+
+export const pinnedAspectValuesEqual = (
+  name: string,
+  before: string,
+  after: string,
+): boolean =>
+  pinnedAspectCanonicalValue(name, before) ===
+  pinnedAspectCanonicalValue(name, after);
+
+const assertPinnedAspectsPreserved = (
+  bible: StructuredVisualBible,
+  snapshots: PinnedAspectSnapshot[],
+): void => {
+  const changed = snapshots.find(
+    ({ name, accessor, before }) =>
+      !pinnedAspectValuesEqual(name, before, accessor(bible)),
+  );
+  if (changed)
+    throw new Error(
+      `The focused change altered pinned aspect ${normalize(changed.name)}.`,
+    );
+};
+
+const pinnedPromptValue = (snapshot: PinnedAspectSnapshot): unknown => {
+  if (
+    ["palette", "materials", "readability"].includes(normalize(snapshot.name))
+  )
+    return JSON.parse(snapshot.before) as unknown;
+  return snapshot.before;
+};
+
+const restorePinnedAspects = (
+  bible: StructuredVisualBible,
+  snapshots: Array<{ name: string; before: string }>,
+): StructuredVisualBible => {
+  const next = { ...bible };
+  for (const snapshot of snapshots) {
+    switch (normalize(snapshot.name)) {
+      case "overall style":
+      case "style":
+        next.overallStyle = snapshot.before;
+        break;
+      case "shape language":
+      case "shape":
+        next.shapeLanguage = snapshot.before;
+        break;
+      case "palette":
+        next.palette = JSON.parse(
+          snapshot.before,
+        ) as StructuredVisualBible["palette"];
+        break;
+      case "materials":
+        next.materials = JSON.parse(
+          snapshot.before,
+        ) as StructuredVisualBible["materials"];
+        break;
+      case "lighting":
+        next.lighting = snapshot.before;
+        break;
+      case "atmosphere":
+        next.atmosphere = snapshot.before;
+        break;
+      case "camera":
+        next.cameraLanguage = snapshot.before;
+        break;
+      case "readability":
+        next.readabilityRules = JSON.parse(
+          snapshot.before,
+        ) as StructuredVisualBible["readabilityRules"];
+        break;
+      default:
+        break;
+    }
+  }
+  return next;
+};
+
+const requiredPayloadString = (
+  payload: Record<string, unknown>,
+  key: string,
+): string => {
+  const value = payload[key];
+  if (typeof value !== "string" || value.length === 0)
+    throw new Error(`Live creative submission is missing ${key}.`);
+  return value;
+};
+
+const withFrontierRound = (
+  brief: string,
+  rounds: InterrogationState["rounds"],
+  frontier: InterrogationQuestion[],
+): InterrogationState => {
+  const nextRounds = [...rounds];
+  if (frontier.length > 0) {
+    nextRounds.push({
+      roundId: stableId(
+        "round",
+        `${brief}:${nextRounds.length + 1}:${frontier
+          .map((question) => question.questionId)
+          .join(":")}`,
+      ),
+      questions: frontier,
+      answers: [],
+      createdAt: now(),
+    });
+  }
+  return InterrogationStateSchema.parse({ rounds: nextRounds, frontier });
+};
+
 const FOCUSED_CHANGE_CLASSIFIERS: Array<{
   category: VisualToken["category"];
   pattern: RegExp;
@@ -857,13 +1078,38 @@ const FOCUSED_CHANGE_CATEGORIES = FOCUSED_CHANGE_CLASSIFIERS.map(
   ({ category }) => category,
 );
 
+const isPreservedFocusedMention = (value: string, index: number): boolean => {
+  const before = value.slice(0, index);
+  const preservation = [
+    ...before.matchAll(
+      /\b(?:keep|preserve|preserving|retain|maintain|leave|hold)\b/gi,
+    ),
+  ].at(-1);
+  if (preservation?.index === undefined) return false;
+  const afterPreservation = before.slice(
+    preservation.index + preservation[0].length,
+  );
+  return !/\b(?:add|apply|change|replace|make|use|shift|increase|decrease|remove|introduce|give|turn|rework|push)\b/i.test(
+    afterPreservation,
+  );
+};
+
 export const classifyFocusedDirectionChange = (
   change: string,
 ): VisualToken["category"] => {
   const value = normalize(change);
-  const match = FOCUSED_CHANGE_CLASSIFIERS.find(({ pattern }) =>
-    pattern.test(value),
-  );
+  const match = FOCUSED_CHANGE_CLASSIFIERS.map(({ category, pattern }) => {
+    const found = pattern.exec(value);
+    return found ? { category, index: found.index } : undefined;
+  })
+    .filter(
+      (
+        candidate,
+      ): candidate is { category: VisualToken["category"]; index: number } =>
+        candidate !== undefined &&
+        !isPreservedFocusedMention(value, candidate.index),
+    )
+    .sort((left, right) => left.index - right.index)[0];
   if (!match)
     throw new Error(
       `The focused change could not be classified. Recognizable categories: ${FOCUSED_CHANGE_CATEGORIES.join(", ")}.`,
@@ -959,27 +1205,80 @@ const visualTokenSignature = (tokens: VisualToken[]): string =>
     .sort()
     .join("\u0001");
 
+const focusedAlternateRequest = (note: string): string =>
+  `Focused alternate request: ${sentence(note)}`;
+
+const PROMPT_GUARD = "No text, UI, logos, or unrelated project history.";
+
+/** Join parts in priority order without ever exceeding the domain cap. The
+ *  guard tail is always kept; the first part that no longer fits is cut at
+ *  a word boundary (or dropped when the remainder is too small to matter),
+ *  and everything after it is dropped. Live specs write token values long
+ *  enough to overflow — replay fixtures never did, which hid this.
+ *  Exported for direct testing. */
+export const fitConceptPrompt = (parts: string[], tail: string): string => {
+  const budget = CONCEPT_PROMPT_MAX_CHARS - tail.length - 1;
+  const kept: string[] = [];
+  let used = 0;
+  for (const part of parts) {
+    const cost = part.length + (kept.length > 0 ? 1 : 0);
+    if (used + cost <= budget) {
+      kept.push(part);
+      used += cost;
+      continue;
+    }
+    const room = budget - used - (kept.length > 0 ? 1 : 0) - 1;
+    const cut = part.slice(0, Math.max(0, room)).replace(/\s+\S*$/, "");
+    if (cut.length >= 40) kept.push(`${cut}…`);
+    break;
+  }
+  return [...kept, tail].join(" ");
+};
+
 const conceptPrompt = (
   slot: ConceptPlan["slots"][number],
   spec: GameDesignSpec,
   tokens: VisualToken[],
   regenerationNote?: string,
 ): string =>
-  [
-    `Production concept for ${slot.name}.`,
-    `Purpose: ${slot.purpose}.`,
-    `Gameplay context: ${spec.objective}`,
-    ...tokens
-      .filter((token) => token.role !== "superseded")
-      .map(
-        (token) =>
-          `${token.category}${token.role ? ` (${token.role})` : ""}: ${token.value}.`,
-      ),
-    ...(regenerationNote
-      ? [`Focused alternate request: ${sentence(regenerationNote)}`]
-      : []),
-    "No text, UI, logos, or unrelated project history.",
-  ].join(" ");
+  fitConceptPrompt(
+    [
+      `Production concept for ${slot.name}.`,
+      `Purpose: ${slot.purpose}.`,
+      `Gameplay context: ${spec.objective}`,
+      ...tokens
+        .filter((token) => token.role !== "superseded")
+        .map(
+          (token) =>
+            `${token.category}${token.role ? ` (${token.role})` : ""}: ${token.value}.`,
+        ),
+    ],
+    /* The alternate request is the user's explicit ask — it rides in the
+       always-kept tail so overflow can only ever cost token detail. */
+    regenerationNote
+      ? `${focusedAlternateRequest(regenerationNote)} ${PROMPT_GUARD}`
+      : PROMPT_GUARD,
+  );
+
+const conceptBasePrompt = (
+  slot: ConceptPlan["slots"][number],
+  spec: GameDesignSpec,
+  tokens: VisualToken[],
+): string => slot.prompt ?? conceptPrompt(slot, spec, tokens);
+
+const conceptSentPrompt = (
+  slot: ConceptPlan["slots"][number],
+  spec: GameDesignSpec,
+  tokens: VisualToken[],
+  regenerationNote?: string,
+): string => {
+  if (slot.prompt) {
+    return regenerationNote
+      ? `${slot.prompt} ${focusedAlternateRequest(regenerationNote)}`
+      : slot.prompt;
+  }
+  return conceptPrompt(slot, spec, tokens, regenerationNote);
+};
 
 const conceptSvg = (
   slot: ConceptPlan["slots"][number],
@@ -1005,12 +1304,48 @@ const conceptSvg = (
 };
 
 /**
- * The complete offline M1 creative seam. The coordinator owns workflow stage,
- * approvals, safety counters, and live authorization; this module owns only
- * deterministic creative transformations and immutable persistence.
+ * M1 creative seam. Replay stays on the deterministic path. Live mode generates
+ * interrogation, spec, and directions through durable ModelExecution calls.
+ * The coordinator owns workflow stage, approvals, safety counters, and live
+ * authorization.
  */
 export class M1CreativeDevelopment {
-  constructor(private readonly repository: ProjectRepository) {}
+  private readonly sounds: SoundPalette;
+
+  constructor(
+    private readonly repository: ProjectRepository,
+    private readonly imageRunner: SubscriptionImageRunner = runCodexSubscriptionImage,
+    private readonly execution: StructuredModelExecution = new ModelExecution(),
+    soundRunner?: SoundGenerationRunner,
+  ) {
+    this.sounds = new SoundPalette(repository, soundRunner);
+  }
+
+  private textMode(context: M1CreativeContext): ProviderMode {
+    return context.mode ?? "replay";
+  }
+
+  private textProvider(context: M1CreativeContext): ExecutionProvider {
+    return context.orchestratorProvider ?? "openai";
+  }
+
+  private isLive(context: M1CreativeContext): boolean {
+    return this.textMode(context) === "live";
+  }
+
+  private textKey(
+    context: M1CreativeContext,
+    operation: string,
+    inputHash: string,
+  ): string {
+    return m1TextIdempotencyKey({
+      operation,
+      projectId: context.projectId,
+      inputHash,
+      mode: this.textMode(context),
+      provider: this.textProvider(context),
+    });
+  }
 
   provisionSkillChain(context: M1CreativeContext): RevisionRef {
     const manifests = new Map<SkillName, string>();
@@ -1050,11 +1385,14 @@ export class M1CreativeDevelopment {
     );
   }
 
-  beginInterrogation(context: M1CreativeContext & { brief: string }): {
+  async beginInterrogation(
+    context: M1CreativeContext & { brief: string },
+  ): Promise<{
     capabilities: RevisionRef;
     interrogation: RevisionRef;
-  } {
+  }> {
     if (!context.brief.trim()) throw new Error("A project brief is required.");
+    if (this.isLive(context)) return await this.beginLiveInterrogation(context);
     const capabilities = this.provisionSkillChain(context);
     const questions = recomputeFrontier(context.brief, []);
     const state = InterrogationStateSchema.parse({
@@ -1078,14 +1416,14 @@ export class M1CreativeDevelopment {
     return { capabilities, interrogation };
   }
 
-  answerCurrentFrontier(
+  async answerCurrentFrontier(
     context: M1CreativeContext & {
       brief: string;
       interrogation: RevisionRef;
       roundId: string;
       answers: Array<{ questionId: string; value: string }>;
     },
-  ): RevisionRef {
+  ): Promise<RevisionRef> {
     const state = InterrogationStateSchema.parse(
       this.repository.resolveRevision<InterrogationState>(
         context.interrogation,
@@ -1120,19 +1458,13 @@ export class M1CreativeDevelopment {
     const completedRound = { ...round, answers, completedAt: now() };
     const priorRounds = state.rounds.slice(0, -1);
     const rounds = [...priorRounds, completedRound];
-    const frontier = recomputeFrontier(context.brief, rounds);
-    if (frontier.length > 0) {
-      rounds.push({
-        roundId: stableId(
-          "round",
-          `${context.brief}:${rounds.length + 1}:${frontier.map((question) => question.questionId).join(":")}`,
-        ),
-        questions: frontier,
-        answers: [],
-        createdAt: now(),
-      });
-    }
-    const next = InterrogationStateSchema.parse({ rounds, frontier });
+    if (this.isLive(context))
+      return await this.answerLiveFrontier(context, rounds);
+    const next = withFrontierRound(
+      context.brief,
+      rounds,
+      recomputeFrontier(context.brief, rounds),
+    );
     return writeRevision(
       this.repository,
       context,
@@ -1142,13 +1474,13 @@ export class M1CreativeDevelopment {
     );
   }
 
-  confirmSharedUnderstanding(
+  async confirmSharedUnderstanding(
     context: M1CreativeContext & {
       brief: string;
       interrogation: RevisionRef;
       confirmedBy: string;
     },
-  ): SharedUnderstandingArtifacts {
+  ): Promise<SharedUnderstandingArtifacts> {
     const state = InterrogationStateSchema.parse(
       this.repository.resolveRevision<InterrogationState>(
         context.interrogation,
@@ -1162,10 +1494,15 @@ export class M1CreativeDevelopment {
       throw new Error(
         "Every interrogation round must be complete before confirmation.",
       );
-    if (recomputeFrontier(context.brief, state.rounds).length > 0)
+    if (
+      !this.isLive(context) &&
+      recomputeFrontier(context.brief, state.rounds).length > 0
+    )
       throw new Error(
         "Shared understanding cannot be confirmed while the decision tree has an eligible unresolved branch.",
       );
+    if (this.isLive(context))
+      return await this.confirmLiveSharedUnderstanding(context, state);
     const confirmed = InterrogationStateSchema.parse({
       ...state,
       sharedUnderstanding: {
@@ -1174,62 +1511,31 @@ export class M1CreativeDevelopment {
         confirmedAt: now(),
       },
     });
-    const interrogation = writeRevision(
-      this.repository,
+    return this.persistSharedUnderstanding(
       context,
-      "interrogation",
-      "interrogation-state",
-      {
-        ...confirmed,
-        sourceRevisionIds: [context.interrogation.revisionId],
-      },
+      confirmed,
+      buildGameDesignSpec(context.brief, confirmed),
     );
-    const gameDesignSpec = writeRevision(
-      this.repository,
-      context,
-      "game-design-spec",
-      "game-design-spec",
-      {
-        ...buildGameDesignSpec(context.brief, confirmed),
-        sourceRevisionIds: [interrogation.revisionId],
-      },
-    );
-    const glossary = writeRevision(
-      this.repository,
-      context,
-      "project-glossary",
-      "project-glossary",
-      buildGlossary(confirmed, interrogation.revisionId),
-    );
-    const adrValue = buildAdr(confirmed, interrogation.revisionId);
-    const result: SharedUnderstandingArtifacts = {
-      interrogation,
-      gameDesignSpec,
-      glossary,
-    };
-    if (adrValue)
-      result.adr = writeRevision(
-        this.repository,
-        context,
-        "adr-primary-design-tension",
-        "architecture-decision-record",
-        adrValue,
-      );
-    return result;
   }
 
-  reviseGameDesignSpec(
+  async reviseGameDesignSpec(
     context: M1CreativeContext & {
       gameDesignSpec: RevisionRef;
       change: string;
     },
-  ): RevisionRef {
+  ): Promise<RevisionRef> {
     const current = GameDesignSpecSchema.parse(
       this.repository.resolveRevision<GameDesignSpec>(context.gameDesignSpec),
     );
     const requestedDecision = sentence(context.change);
     if (!requestedDecision)
       throw new Error("A Game Design Spec change request is required.");
+    if (this.isLive(context))
+      return await this.reviseLiveGameDesignSpec(
+        context,
+        current,
+        requestedDecision,
+      );
     const descendant = GameDesignSpecSchema.parse({
       ...current,
       gameplayConstraints: [
@@ -1269,8 +1575,11 @@ export class M1CreativeDevelopment {
     const spec = GameDesignSpecSchema.parse(
       this.repository.resolveRevision<GameDesignSpec>(context.gameDesignSpec),
     );
+    if (this.isLive(context))
+      return await this.generateLiveVisualDirections(context, spec);
+    const templates = DIRECTION_TEMPLATES;
     const directions = await Promise.all(
-      DIRECTION_TEMPLATES.map((template) =>
+      templates.map((template) =>
         this.createDirection(context, spec, context.gameDesignSpec, template),
       ),
     );
@@ -1309,6 +1618,11 @@ export class M1CreativeDevelopment {
     const spec = GameDesignSpecSchema.parse(
       this.repository.resolveRevision<GameDesignSpec>(context.gameDesignSpec),
     );
+    const kept = set.directions.filter(
+      (direction) => direction.revisionId !== target.revisionId,
+    );
+    if (this.isLive(context))
+      return await this.replaceLiveDirection(context, spec, set, kept, target);
     const replacementTemplate: DirectionTemplate = {
       ...DIRECTION_TEMPLATES[2]!,
       slug: stableId("redirected", `${target.directionId}:${context.notes}`),
@@ -1375,26 +1689,22 @@ export class M1CreativeDevelopment {
     const target = selectedDirection(set, context.directionRevisionId);
     const snapshots = context.pinnedAspects.map((name) => {
       const accessor = PINNED_ASPECTS[normalize(name)];
-      if (!accessor) throw new Error(`Unsupported pinned aspect: ${name}`);
-      return { name, accessor, before: accessor(target.visualBible) };
+      const field = PINNED_ASPECT_FIELDS[normalize(name)];
+      if (!accessor || !field)
+        throw new Error(`Unsupported pinned aspect: ${name}`);
+      return { name, field, accessor, before: accessor(target.visualBible) };
     });
     const category = classifyFocusedDirectionChange(context.change);
-    const pinnedNames = new Set(snapshots.map(({ name }) => normalize(name)));
-    const pinnedTargets: Partial<Record<VisualToken["category"], string[]>> = {
-      style: ["style", "overall style"],
-      shape: ["shape", "shape language"],
-      palette: ["palette"],
-      material: ["materials"],
-      lighting: ["lighting"],
-      atmosphere: ["atmosphere"],
-      camera: ["camera"],
-      readability: ["readability"],
-    };
-    if (pinnedTargets[category]?.some((name) => pinnedNames.has(name)))
-      throw new Error(
-        `The focused change targets pinned aspect ${pinnedTargets[category]!.find((name) => pinnedNames.has(name))}.`,
-      );
     const instruction = sentence(context.change);
+    if (this.isLive(context))
+      return await this.makeLiveFocusedDirectionChange(
+        context,
+        set,
+        target,
+        category,
+        instruction,
+        snapshots,
+      );
     const changed = StructuredVisualBibleSchema.parse({
       ...target.visualBible,
       title: `${target.visualBible.title} — Focused Revision`,
@@ -1409,6 +1719,7 @@ export class M1CreativeDevelopment {
         },
       ],
     });
+    assertPinnedAspectsPreserved(changed, snapshots);
     const bibleRevision = writeRevision(
       this.repository,
       context,
@@ -1471,8 +1782,6 @@ export class M1CreativeDevelopment {
         after: accessor(changed),
       })),
     };
-    if (record.pinnedAspects.some((aspect) => aspect.before !== aspect.after))
-      throw new Error("A focused change altered a pinned aspect.");
     const changeRecord = writeRevision(
       this.repository,
       context,
@@ -1491,10 +1800,16 @@ export class M1CreativeDevelopment {
       selectedDirectionRevisionId: string;
     },
   ): RevisionRef {
+    const spec = GameDesignSpecSchema.parse(
+      this.repository.resolveRevision<GameDesignSpec>(context.gameDesignSpec),
+    );
     const set = VisualDirectionSetSchema.parse(
       this.repository.resolveRevision<VisualDirectionSet>(context.directionSet),
     );
-    selectedDirection(set, context.selectedDirectionRevisionId);
+    const direction = selectedDirection(
+      set,
+      context.selectedDirectionRevisionId,
+    );
     const lower = normalize(context.brief);
     const slots: ConceptPlan["slots"] = [
       {
@@ -1525,10 +1840,19 @@ export class M1CreativeDevelopment {
         purpose: "Establish scale, role, and silhouette for the primary actor",
         tokenCategories: tokenCategoriesForSlot("player-or-threat"),
       });
+    const planned = slots.slice(0, 3).map((slot) => {
+      const inheritedVisualTokens = direction.visualBible.tokens.filter(
+        (token) => slot.tokenCategories.includes(token.category),
+      );
+      return {
+        ...slot,
+        prompt: conceptPrompt(slot, spec, inheritedVisualTokens),
+      };
+    });
     const plan = ConceptPlanSchema.parse({
       sourceGameDesignRevisionId: context.gameDesignSpec.revisionId,
       sourceDirectionRevisionId: context.selectedDirectionRevisionId,
-      slots: slots.slice(0, 3),
+      slots: planned,
     });
     return writeRevision(
       this.repository,
@@ -1539,12 +1863,52 @@ export class M1CreativeDevelopment {
     );
   }
 
+  applyConceptPlanPromptOverrides(
+    context: M1CreativeContext & {
+      conceptPlan: RevisionRef;
+      overrides: Array<{ slotId: string; prompt: string }>;
+    },
+  ): RevisionRef {
+    const plan = ConceptPlanSchema.parse(
+      this.repository.resolveRevision<ConceptPlan>(context.conceptPlan),
+    );
+    const known = new Set(plan.slots.map((slot) => slot.slotId));
+    const nextPrompts = new Map(
+      plan.slots.map((slot) => [slot.slotId, slot.prompt]),
+    );
+    for (const override of context.overrides) {
+      if (!known.has(override.slotId))
+        throw new Error(`Concept plan has no slot ${override.slotId}.`);
+      const prompt = override.prompt.trim();
+      if (!prompt)
+        throw new Error(`Concept prompt for slot ${override.slotId} is empty.`);
+      nextPrompts.set(override.slotId, prompt);
+    }
+    const slots = plan.slots.map((slot) => {
+      const prompt = nextPrompts.get(slot.slotId);
+      return prompt === undefined ? slot : { ...slot, prompt };
+    });
+    return writeRevision(
+      this.repository,
+      context,
+      "concept-plan",
+      "concept-plan",
+      ConceptPlanSchema.parse({
+        sourceGameDesignRevisionId: plan.sourceGameDesignRevisionId,
+        sourceDirectionRevisionId: plan.sourceDirectionRevisionId,
+        slots,
+      }),
+    );
+  }
+
   async generateConceptSet(
     context: M1CreativeContext & {
       gameDesignSpec: RevisionRef;
       directionSet: RevisionRef;
       selectedDirectionRevisionId: string;
       conceptPlan: RevisionRef;
+      mode?: ProviderMode;
+      imageProvider?: ImageProvider;
     },
   ): Promise<RevisionRef> {
     const spec = GameDesignSpecSchema.parse(
@@ -1567,31 +1931,30 @@ export class M1CreativeDevelopment {
       throw new Error(
         "The concept plan does not descend from these approvals.",
       );
-    const slots = await Promise.all(
-      plan.slots.map(async (slot) => {
-        const inheritedVisualTokens = direction.visualBible.tokens.filter(
-          (token) => slot.tokenCategories.includes(token.category),
-        );
-        const revision = await this.createConceptRevision({
-          ...context,
-          spec,
-          slot,
-          inheritedVisualTokens,
-          sourceRevisionIds: [
-            context.gameDesignSpec.revisionId,
-            direction.revisionId,
-            context.conceptPlan.revisionId,
-          ],
-          attempt: 0,
-        });
-        return {
-          slotId: slot.slotId,
-          name: slot.name,
-          purpose: slot.purpose,
-          revisions: [{ revision, inheritedVisualTokens }],
-        };
-      }),
-    );
+    const slots = [];
+    for (const slot of plan.slots) {
+      const inheritedVisualTokens = direction.visualBible.tokens.filter(
+        (token) => slot.tokenCategories.includes(token.category),
+      );
+      const revision = await this.createConceptRevision({
+        ...context,
+        spec,
+        slot,
+        inheritedVisualTokens,
+        sourceRevisionIds: [
+          context.gameDesignSpec.revisionId,
+          direction.revisionId,
+          context.conceptPlan.revisionId,
+        ],
+        attempt: 0,
+      });
+      slots.push({
+        slotId: slot.slotId,
+        name: slot.name,
+        purpose: slot.purpose,
+        revisions: [{ revision, inheritedVisualTokens }],
+      });
+    }
     const conceptSet = ConceptSetSchema.parse({
       conceptSetId: stableId("concept-set", context.conceptPlan.revisionId),
       sourceDirectionRevisionId: direction.revisionId,
@@ -1704,6 +2067,8 @@ export class M1CreativeDevelopment {
       conceptSet: RevisionRef;
       slotId: string;
       notes?: string;
+      mode?: ProviderMode;
+      imageProvider?: ImageProvider;
     },
   ): Promise<RevisionRef> {
     const spec = GameDesignSpecSchema.parse(
@@ -1739,6 +2104,7 @@ export class M1CreativeDevelopment {
       name: target.name,
       purpose: target.purpose,
       tokenCategories: tokenCategoriesForSlot(target.slotId),
+      ...(priorDocument.basePrompt ? { prompt: priorDocument.basePrompt } : {}),
     };
     const revision = await this.createConceptRevision({
       ...context,
@@ -1826,6 +2192,657 @@ export class M1CreativeDevelopment {
     );
   }
 
+  private persistSharedUnderstanding(
+    context: M1CreativeContext & { interrogation: RevisionRef },
+    confirmed: InterrogationState,
+    spec: GameDesignSpec,
+  ): SharedUnderstandingArtifacts {
+    const interrogation = writeRevision(
+      this.repository,
+      context,
+      "interrogation",
+      "interrogation-state",
+      {
+        ...confirmed,
+        sourceRevisionIds: [context.interrogation.revisionId],
+      },
+    );
+    const gameDesignSpec = writeRevision(
+      this.repository,
+      context,
+      "game-design-spec",
+      "game-design-spec",
+      {
+        ...spec,
+        sourceRevisionIds: [interrogation.revisionId],
+      },
+    );
+    const glossary = writeRevision(
+      this.repository,
+      context,
+      "project-glossary",
+      "project-glossary",
+      buildGlossary(confirmed, interrogation.revisionId),
+    );
+    const adrValue = buildAdr(confirmed, interrogation.revisionId);
+    const result: SharedUnderstandingArtifacts = {
+      interrogation,
+      gameDesignSpec,
+      glossary,
+    };
+    if (adrValue)
+      result.adr = writeRevision(
+        this.repository,
+        context,
+        "adr-primary-design-tension",
+        "architecture-decision-record",
+        adrValue,
+      );
+    return result;
+  }
+
+  private artifactsFromLiveSpecSubmission(
+    submission: { payload: Record<string, unknown>; resultRevisionId?: string },
+    fallback: RevisionRef,
+  ): SharedUnderstandingArtifacts {
+    const artifacts: SharedUnderstandingArtifacts = {
+      interrogation: this.repository.getRevision(
+        requiredPayloadString(submission.payload, "interrogationRevisionId"),
+      ),
+      gameDesignSpec: submission.resultRevisionId
+        ? this.repository.getRevision(submission.resultRevisionId)
+        : fallback,
+      glossary: this.repository.getRevision(
+        requiredPayloadString(submission.payload, "glossaryRevisionId"),
+      ),
+    };
+    const adrRevisionId = submission.payload.decisionRecordRevisionId;
+    if (typeof adrRevisionId === "string")
+      artifacts.adr = this.repository.getRevision(adrRevisionId);
+    return artifacts;
+  }
+
+  private async beginLiveInterrogation(
+    context: M1CreativeContext & { brief: string },
+  ): Promise<{
+    capabilities: RevisionRef;
+    interrogation: RevisionRef;
+  }> {
+    const capabilities = this.provisionSkillChain(context);
+    const inputHash = hashText(
+      `${interrogationTranscriptKey(context.brief, [])}:1`,
+    );
+    const result = await ensureDurableStructured({
+      repository: this.repository,
+      execution: this.execution,
+      projectId: context.projectId,
+      runId: context.runId,
+      operation: M1_TEXT_OPERATIONS.interrogationRound,
+      mode: this.textMode(context),
+      provider: this.textProvider(context),
+      idempotencyKey: this.textKey(
+        context,
+        M1_TEXT_OPERATIONS.interrogationRound,
+        inputHash,
+      ),
+      schema: LiveInterrogationFirstRoundSchema,
+      systemPrompt: interrogationFirstRoundSystemPrompt,
+      prompt: interrogationFirstRoundPrompt(context.brief),
+      persist: (value) => {
+        const questions = materializeLiveQuestions(
+          context.brief,
+          1,
+          value.questions,
+        );
+        const state = InterrogationStateSchema.parse({
+          rounds: [
+            {
+              roundId: stableId("round", `${context.brief}:1`),
+              questions,
+              answers: [],
+              createdAt: now(),
+            },
+          ],
+          frontier: questions,
+        });
+        return {
+          revision: writeRevision(
+            this.repository,
+            context,
+            "interrogation",
+            "interrogation-state",
+            { ...state, sourceRevisionIds: [capabilities.revisionId] },
+          ),
+          payload: { capabilitiesRevisionId: capabilities.revisionId },
+        };
+      },
+    });
+    const capabilitiesRevisionId = requiredPayloadString(
+      result.submission.payload,
+      "capabilitiesRevisionId",
+    );
+    return {
+      capabilities: this.repository.getRevision(capabilitiesRevisionId),
+      interrogation: result.revision,
+    };
+  }
+
+  private async answerLiveFrontier(
+    context: M1CreativeContext & {
+      brief: string;
+      interrogation: RevisionRef;
+    },
+    rounds: InterrogationState["rounds"],
+  ): Promise<RevisionRef> {
+    if (rounds.length >= M1_INTERROGATION_ROUND_CAP) {
+      this.repository.appendEvent({
+        projectId: context.projectId,
+        runId: context.runId,
+        type: "interrogation.round-cap-reached",
+        payload: {
+          roundCount: rounds.length,
+          cap: M1_INTERROGATION_ROUND_CAP,
+        },
+      });
+      return writeRevision(
+        this.repository,
+        context,
+        "interrogation",
+        "interrogation-state",
+        {
+          ...InterrogationStateSchema.parse({ rounds, frontier: [] }),
+          sourceRevisionIds: [context.interrogation.revisionId],
+        },
+      );
+    }
+    const roundIndex = rounds.length + 1;
+    const inputHash = hashText(
+      `${interrogationTranscriptKey(context.brief, rounds)}:${roundIndex}`,
+    );
+    const result = await ensureDurableStructured({
+      repository: this.repository,
+      execution: this.execution,
+      projectId: context.projectId,
+      runId: context.runId,
+      operation: M1_TEXT_OPERATIONS.interrogationRound,
+      mode: this.textMode(context),
+      provider: this.textProvider(context),
+      idempotencyKey: this.textKey(
+        context,
+        M1_TEXT_OPERATIONS.interrogationRound,
+        inputHash,
+      ),
+      schema: LiveInterrogationNextRoundSchema,
+      systemPrompt: interrogationNextRoundSystemPrompt,
+      prompt: interrogationNextRoundPrompt(context.brief, rounds, roundIndex),
+      persist: (value) => {
+        const frontier = materializeLiveQuestions(
+          context.brief,
+          roundIndex,
+          nextRoundQuestions(value),
+        );
+        return {
+          revision: writeRevision(
+            this.repository,
+            context,
+            "interrogation",
+            "interrogation-state",
+            {
+              ...withFrontierRound(context.brief, rounds, frontier),
+              sourceRevisionIds: [context.interrogation.revisionId],
+            },
+          ),
+        };
+      },
+    });
+    return result.revision;
+  }
+
+  private async confirmLiveSharedUnderstanding(
+    context: M1CreativeContext & {
+      brief: string;
+      interrogation: RevisionRef;
+      confirmedBy: string;
+    },
+    state: InterrogationState,
+  ): Promise<SharedUnderstandingArtifacts> {
+    const inputHash = hashText(
+      `${interrogationTranscriptKey(context.brief, state.rounds)}:confirm`,
+    );
+    const result = await ensureDurableStructured({
+      repository: this.repository,
+      execution: this.execution,
+      projectId: context.projectId,
+      runId: context.runId,
+      operation: M1_TEXT_OPERATIONS.gameDesign,
+      mode: this.textMode(context),
+      provider: this.textProvider(context),
+      idempotencyKey: this.textKey(
+        context,
+        M1_TEXT_OPERATIONS.gameDesign,
+        inputHash,
+      ),
+      schema: LiveGameDesignSpecOutputSchema,
+      systemPrompt: gameDesignSystemPrompt,
+      prompt: gameDesignSpecPrompt(context.brief, state.rounds),
+      persist: (value) => {
+        const spec = GameDesignSpecSchema.parse(value);
+        const confirmed = InterrogationStateSchema.parse({
+          ...state,
+          sharedUnderstanding: {
+            confirmed: true,
+            confirmedBy: context.confirmedBy,
+            confirmedAt: now(),
+          },
+        });
+        const artifacts = this.persistSharedUnderstanding(
+          context,
+          confirmed,
+          spec,
+        );
+        return {
+          revision: artifacts.gameDesignSpec,
+          payload: {
+            interrogationRevisionId: artifacts.interrogation.revisionId,
+            glossaryRevisionId: artifacts.glossary.revisionId,
+            ...(artifacts.adr
+              ? { decisionRecordRevisionId: artifacts.adr.revisionId }
+              : {}),
+          },
+        };
+      },
+    });
+    return this.artifactsFromLiveSpecSubmission(
+      result.submission,
+      result.revision,
+    );
+  }
+
+  private async reviseLiveGameDesignSpec(
+    context: M1CreativeContext & { gameDesignSpec: RevisionRef },
+    current: GameDesignSpec,
+    requestedDecision: string,
+  ): Promise<RevisionRef> {
+    const inputHash = hashText(
+      `${context.gameDesignSpec.artifact.sha256}:${requestedDecision}`,
+    );
+    const result = await ensureDurableStructured({
+      repository: this.repository,
+      execution: this.execution,
+      projectId: context.projectId,
+      runId: context.runId,
+      operation: M1_TEXT_OPERATIONS.gameDesignRevise,
+      mode: this.textMode(context),
+      provider: this.textProvider(context),
+      idempotencyKey: this.textKey(
+        context,
+        M1_TEXT_OPERATIONS.gameDesignRevise,
+        inputHash,
+      ),
+      schema: LiveGameDesignSpecOutputSchema,
+      systemPrompt: gameDesignReviseSystemPrompt,
+      prompt: reviseGameDesignPrompt(current, requestedDecision),
+      persist: (value) => {
+        const spec = GameDesignSpecSchema.parse(value);
+        return {
+          revision: writeRevision(
+            this.repository,
+            context,
+            "game-design-spec",
+            "game-design-spec",
+            {
+              ...spec,
+              sourceRevisionIds: [context.gameDesignSpec.revisionId],
+            },
+          ),
+        };
+      },
+    });
+    return result.revision;
+  }
+
+  private async generateLiveVisualDirections(
+    context: M1CreativeContext & { gameDesignSpec: RevisionRef },
+    spec: GameDesignSpec,
+  ): Promise<RevisionRef> {
+    const inputHash = hashText(context.gameDesignSpec.artifact.sha256);
+    const result = await ensureDurableStructured({
+      repository: this.repository,
+      execution: this.execution,
+      projectId: context.projectId,
+      runId: context.runId,
+      operation: M1_TEXT_OPERATIONS.directions,
+      mode: this.textMode(context),
+      provider: this.textProvider(context),
+      idempotencyKey: this.textKey(
+        context,
+        M1_TEXT_OPERATIONS.directions,
+        inputHash,
+      ),
+      schema: LiveDirectionSetOutputSchema,
+      systemPrompt: directionsSystemPrompt,
+      prompt: visualDirectionSetPrompt(spec),
+      persist: async (value) => {
+        const directions = await Promise.all(
+          value.directions.map((template) =>
+            this.createDirection(
+              context,
+              spec,
+              context.gameDesignSpec,
+              template,
+            ),
+          ),
+        );
+        const set = VisualDirectionSetSchema.parse({
+          directionSetId: stableId(
+            "direction-set",
+            context.gameDesignSpec.revisionId,
+          ),
+          directions,
+        });
+        return {
+          revision: writeRevision(
+            this.repository,
+            context,
+            "visual-direction-set",
+            "visual-direction-set",
+            {
+              ...set,
+              sourceRevisionIds: [context.gameDesignSpec.revisionId],
+            },
+          ),
+        };
+      },
+    });
+    return result.revision;
+  }
+
+  private async replaceLiveDirection(
+    context: M1CreativeContext & {
+      gameDesignSpec: RevisionRef;
+      directionSet: RevisionRef;
+      notes: string;
+    },
+    spec: GameDesignSpec,
+    set: VisualDirectionSet,
+    kept: VisualDirection[],
+    target: VisualDirection,
+  ): Promise<RevisionRef> {
+    const inputHash = hashText(
+      `${context.directionSet.artifact.sha256}:${target.revisionId}:${context.notes}`,
+    );
+    const result = await ensureDurableStructured({
+      repository: this.repository,
+      execution: this.execution,
+      projectId: context.projectId,
+      runId: context.runId,
+      operation: M1_TEXT_OPERATIONS.directionReplace,
+      mode: this.textMode(context),
+      provider: this.textProvider(context),
+      idempotencyKey: this.textKey(
+        context,
+        M1_TEXT_OPERATIONS.directionReplace,
+        inputHash,
+      ),
+      schema: LiveDirectionTemplateSchema,
+      systemPrompt: replaceDirectionSystemPrompt,
+      prompt: replaceDirectionPrompt({
+        spec,
+        kept: kept.map((direction) => ({
+          name: direction.name,
+          slug:
+            direction.directionId.split(":").at(-1) ?? direction.directionId,
+          overallStyle: direction.visualBible.overallStyle,
+        })),
+        notes: context.notes,
+      }),
+      persist: async (template) => {
+        assertDistinctDirectionIdentities([
+          ...kept.map((direction) => ({
+            slug:
+              direction.directionId.split(":").at(-1) ?? direction.directionId,
+            name: direction.name,
+          })),
+          { slug: template.slug, name: template.name },
+        ]);
+        const replacement = await this.createDirection(
+          context,
+          spec,
+          context.gameDesignSpec,
+          template,
+          target.revisionId,
+        );
+        const directions = set.directions.map((direction) =>
+          direction.revisionId === target.revisionId ? replacement : direction,
+        ) as [VisualDirection, VisualDirection, VisualDirection];
+        return {
+          revision: writeRevision(
+            this.repository,
+            context,
+            "visual-direction-set",
+            "visual-direction-set",
+            {
+              ...VisualDirectionSetSchema.parse({
+                directionSetId: set.directionSetId,
+                directions,
+              }),
+              sourceRevisionIds: [
+                context.directionSet.revisionId,
+                target.revisionId,
+                replacement.revisionId,
+              ],
+            },
+          ),
+        };
+      },
+    });
+    return result.revision;
+  }
+
+  private applyLiveFocusedOutput(
+    target: VisualDirection,
+    output: LiveFocusedDirectionOutput,
+    snapshots: PinnedAspectSnapshot[],
+    category: VisualToken["category"],
+    instruction: string,
+  ): StructuredVisualBible {
+    const proposed = StructuredVisualBibleSchema.parse({
+      ...target.visualBible,
+      title: output.title,
+      overallStyle: output.overallStyle,
+      shapeLanguage: output.shapeLanguage,
+      materials: output.materials,
+      palette: output.palette,
+      lighting: output.lighting,
+      atmosphere: output.atmosphere,
+      textureLanguage: output.textureLanguage,
+      cameraLanguage: output.cameraLanguage,
+      readabilityRules: output.readabilityRules,
+    });
+    assertPinnedAspectsPreserved(proposed, snapshots);
+    const restored = restorePinnedAspects(proposed, snapshots);
+    const slug =
+      target.directionId.split(":").at(-1) ??
+      stableId("direction", target.directionId);
+    const template: DirectionTemplate = {
+      slug,
+      name: restored.title,
+      rationale: output.rationale,
+      overallStyle: restored.overallStyle,
+      shapeLanguage: restored.shapeLanguage,
+      materials: restored.materials,
+      palette: restored.palette,
+      lighting: restored.lighting,
+      atmosphere: restored.atmosphere,
+      textureLanguage: restored.textureLanguage,
+    };
+    const preserved = target.visualBible.tokens.filter(
+      (token) =>
+        token.role !== undefined &&
+        PRESERVED_FOCUSED_TOKEN_ROLES.has(token.role),
+    );
+    return StructuredVisualBibleSchema.parse({
+      ...restored,
+      architecture: target.visualBible.architecture,
+      heroProp: target.visualBible.heroProp,
+      prohibitedStyles: target.visualBible.prohibitedStyles,
+      tokens: [
+        ...tokensFor(template, restored.cameraLanguage),
+        ...preserved,
+        {
+          tokenId: stableId("focused-change", instruction),
+          category,
+          value: instruction,
+          role: "focused revision",
+        },
+      ],
+    });
+  }
+
+  private async makeLiveFocusedDirectionChange(
+    context: M1CreativeContext & {
+      gameDesignSpec: RevisionRef;
+      directionSet: RevisionRef;
+      change: string;
+      pinnedAspects: string[];
+    },
+    set: VisualDirectionSet,
+    target: VisualDirection,
+    category: VisualToken["category"],
+    instruction: string,
+    snapshots: PinnedAspectSnapshot[],
+  ): Promise<{ directionSet: RevisionRef; changeRecord: RevisionRef }> {
+    const spec = GameDesignSpecSchema.parse(
+      this.repository.resolveRevision<GameDesignSpec>(context.gameDesignSpec),
+    );
+    const inputHash = hashText(
+      `${target.revisionId}:${instruction}:${snapshots
+        .map((snapshot) => snapshot.name)
+        .join("|")}`,
+    );
+    const result = await ensureDurableStructured({
+      repository: this.repository,
+      execution: this.execution,
+      projectId: context.projectId,
+      runId: context.runId,
+      operation: M1_TEXT_OPERATIONS.directionFocusedChange,
+      mode: this.textMode(context),
+      provider: this.textProvider(context),
+      idempotencyKey: this.textKey(
+        context,
+        M1_TEXT_OPERATIONS.directionFocusedChange,
+        inputHash,
+      ),
+      schema: LiveFocusedDirectionOutputSchema,
+      systemPrompt: focusedDirectionSystemPrompt,
+      prompt: focusedDirectionPrompt({
+        spec,
+        change: instruction,
+        pinnedAspects: snapshots.map((snapshot) => ({
+          name: snapshot.name,
+          field: snapshot.field,
+          value: pinnedPromptValue(snapshot),
+        })),
+        current: target.visualBible,
+      }),
+      persist: async (output) => {
+        const changed = this.applyLiveFocusedOutput(
+          target,
+          output,
+          snapshots,
+          category,
+          instruction,
+        );
+        const bibleRevision = writeRevision(
+          this.repository,
+          context,
+          `visual-bible:${target.directionId}`,
+          "structured-visual-bible",
+          {
+            sourceRevisionIds: [
+              context.gameDesignSpec.revisionId,
+              target.revisionId,
+            ],
+            value: changed,
+          },
+        );
+        const previewArtifact = this.repository.putArtifact(
+          context.projectId,
+          await sharp(
+            Buffer.from(previewSvg(changed, bibleRevision.revisionId)),
+          )
+            .png()
+            .toBuffer(),
+          "image/png",
+        );
+        const changedDirection: VisualDirection = {
+          ...target,
+          revisionId: bibleRevision.revisionId,
+          name: changed.title,
+          rationale: `${target.rationale} Focused change: ${sentence(context.change)}`,
+          visualBible: changed,
+          preview: {
+            artifact: previewArtifact,
+            sourceGameDesignRevisionId: context.gameDesignSpec.revisionId,
+            sourceVisualBibleRevisionId: bibleRevision.revisionId,
+          },
+        };
+        const directions = set.directions.map((direction) =>
+          direction.revisionId === target.revisionId
+            ? changedDirection
+            : direction,
+        ) as [VisualDirection, VisualDirection, VisualDirection];
+        const directionSet = writeRevision(
+          this.repository,
+          context,
+          "visual-direction-set",
+          "visual-direction-set",
+          {
+            ...VisualDirectionSetSchema.parse({
+              directionSetId: set.directionSetId,
+              directions,
+            }),
+            sourceRevisionIds: [
+              context.directionSet.revisionId,
+              target.revisionId,
+              changedDirection.revisionId,
+            ],
+          },
+        );
+        const record: FocusedDirectionChange = {
+          sourceDirectionRevisionId: target.revisionId,
+          resultDirectionRevisionId: changedDirection.revisionId,
+          change: context.change,
+          pinnedAspects: snapshots.map(({ name, accessor, before }) => ({
+            name,
+            before,
+            after: accessor(changed),
+          })),
+        };
+        const changeRecord = writeRevision(
+          this.repository,
+          context,
+          `focused-change:${target.directionId}`,
+          "focused-direction-change",
+          record,
+        );
+        return {
+          revision: directionSet,
+          payload: { changeRecordRevisionId: changeRecord.revisionId },
+        };
+      },
+    });
+    return {
+      directionSet: result.revision,
+      changeRecord: this.repository.getRevision(
+        requiredPayloadString(
+          result.submission.payload,
+          "changeRecordRevisionId",
+        ),
+      ),
+    };
+  }
+
   private async createDirection(
     context: M1CreativeContext,
     spec: GameDesignSpec,
@@ -1873,18 +2890,36 @@ export class M1CreativeDevelopment {
       sourceRevisionIds: string[];
       attempt: number;
       regenerationNote?: string;
+      mode?: ProviderMode;
+      imageProvider?: ImageProvider;
     },
   ): Promise<RevisionRef> {
     if (input.inheritedVisualTokens.length === 0)
       throw new Error(
         "A concept cannot be compiled without approved visual tokens.",
       );
-    const prompt = conceptPrompt(
+    const basePrompt = conceptBasePrompt(
+      input.slot,
+      input.spec,
+      input.inheritedVisualTokens,
+    );
+    const prompt = conceptSentPrompt(
       input.slot,
       input.spec,
       input.inheritedVisualTokens,
       input.regenerationNote,
     );
+    const mode = input.mode ?? "replay";
+    const imageProvider = input.imageProvider ?? "none";
+    if (mode === "live") {
+      return await this.createLiveConceptRevision({
+        ...input,
+        prompt,
+        basePrompt,
+        mode,
+        imageProvider,
+      });
+    }
     const image = this.repository.putArtifact(
       input.projectId,
       await sharp(
@@ -1896,27 +2931,127 @@ export class M1CreativeDevelopment {
         .toBuffer(),
       "image/png",
     );
+    return this.writeConceptDocument({
+      ...input,
+      prompt,
+      basePrompt,
+      image,
+      provider: "fulcrum-replay",
+      model: "m1-replay-svg-v1",
+      costUsd: 0,
+    });
+  }
+
+  private async createLiveConceptRevision(
+    input: M1CreativeContext & {
+      spec: GameDesignSpec;
+      slot: ConceptPlan["slots"][number];
+      inheritedVisualTokens: VisualToken[];
+      sourceRevisionIds: string[];
+      attempt: number;
+      prompt: string;
+      basePrompt: string;
+      mode: ProviderMode;
+      imageProvider: ImageProvider;
+    },
+  ): Promise<RevisionRef> {
+    if (input.imageProvider !== "openai-subscription") {
+      throw new ProviderPreflightError(
+        "provider-unconfigured",
+        "Live M1 concept generation uses the signed-in OpenAI subscription ImageGen route (imageProvider openai-subscription).",
+      );
+    }
+    const idempotencyKey = m1ConceptImageIdempotencyKey({
+      projectId: input.projectId,
+      slotId: input.slot.slotId,
+      sourceRevisionIds: input.sourceRevisionIds,
+      attempt: input.attempt,
+      mode: input.mode,
+      imageProvider: input.imageProvider,
+      prompt: input.prompt,
+    });
+    const prior = this.repository.getSubmissionByKey(idempotencyKey);
+    if (prior?.status === "ready" && prior.resultRevisionId)
+      return this.repository.getRevision(prior.resultRevisionId);
+    const outcome = await ensureDurableSubscriptionImage({
+      repository: this.repository,
+      runner: this.imageRunner,
+      projectId: input.projectId,
+      runId: input.runId,
+      idempotencyKey,
+      prompt: input.prompt,
+      mode: input.mode,
+      provider: input.imageProvider,
+    });
+    if (outcome.status === "failed") {
+      const preflight = ProviderPreflightCodeSchema.safeParse(
+        outcome.error.code,
+      );
+      if (preflight.success)
+        throw new ProviderPreflightError(preflight.data, outcome.error.message);
+      const usage = ProviderUsageCodeSchema.safeParse(outcome.error.code);
+      if (usage.success)
+        throw new ProviderUsageError(usage.data, outcome.error.message);
+      throw new Error(outcome.error.message);
+    }
+    if (outcome.status !== "ready")
+      throw new Error(
+        "Subscription ImageGen did not return a completed image.",
+      );
+    const recorded = this.repository.getSubmissionByKey(idempotencyKey);
+    if (recorded?.resultRevisionId)
+      return this.repository.getRevision(recorded.resultRevisionId);
+    const revision = this.writeConceptDocument({
+      ...input,
+      image: outcome.value.artifact,
+      provider: input.imageProvider,
+      model: outcome.value.model,
+      costUsd: outcome.value.costUsd,
+    });
+    this.repository.updateSubmission(outcome.requestId, {
+      status: "ready",
+      resultRevisionId: revision.revisionId,
+      payload: recorded?.payload ?? { imageArtifact: outcome.value.artifact },
+    });
+    return revision;
+  }
+
+  private writeConceptDocument(
+    input: M1CreativeContext & {
+      slot: ConceptPlan["slots"][number];
+      inheritedVisualTokens: VisualToken[];
+      sourceRevisionIds: string[];
+      attempt: number;
+      prompt: string;
+      basePrompt: string;
+      image: M1ConceptDocument["image"];
+      provider: string;
+      model: string;
+      costUsd: number;
+    },
+  ): RevisionRef {
     const sourceRevisions = [...new Set(input.sourceRevisionIds)].map(
       (revisionId) => this.repository.getRevision(revisionId),
     );
     const document = M1ConceptDocumentSchema.parse({
       conceptId: `${input.projectId}:${input.slot.slotId}`,
       name: `${input.slot.name} r${String(input.attempt + 1).padStart(2, "0")}`,
-      prompt,
+      prompt: input.prompt,
+      basePrompt: input.basePrompt,
       negativePrompt: input.inheritedVisualTokens
         .filter((token) => token.category === "prohibited-style")
         .map((token) => token.value)
         .join(", "),
-      image,
-      provider: "fulcrum-replay",
-      model: "m1-replay-svg-v1",
+      image: input.image,
+      provider: input.provider,
+      model: input.model,
       sourceRevisionIds: sourceRevisions.map(({ revisionId }) => revisionId),
       ancestors: sourceRevisions.map(({ revisionId, artifact, kind }) => ({
         revisionId,
         sha256: artifact.sha256,
         kind,
       })),
-      costUsd: 0,
+      costUsd: input.costUsd,
     });
     return writeRevision(
       this.repository,
@@ -1925,5 +3060,49 @@ export class M1CreativeDevelopment {
       "concept-document",
       document,
     );
+  }
+
+  planSounds(
+    context: M1CreativeContext & {
+      gameDesignSpec: RevisionRef;
+      directionSet: RevisionRef;
+      selectedDirectionRevisionId: string;
+    },
+  ): RevisionRef {
+    return this.sounds.plan(context);
+  }
+
+  applySoundPlanPromptOverrides(
+    context: M1CreativeContext & {
+      soundPlan: RevisionRef;
+      overrides: Array<{ slotId: string; prompt: string }>;
+    },
+  ): RevisionRef {
+    return this.sounds.applyPromptOverrides(context);
+  }
+
+  async generateSoundSet(
+    context: M1CreativeContext & {
+      gameDesignSpec: RevisionRef;
+      directionSet: RevisionRef;
+      selectedDirectionRevisionId: string;
+      soundPlan: RevisionRef;
+      mode?: ProviderMode;
+      soundProvider?: SoundProvider;
+    },
+  ): Promise<RevisionRef> {
+    return await this.sounds.generateSet(context);
+  }
+
+  async regenerateSoundSlot(
+    context: M1CreativeContext & {
+      soundSet: RevisionRef;
+      slotId: string;
+      notes?: string;
+      mode?: ProviderMode;
+      soundProvider?: SoundProvider;
+    },
+  ): Promise<RevisionRef> {
+    return await this.sounds.regenerateSlot(context);
   }
 }
