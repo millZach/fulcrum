@@ -12,10 +12,48 @@ import {
   type ArtifactRef,
   type ProjectState,
   type ProjectStateInput,
+  type ProjectStage,
   type RevisionRef,
   type SubmissionRecord,
   type SubmissionStatus,
 } from "@fulcrum/domain";
+
+export interface WorkflowCheckpointRepository {
+  ensureRevision<T>(input: {
+    projectId: string;
+    operationKey: string;
+    entityId: string;
+    kind: string;
+    runId: string;
+    createValue: () => T;
+  }): { revision: RevisionRef; value: T; created: boolean };
+
+  appendWorkflowEvent(input: {
+    projectId: string;
+    runId: string;
+    type:
+      | "workflow.node.entered"
+      | "workflow.node.suspended"
+      | "workflow.node.failed"
+      | "workflow.run.reconstructed";
+    payload: Record<string, unknown>;
+  }): void;
+
+  commitWorkflowCheckpoint(input: {
+    projectId: string;
+    runId: string;
+    checkpointKey: string;
+    expectedStage: ProjectStage;
+    nextState: ProjectStateInput;
+    event: {
+      type: "workflow.node.completed";
+      payload: Record<string, unknown>;
+    };
+  }): {
+    status: "committed" | "already-committed" | "stale";
+    state: ProjectState;
+  };
+}
 
 type ArtifactRow = {
   artifact_id: string;
@@ -351,6 +389,75 @@ export class ProjectRepository {
     };
   }
 
+  ensureRevision<T>(input: {
+    projectId: string;
+    operationKey: string;
+    entityId: string;
+    kind: string;
+    runId: string;
+    createValue: () => T;
+  }): { revision: RevisionRef; value: T; created: boolean } {
+    const revisionId = `ensured-${createHash("sha256")
+      .update(JSON.stringify([input.projectId, input.operationKey]))
+      .digest("hex")}`;
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const existing = this.database
+        .prepare(
+          "SELECT revision_id, entity_id, kind, artifact_id, created_at, run_id FROM revisions WHERE revision_id = ?",
+        )
+        .get(revisionId) as RevisionRow | undefined;
+      if (existing) {
+        if (
+          existing.entity_id !== input.entityId ||
+          existing.kind !== input.kind
+        )
+          throw new Error(
+            `Operation key ${input.operationKey} was reused for a different revision identity.`,
+          );
+        const revision = this.getRevision(revisionId);
+        const value = this.resolveRevision<T>(revision);
+        this.database.exec("COMMIT");
+        return { revision, value, created: false };
+      }
+
+      const value = input.createValue();
+      const bytes = new TextEncoder().encode(JSON.stringify(value, null, 2));
+      const artifact = this.putArtifact(
+        input.projectId,
+        bytes,
+        "application/json",
+      );
+      const createdAt = now();
+      this.database
+        .prepare(
+          "INSERT INTO revisions (revision_id, project_id, entity_id, kind, artifact_id, run_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          revisionId,
+          input.projectId,
+          input.entityId,
+          input.kind,
+          artifact.artifactId,
+          input.runId,
+          createdAt,
+        );
+      const revision = {
+        entityId: input.entityId,
+        revisionId,
+        kind: input.kind,
+        artifact,
+        createdAt,
+        createdByRunId: input.runId,
+      };
+      this.database.exec("COMMIT");
+      return { revision, value, created: true };
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   getRevision(revisionId: string): RevisionRef {
     const row = this.database
       .prepare(
@@ -397,6 +504,86 @@ export class ProjectRepository {
       );
   }
 
+  appendWorkflowEvent(input: {
+    projectId: string;
+    runId: string;
+    type:
+      | "workflow.node.entered"
+      | "workflow.node.suspended"
+      | "workflow.node.failed"
+      | "workflow.run.reconstructed";
+    payload: Record<string, unknown>;
+  }): void {
+    this.appendEvent(input);
+  }
+
+  commitWorkflowCheckpoint(input: {
+    projectId: string;
+    runId: string;
+    checkpointKey: string;
+    expectedStage: ProjectStage;
+    nextState: ProjectStateInput;
+    event: {
+      type: "workflow.node.completed";
+      payload: Record<string, unknown>;
+    };
+  }): {
+    status: "committed" | "already-committed" | "stale";
+    state: ProjectState;
+  } {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const current = this.getProject(input.projectId);
+      const checkpoints = this.database
+        .prepare(
+          "SELECT payload_json FROM events WHERE project_id = ? AND event_type = 'workflow.node.completed' ORDER BY rowid ASC",
+        )
+        .all(input.projectId) as unknown as Array<{ payload_json: string }>;
+      const alreadyCommitted = checkpoints.some(({ payload_json }) => {
+        const payload = JSON.parse(payload_json) as Record<string, unknown>;
+        return payload.checkpointKey === input.checkpointKey;
+      });
+      if (alreadyCommitted) {
+        this.database.exec("COMMIT");
+        return { status: "already-committed", state: current };
+      }
+      if (current.stage !== input.expectedStage) {
+        this.database.exec("COMMIT");
+        return { status: "stale", state: current };
+      }
+      const next = ProjectStateSchema.parse({
+        ...input.nextState,
+        projectId: input.projectId,
+        updatedAt: now(),
+      });
+      this.database
+        .prepare(
+          "UPDATE projects SET state_json = ?, updated_at = ? WHERE project_id = ?",
+        )
+        .run(JSON.stringify(next), next.updatedAt, input.projectId);
+      this.database
+        .prepare(
+          "INSERT INTO events (event_id, project_id, run_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          randomUUID(),
+          input.projectId,
+          input.runId,
+          input.event.type,
+          JSON.stringify({
+            ...input.event.payload,
+            checkpointKey: input.checkpointKey,
+          }),
+          now(),
+        );
+      this.database.exec("COMMIT");
+      return { status: "committed", state: next };
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   listEvents(projectId: string): Array<{
     eventId: string;
     runId: string;
@@ -406,7 +593,7 @@ export class ProjectRepository {
   }> {
     const rows = this.database
       .prepare(
-        "SELECT event_id, run_id, event_type, payload_json, created_at FROM events WHERE project_id = ? ORDER BY created_at ASC",
+        "SELECT event_id, run_id, event_type, payload_json, created_at FROM events WHERE project_id = ? ORDER BY created_at ASC, rowid ASC",
       )
       .all(projectId) as unknown as Array<{
       event_id: string;

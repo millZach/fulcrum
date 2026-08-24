@@ -835,23 +835,25 @@ export class AssetQuality {
       gates,
       evaluatedAt: new Date().toISOString(),
     });
-    const revision = this.repository.writeRevision({
+    const ensured = this.repository.ensureRevision({
       projectId: input.projectId,
+      operationKey: `m0.asset-quality:${input.asset.revisionId}`,
       entityId: `${asset.assetId}:quality`,
       kind: "asset-evaluation",
-      value: evaluation,
       runId: input.runId,
+      createValue: () => evaluation,
     });
-    this.repository.appendEvent({
-      projectId: input.projectId,
-      runId: input.runId,
-      type: "asset.quality-evaluated",
-      payload: {
-        revisionId: revision.revisionId,
-        passed: evaluation.passed,
-        triangleCount,
-      },
-    });
-    return { revision, evaluation };
+    if (ensured.created)
+      this.repository.appendEvent({
+        projectId: input.projectId,
+        runId: input.runId,
+        type: "asset.quality-evaluated",
+        payload: {
+          revisionId: ensured.revision.revisionId,
+          passed: ensured.value.passed,
+          triangleCount: ensured.value.measurements.triangleCount,
+        },
+      });
+    return { revision: ensured.revision, evaluation: ensured.value };
   }
 }

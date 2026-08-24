@@ -139,8 +139,8 @@ export class M1Coordinator {
 
   async create(input: unknown): Promise<ProjectSnapshot> {
     const parsed = CreateProjectInputSchema.parse(input);
-    if (parsed.milestone !== "m1")
-      throw new Error("M1 project creation requires milestone m1.");
+    if (parsed.milestone !== "m1" && parsed.milestone !== "m2")
+      throw new Error("Creative project creation requires milestone m1 or m2.");
     if (parsed.mode === "live") {
       if (!isM1LiveAuthorized()) throw new Error(m1LiveAuthorizationMessage());
       if (parsed.imageProvider !== "openai-subscription")
@@ -170,18 +170,22 @@ export class M1Coordinator {
     });
     this.repository.createProject({
       schemaVersion: 1,
-      milestone: "m1",
+      milestone: parsed.milestone,
       projectId,
-      name: "M1 Creative Project",
+      name: `${parsed.milestone.toUpperCase()} Creative Project`,
       mode: parsed.mode,
       assetProvider: parsed.assetProvider,
       orchestratorProvider: parsed.orchestratorProvider,
       implementationProvider: parsed.implementationProvider,
       imageProvider: parsed.imageProvider,
-      soundProvider: parsed.mode === "replay" ? "none" : parsed.soundProvider,
+      soundProvider:
+        parsed.milestone === "m2" || parsed.mode === "replay"
+          ? "none"
+          : parsed.soundProvider,
       status: "awaiting-input",
       stage: "interrogation",
       runId,
+      maxConcurrentExternalJobs: parsed.maxConcurrentExternalJobs,
       budgetUsd: parsed.budgetUsd ?? 0,
       spentUsd: 0,
       conceptReplacementCount: 0,
@@ -196,7 +200,7 @@ export class M1Coordinator {
       updatedAt: createdAt,
     });
     this.event(projectId, runId, "project.created", {
-      milestone: "m1",
+      milestone: parsed.milestone,
       mode: parsed.mode,
       ...(parsed.budgetUsd !== undefined
         ? { budgetUsd: parsed.budgetUsd }
@@ -961,6 +965,15 @@ export class M1Coordinator {
         "concept-set-not-approved",
         "The concept set was not approved.",
       );
+    if (state.milestone === "m2") {
+      this.repository.saveProject({
+        ...state,
+        conceptSetApproval: decision,
+        status: "active",
+        stage: "asset-planning",
+      });
+      return this.snapshot(projectId);
+    }
     const directionSet = this.requireRef(
       state.visualDirectionSet,
       "The project has no visual direction set.",
@@ -1314,8 +1327,8 @@ export class M1Coordinator {
 
   private requireM1(projectId: string): ProjectState {
     const state = this.repository.getProject(projectId);
-    if (state.milestone !== "m1")
-      throw new Error(`Project ${projectId} is not an M1 project.`);
+    if (state.milestone !== "m1" && state.milestone !== "m2")
+      throw new Error(`Project ${projectId} has no creative front.`);
     return state;
   }
 
@@ -1432,3 +1445,5 @@ export class M1Coordinator {
     this.repository.appendEvent({ projectId, runId, type, payload });
   }
 }
+
+export { M1Coordinator as CreativeFrontCoordinator };

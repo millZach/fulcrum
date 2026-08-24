@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
+  AssetDocumentSchema,
   ConceptDocumentSchema,
   type ConceptDocument,
   type RevisionRef,
@@ -10,7 +11,11 @@ import {
 import { ProjectRepository } from "@fulcrum/project";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { AssetProduction, createReplayReliquary } from "./index.js";
+import {
+  AssetProduction,
+  AssetQuality,
+  createReplayReliquary,
+} from "./index.js";
 
 const PNG_1x1 = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
@@ -351,5 +356,59 @@ describe("AssetProduction live preflight", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(repository.getProject(projectId).spentUsd).toBe(0.2);
     repository.close();
+  });
+});
+
+describe("AssetQuality replay idempotency", () => {
+  it("asset_quality_replay_returns_the_original_evaluation_revision", async () => {
+    const root = temporaryRoot();
+    const projectId = "quality-project";
+    const repository = new ProjectRepository(root);
+    repository.reserveProject(projectId, "2026-01-01T00:00:00.000Z");
+    const glb = repository.putArtifact(
+      projectId,
+      await createReplayReliquary(),
+      "model/gltf-binary",
+    );
+    const asset = repository.writeRevision({
+      projectId,
+      entityId: "asset-1",
+      kind: "asset-document",
+      value: AssetDocumentSchema.parse({
+        assetId: "asset-1",
+        name: "Reliquary",
+        classification: "hero",
+        glb,
+        provider: "fulcrum-replay",
+        model: "fixture",
+        sourceConceptRevisionId: "concept-1",
+        externalJobId: "replay-1",
+        costUsd: 0,
+      }),
+      runId: "run-1",
+    });
+    const quality = new AssetQuality(repository);
+    const first = await quality.evaluate({
+      projectId,
+      runId: "run-1",
+      asset,
+    });
+    repository.close();
+
+    const reconstructed = new ProjectRepository(root);
+    const second = await new AssetQuality(reconstructed).evaluate({
+      projectId,
+      runId: "run-2",
+      asset,
+    });
+
+    expect(second.revision).toEqual(first.revision);
+    expect(second.evaluation).toEqual(first.evaluation);
+    expect(
+      reconstructed
+        .listEvents(projectId)
+        .filter(({ type }) => type === "asset.quality-evaluated"),
+    ).toHaveLength(1);
+    reconstructed.close();
   });
 });

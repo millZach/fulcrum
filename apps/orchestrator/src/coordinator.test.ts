@@ -1,8 +1,15 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { M0_FIXTURE_BRIEF, type AssetDocument } from "@fulcrum/domain";
+import {
+  M0_FIXTURE_BRIEF,
+  type ArtifactRef,
+  type AssetDocument,
+  type ProjectSnapshot,
+  type RevisionRef,
+} from "@fulcrum/domain";
 import { AssetProduction, createReplayReliquary } from "@fulcrum/production";
 import { ProjectRepository } from "@fulcrum/project";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -273,5 +280,227 @@ describe("M0Coordinator replay path", () => {
     expect(repository.getProject(direction.state.projectId).spentUsd).toBe(0.2);
     expect(fetchMock).toHaveBeenCalledTimes(3);
     repository.close();
+  });
+});
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const isRevisionRef = (value: unknown): value is RevisionRef =>
+  isRecord(value) &&
+  typeof value.revisionId === "string" &&
+  isRecord(value.artifact) &&
+  value.artifact.mediaType === "application/json";
+
+const canonicalizer = (repository: ProjectRepository, roots: unknown[]) => {
+  const revisions = new Map<string, RevisionRef>();
+  const collectRevisions = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      value.forEach(collectRevisions);
+      return;
+    }
+    if (!isRecord(value)) return;
+    if (isRevisionRef(value)) revisions.set(value.revisionId, value);
+    Object.values(value).forEach(collectRevisions);
+  };
+  roots.forEach(collectRevisions);
+  const documents = [...revisions.values()].map((revision) =>
+    repository.resolveRevision(revision),
+  );
+  const identityKeys = new Set([
+    "projectId",
+    "runId",
+    "workflowRunId",
+    "revisionId",
+    "revisionIds",
+    "targetRevisionId",
+    "sourceRevisionIds",
+    "assetRevisionId",
+    "conceptRevisionId",
+    "sceneRevisionId",
+    "selectedVisualDirectionRevisionId",
+    "artifactId",
+    "approvalId",
+    "evaluationId",
+    "sceneId",
+    "entityId",
+    "conceptId",
+    "assetId",
+    "requestId",
+    "externalJobId",
+  ]);
+  const identities = new Map<string, string>();
+  const register = (value: unknown, key?: string): void => {
+    if (Array.isArray(value)) {
+      value.forEach((entry) => register(entry, key));
+      return;
+    }
+    if (!isRecord(value)) {
+      if (
+        typeof value === "string" &&
+        key &&
+        identityKeys.has(key) &&
+        !identities.has(value)
+      )
+        identities.set(value, `<${key}:${identities.size + 1}>`);
+      return;
+    }
+    for (const [childKey, child] of Object.entries(value))
+      register(child, childKey);
+  };
+  [...roots, ...documents].forEach((value) => register(value));
+  const normalizeString = (value: string): string => {
+    let normalized = value.replace(
+      /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/g,
+      "<timestamp>",
+    );
+    for (const [identity, label] of [...identities.entries()].sort(
+      ([left], [right]) => right.length - left.length,
+    ))
+      normalized = normalized.split(identity).join(label);
+    return normalized;
+  };
+  const jsonHashes = new Map<string, string>();
+  const normalize = (
+    value: unknown,
+    key?: string,
+    parent?: Record<string, unknown>,
+  ): unknown => {
+    if (typeof value === "string") {
+      if (key === "targetSha256" && jsonHashes.has(value))
+        return jsonHashes.get(value);
+      if (
+        key === "sha256" &&
+        parent?.mediaType === "application/json" &&
+        jsonHashes.has(value)
+      )
+        return jsonHashes.get(value);
+      return normalizeString(value);
+    }
+    if (Array.isArray(value))
+      return value.map((entry) => normalize(entry, key));
+    if (!isRecord(value)) return value;
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((childKey) => [
+          childKey,
+          normalize(value[childKey], childKey, value),
+        ]),
+    );
+  };
+  for (const revision of revisions.values()) {
+    const document = repository.resolveRevision(revision);
+    const bytes = JSON.stringify(normalize(document));
+    jsonHashes.set(
+      revision.artifact.sha256,
+      createHash("sha256").update(bytes).digest("hex"),
+    );
+  }
+  return (value: unknown): string => JSON.stringify(normalize(value));
+};
+
+const replayDeterminismRun = async () => {
+  const repository = new ProjectRepository(temporaryRoot());
+  const coordinator = new M0Coordinator(repository);
+  let snapshot = await coordinator.create({
+    brief: M0_FIXTURE_BRIEF,
+    mode: "replay",
+    assetProvider: "meshy",
+    orchestratorProvider: "openai",
+    implementationProvider: "openai",
+    imageProvider: "none",
+    budgetUsd: 1,
+    rightsConfirmed: true,
+  });
+  snapshot = await coordinator.approveDirection(snapshot.state.projectId, {
+    decision: "approved",
+  });
+  snapshot = coordinator.approveSlice(snapshot.state.projectId, {
+    decision: "approved",
+  });
+  const state = snapshot.state;
+  const concept = repository.resolveRevision<Record<string, unknown>>(
+    state.concept!,
+  );
+  const asset = repository.resolveRevision<AssetDocument>(state.asset!);
+  const quality = repository.resolveRevision<Record<string, unknown>>(
+    state.assetEvaluation!,
+  );
+  const scene = repository.resolveRevision<Record<string, unknown>>(
+    state.scene!,
+  );
+  const events = repository
+    .listEvents(state.projectId)
+    .map(({ type, payload }) => ({ type, payload }));
+  const roots = [concept, asset, quality, scene, snapshot, events];
+  const canonical = canonicalizer(repository, roots);
+  const raw = {
+    brief: Buffer.from(repository.readArtifact(state.brief.artifact)).toString(
+      "base64",
+    ),
+    gameDesign: Buffer.from(
+      repository.readArtifact(state.gameDesign!.artifact),
+    ).toString("base64"),
+    visualBible: Buffer.from(
+      repository.readArtifact(state.visualBible!.artifact),
+    ).toString("base64"),
+    conceptPng: Buffer.from(
+      repository.readArtifact(concept.image as ArtifactRef),
+    ).toString("base64"),
+    glb: Buffer.from(repository.readArtifact(asset.glb)).toString("base64"),
+  };
+  const result = {
+    raw,
+    canonical: {
+      concept: canonical(concept),
+      asset: canonical(asset),
+      quality: canonical(quality),
+      scene: canonical(scene),
+      snapshot: canonical(snapshot),
+      events: canonical(events),
+    },
+    eventOrder: events.map(({ type }) => type),
+  };
+  repository.close();
+  return result;
+};
+
+describe("M0 replay determinism", () => {
+  it("two_fresh_replay_runs_match_raw_content_bytes_and_canonical_lineage", async () => {
+    const first = await replayDeterminismRun();
+    const second = await replayDeterminismRun();
+
+    expect(second.raw).toEqual(first.raw);
+    expect(second.canonical).toEqual(first.canonical);
+  });
+
+  it("canonicalizer_does_not_hide_changed_prompt_measurement_or_stage", () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const normalize = canonicalizer(repository, []);
+    const baseline = {
+      prompt: "A squat stone reliquary",
+      measurements: { triangleCount: 10 },
+      stage: "asset-quality",
+    };
+
+    expect(normalize({ ...baseline, prompt: "A tall glass tower" })).not.toBe(
+      normalize(baseline),
+    );
+    expect(
+      normalize({ ...baseline, measurements: { triangleCount: 11 } }),
+    ).not.toBe(normalize(baseline));
+    expect(normalize({ ...baseline, stage: "scene-composition" })).not.toBe(
+      normalize(baseline),
+    );
+    repository.close();
+  });
+
+  it("replay_event_type_and_checkpoint_order_is_identical", async () => {
+    const first = await replayDeterminismRun();
+    const second = await replayDeterminismRun();
+
+    expect(second.eventOrder).toEqual(first.eventOrder);
+    expect(second.canonical.events).toBe(first.canonical.events);
   });
 });

@@ -21,61 +21,25 @@ import {
   preferredOpenAIImageProvider,
   preferredOpenAIProvider,
 } from "@fulcrum/execution";
-import { AssetProduction, AssetQuality } from "@fulcrum/production";
 import { ProjectRepository } from "@fulcrum/project";
-import { SceneAuthoring } from "@fulcrum/scene";
-import { createStep, createWorkflow } from "@mastra/core/workflows";
-import { z } from "zod";
 
+import { PostConceptGraphDriver } from "./macro-graph.js";
 import { workflowErrorMessage } from "./workflow-error.js";
-
-const WorkflowInputSchema = z.object({ projectId: z.string().min(1) });
-const WorkflowOutputSchema = z.object({
-  projectId: z.string(),
-  status: z.string(),
-  stage: z.string(),
-});
 
 const now = () => new Date().toISOString();
 
 export class M0Coordinator {
   private readonly creative: CreativeDevelopment;
   private readonly concepts: ConceptProduction;
-  private readonly assets: AssetProduction;
-  private readonly quality: AssetQuality;
-  private readonly scenes: SceneAuthoring;
-  private readonly phaseWorkflow;
+  readonly macro: PostConceptGraphDriver;
 
-  constructor(readonly repository: ProjectRepository) {
+  constructor(
+    readonly repository: ProjectRepository,
+    macro = new PostConceptGraphDriver(repository),
+  ) {
     this.creative = new CreativeDevelopment(repository);
     this.concepts = new ConceptProduction(repository);
-    this.assets = new AssetProduction(repository);
-    this.quality = new AssetQuality(repository);
-    this.scenes = new SceneAuthoring(repository);
-    const coordinatePhase = createStep({
-      id: "coordinate-m0-phase",
-      description:
-        "Executes one idempotent M0 production phase from durable project state.",
-      inputSchema: WorkflowInputSchema,
-      outputSchema: WorkflowOutputSchema,
-      execute: async ({ inputData }) => {
-        const state = await this.advanceOne(inputData.projectId);
-        return {
-          projectId: state.projectId,
-          status: state.status,
-          stage: state.stage,
-        };
-      },
-    });
-    this.phaseWorkflow = createWorkflow({
-      id: "fulcrum-m0-phase",
-      description:
-        "Coordinates a single restart-safe phase of the Fulcrum M0 artifact lineage.",
-      inputSchema: WorkflowInputSchema,
-      outputSchema: WorkflowOutputSchema,
-    })
-      .then(coordinatePhase)
-      .commit();
+    this.macro = macro;
   }
 
   configuration(): ConfigurationStatus {
@@ -281,6 +245,7 @@ export class M0Coordinator {
       status: "active",
       stage: "creative-development",
       runId,
+      maxConcurrentExternalJobs: parsed.maxConcurrentExternalJobs,
       budgetUsd,
       spentUsd: 0,
       conceptReplacementCount: 0,
@@ -307,24 +272,25 @@ export class M0Coordinator {
   }
 
   async advance(projectId: string): Promise<ProjectSnapshot> {
-    for (let index = 0; index < 8; index += 1) {
-      const before = this.repository.getProject(projectId);
-      if (["awaiting-approval", "blocked", "complete"].includes(before.status))
-        break;
-      const workflowRunId = randomUUID();
-      this.repository.saveProject({ ...before, workflowRunId });
-      const run = await this.phaseWorkflow.createRun({
-        runId: workflowRunId,
-        resourceId: projectId,
-      });
-      const result = await run.start({ inputData: { projectId } });
-      if (result.status === "failed") {
-        const message = workflowErrorMessage(result.error);
-        this.block(projectId, "workflow-phase-failed", message, true);
-        break;
+    const state = this.repository.getProject(projectId);
+    if (state.stage === "creative-development" && state.status === "active") {
+      try {
+        await this.advanceCreative(projectId);
+      } catch (error) {
+        this.block(
+          projectId,
+          "workflow-phase-failed",
+          workflowErrorMessage(error),
+          true,
+        );
       }
-      const after = this.repository.getProject(projectId);
-      if (after.stage === before.stage && after.status === before.status) break;
+    } else if (
+      ["asset-production", "asset-quality", "scene-composition"].includes(
+        state.stage,
+      ) &&
+      state.status === "active"
+    ) {
+      await this.macro.advance(projectId);
     }
     return this.snapshot(projectId);
   }
@@ -512,144 +478,48 @@ export class M0Coordinator {
       .map((project) => this.snapshot(project.projectId));
   }
 
-  private async advanceOne(projectId: string): Promise<ProjectState> {
+  private async advanceCreative(projectId: string): Promise<ProjectState> {
     const state = this.repository.getProject(projectId);
-    if (state.stage === "creative-development") {
-      const brief = this.repository.resolveRevision<{ text: string }>(
-        state.brief,
+    if (state.stage !== "creative-development") return state;
+    const brief = this.repository.resolveRevision<{ text: string }>(
+      state.brief,
+    );
+    const creative =
+      state.gameDesign && state.visualBible
+        ? { gameDesign: state.gameDesign, visualBible: state.visualBible }
+        : await this.creative.develop({
+            projectId,
+            runId: state.runId,
+            brief: brief.text,
+            mode: state.mode,
+            orchestratorProvider: state.orchestratorProvider,
+          });
+    const concept = await this.concepts.ensure({
+      projectId,
+      runId: state.runId,
+      mode: state.mode,
+      imageProvider: state.imageProvider,
+      gameDesign: creative.gameDesign,
+      visualBible: creative.visualBible,
+      attempt: state.conceptReplacementCount,
+    });
+    if (concept.status === "failed")
+      return this.block(
+        projectId,
+        concept.error.code,
+        concept.error.message,
+        concept.error.recoverable,
       );
-      const creative =
-        state.gameDesign && state.visualBible
-          ? { gameDesign: state.gameDesign, visualBible: state.visualBible }
-          : await this.creative.develop({
-              projectId,
-              runId: state.runId,
-              brief: brief.text,
-              mode: state.mode,
-              orchestratorProvider: state.orchestratorProvider,
-            });
-      const concept = await this.concepts.ensure({
-        projectId,
-        runId: state.runId,
-        mode: state.mode,
-        imageProvider: state.imageProvider,
-        gameDesign: creative.gameDesign,
-        visualBible: creative.visualBible,
-        attempt: state.conceptReplacementCount,
-      });
-      if (concept.status === "failed")
-        return this.block(
-          projectId,
-          concept.error.code,
-          concept.error.message,
-          concept.error.recoverable,
-        );
-      const latest = this.repository.getProject(projectId);
-      if (concept.status === "pending")
-        return this.repository.saveProject({ ...latest, ...creative });
-      return this.repository.saveProject({
-        ...latest,
-        ...creative,
-        concept: concept.value,
-        status: "awaiting-approval",
-        stage: "visual-direction-approval",
-      });
-    }
-    if (state.stage === "asset-production") {
-      if (!state.concept)
-        return this.block(
-          projectId,
-          "missing-concept",
-          "Asset production has no approved concept.",
-          false,
-        );
-      const outcome = await this.assets.ensure({
-        projectId,
-        runId: state.runId,
-        mode: state.mode,
-        assetProvider: state.assetProvider,
-        concept: state.concept,
-      });
-      if (outcome.status === "failed")
-        return this.block(
-          projectId,
-          outcome.error.code,
-          outcome.error.message,
-          outcome.error.recoverable,
-        );
-      if (outcome.status === "pending") {
-        this.repository.appendEvent({
-          projectId,
-          runId: state.runId,
-          type: "asset.pending",
-          payload: {
-            requestId: outcome.requestId,
-            resumeAfter: outcome.resumeAfter,
-          },
-        });
-        return this.repository.getProject(projectId);
-      }
-      const latest = this.repository.getProject(projectId);
-      return this.repository.saveProject({
-        ...latest,
-        asset: outcome.value,
-        stage: "asset-quality",
-      });
-    }
-    if (state.stage === "asset-quality") {
-      if (!state.asset)
-        return this.block(
-          projectId,
-          "missing-asset",
-          "Asset quality has no GLB revision.",
-          false,
-        );
-      const result = await this.quality.evaluate({
-        projectId,
-        runId: state.runId,
-        asset: state.asset,
-      });
-      if (!result.evaluation.passed) {
-        return this.repository.saveProject({
-          ...state,
-          assetEvaluation: result.revision,
-          status: "blocked",
-          stage: "blocked",
-          blockedReason: {
-            code: "asset-quality-failed",
-            message: "The generated GLB failed deterministic M0 gates.",
-            recoverable: true,
-          },
-        });
-      }
-      return this.repository.saveProject({
-        ...state,
-        assetEvaluation: result.revision,
-        stage: "scene-composition",
-      });
-    }
-    if (state.stage === "scene-composition") {
-      if (!state.asset || !state.visualBible)
-        return this.block(
-          projectId,
-          "missing-scene-input",
-          "Scene composition is missing its asset or visual bible.",
-          false,
-        );
-      const scene = this.scenes.compose({
-        projectId,
-        runId: state.runId,
-        asset: state.asset,
-        visualBible: state.visualBible,
-      });
-      return this.repository.saveProject({
-        ...state,
-        scene: scene.revision,
-        status: "awaiting-approval",
-        stage: "visual-slice-approval",
-      });
-    }
-    return state;
+    const latest = this.repository.getProject(projectId);
+    if (concept.status === "pending")
+      return this.repository.saveProject({ ...latest, ...creative });
+    return this.repository.saveProject({
+      ...latest,
+      ...creative,
+      concept: concept.value,
+      status: "awaiting-approval",
+      stage: "visual-direction-approval",
+    });
   }
 
   private block(

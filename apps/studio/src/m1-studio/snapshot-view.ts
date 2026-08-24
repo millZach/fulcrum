@@ -313,6 +313,14 @@ export const modelWaitForWorking = (
       "Regenerating the concept image…",
       "Building one focused revision · this can take a few minutes",
     ],
+    "plan-assets": [
+      "Planning the asset batch…",
+      "Turning the approved concept set into a production plan · this can take a few minutes",
+    ],
+    "replan-assets": [
+      "Revising the asset plan…",
+      "Applying the requested planning changes · this can take a few minutes",
+    ],
     "generate-sounds": [
       "Generating the sound palette…",
       "Rendering the approved sound set · this can take a few minutes",

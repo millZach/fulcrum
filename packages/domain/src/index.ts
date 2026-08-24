@@ -6,7 +6,7 @@ export const M0_FIXTURE_BRIEF =
 export const ProviderModeSchema = z.enum(["replay", "live"]);
 export type ProviderMode = z.infer<typeof ProviderModeSchema>;
 
-export const MilestoneSchema = z.enum(["m0", "m1"]);
+export const MilestoneSchema = z.enum(["m0", "m1", "m2"]);
 export type Milestone = z.infer<typeof MilestoneSchema>;
 
 export const AssetProviderSchema = z.enum(["meshy", "tripo"]);
@@ -76,6 +76,9 @@ export const ProjectStageSchema = z.enum([
   "sound-planning",
   "sound-generation",
   "sound-set-approval",
+  "asset-planning",
+  "asset-plan-approval",
+  "asset-batch",
   "asset-production",
   "asset-quality",
   "scene-composition",
@@ -525,6 +528,7 @@ export const ApprovalTargetTypeSchema = z.enum([
   "visual-direction",
   "concept-set",
   "sound-set",
+  "asset-plan",
   "visual-slice",
 ]);
 export type ApprovalTargetType = z.infer<typeof ApprovalTargetTypeSchema>;
@@ -542,70 +546,166 @@ export const ApprovalDecisionSchema = z.object({
 });
 export type ApprovalDecision = z.infer<typeof ApprovalDecisionSchema>;
 
+export const FailureKindSchema = z.enum([
+  "retryable",
+  "strategy-changing",
+  "user-action-required",
+  "policy-blocked",
+  "terminal",
+]);
+export type FailureKind = z.infer<typeof FailureKindSchema>;
+
+export const WorkflowFailureSchema = z.object({
+  code: z.string().min(1),
+  message: z.string().min(1),
+  kind: FailureKindSchema,
+  evidenceRevisionIds: z.array(z.string().min(1)).default([]),
+});
+export type WorkflowFailure = z.infer<typeof WorkflowFailureSchema>;
+
 export const BlockedReasonSchema = z.object({
   code: z.string().min(1),
   message: z.string().min(1),
   recoverable: z.boolean(),
+  failureKind: FailureKindSchema.optional(),
 });
 export type BlockedReason = z.infer<typeof BlockedReasonSchema>;
 
-export const ProjectStateSchema = z.object({
-  schemaVersion: z.literal(1),
-  milestone: MilestoneSchema.default("m0"),
-  projectId: z.string().min(1),
-  name: z.string().min(1),
-  mode: ProviderModeSchema,
-  assetProvider: AssetProviderSchema.default("meshy"),
-  orchestratorProvider: ExecutionProviderSchema.default("openai"),
-  implementationProvider: ExecutionProviderSchema.default("openai"),
-  imageProvider: ImageProviderSchema.default("openai-subscription"),
-  soundProvider: SoundProviderSchema.default("none"),
-  status: ProjectStatusSchema,
-  stage: ProjectStageSchema,
-  runId: z.string().min(1),
-  workflowRunId: z.string().optional(),
-  // Keep a numeric zero in normalized state so old snapshots and M0 readers
-  // retain their stable shape. New no-metered M1 inputs may omit the field.
-  budgetUsd: z.number().nonnegative().default(0),
-  spentUsd: z.number().nonnegative(),
-  conceptReplacementCount: z.number().int().min(0).max(1).default(0),
-  directionReplacementCount: z.number().int().min(0).max(1).optional(),
-  focusedDirectionChangeCount: z.number().int().min(0).max(1).optional(),
-  conceptRegenerationCounts: z
-    .record(z.string().min(1), z.number().int().min(0))
-    .optional(),
-  soundRegenerationCounts: z
-    .record(z.string().min(1), z.number().int().min(0))
-    .optional(),
-  brief: RevisionRefSchema,
-  creativeCapabilities: RevisionRefSchema.optional(),
-  interrogation: RevisionRefSchema.optional(),
-  gameDesign: RevisionRefSchema.optional(),
-  gameDesignSpec: RevisionRefSchema.optional(),
-  projectGlossary: RevisionRefSchema.optional(),
-  decisionRecords: z.array(RevisionRefSchema).optional(),
-  visualDirectionSet: RevisionRefSchema.optional(),
-  selectedVisualDirectionRevisionId: z.string().min(1).optional(),
-  focusedDirectionChange: RevisionRefSchema.optional(),
-  visualBible: RevisionRefSchema.optional(),
-  concept: RevisionRefSchema.optional(),
-  conceptPlan: RevisionRefSchema.optional(),
-  conceptSet: RevisionRefSchema.optional(),
-  soundPlan: RevisionRefSchema.optional(),
-  soundSet: RevisionRefSchema.optional(),
-  gameDesignApproval: ApprovalDecisionSchema.optional(),
-  directionApproval: ApprovalDecisionSchema.optional(),
-  conceptSetApproval: ApprovalDecisionSchema.optional(),
-  soundSetApproval: ApprovalDecisionSchema.optional(),
-  asset: RevisionRefSchema.optional(),
-  assetEvaluation: RevisionRefSchema.optional(),
-  scene: RevisionRefSchema.optional(),
-  reviewImage: ArtifactRefSchema.optional(),
-  sliceApproval: ApprovalDecisionSchema.optional(),
-  blockedReason: BlockedReasonSchema.optional(),
-  createdAt: z.string().datetime(),
-  updatedAt: z.string().datetime(),
+export const AssetClassificationSchema = z.enum([
+  "hero",
+  "kit",
+  "procedural",
+  "functional",
+]);
+export type AssetClassification = z.infer<typeof AssetClassificationSchema>;
+
+export const AssetBatchEntrySchema = z.object({
+  assetId: z.string().min(1),
+  classification: AssetClassificationSchema,
+  current: RevisionRefSchema,
+  best: RevisionRefSchema,
+  attemptCount: z.number().int().nonnegative(),
+  validated: z.boolean(),
+  deterministicReport: RevisionRefSchema.optional(),
+  turntable: RevisionRefSchema.optional(),
+  semanticReport: RevisionRefSchema.optional(),
+  decision: RevisionRefSchema.optional(),
+  multiviewConceptSet: RevisionRefSchema.optional(),
+  staleReason: z.string().optional(),
 });
+export type AssetBatchEntry = z.infer<typeof AssetBatchEntrySchema>;
+
+const stagesByMilestone: Record<Milestone, ReadonlySet<ProjectStage>> = {
+  m0: new Set([
+    "creative-development",
+    "visual-direction-approval",
+    "asset-production",
+    "asset-quality",
+    "scene-composition",
+    "visual-slice-approval",
+    "complete",
+    "blocked",
+  ]),
+  m1: new Set([
+    "interrogation",
+    "game-design-approval",
+    "visual-direction-generation",
+    "visual-direction-approval",
+    "concept-planning",
+    "concept-generation",
+    "concept-set-approval",
+    "sound-planning",
+    "sound-generation",
+    "sound-set-approval",
+    "complete",
+    "blocked",
+  ]),
+  m2: new Set([
+    "interrogation",
+    "game-design-approval",
+    "visual-direction-generation",
+    "visual-direction-approval",
+    "concept-planning",
+    "concept-generation",
+    "concept-set-approval",
+    "asset-planning",
+    "asset-plan-approval",
+    "asset-batch",
+    "complete",
+    "blocked",
+  ]),
+};
+
+export const ProjectStateSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    milestone: MilestoneSchema.default("m0"),
+    projectId: z.string().min(1),
+    name: z.string().min(1),
+    mode: ProviderModeSchema,
+    assetProvider: AssetProviderSchema.default("meshy"),
+    orchestratorProvider: ExecutionProviderSchema.default("openai"),
+    implementationProvider: ExecutionProviderSchema.default("openai"),
+    imageProvider: ImageProviderSchema.default("openai-subscription"),
+    soundProvider: SoundProviderSchema.default("none"),
+    status: ProjectStatusSchema,
+    stage: ProjectStageSchema,
+    runId: z.string().min(1),
+    workflowRunId: z.string().optional(),
+    maxConcurrentExternalJobs: z.number().int().min(1).max(8).optional(),
+    budgetUsd: z.number().nonnegative().default(0),
+    spentUsd: z.number().nonnegative(),
+    conceptReplacementCount: z.number().int().min(0).max(1).default(0),
+    directionReplacementCount: z.number().int().min(0).max(1).optional(),
+    focusedDirectionChangeCount: z.number().int().min(0).max(1).optional(),
+    conceptRegenerationCounts: z
+      .record(z.string().min(1), z.number().int().min(0))
+      .optional(),
+    soundRegenerationCounts: z
+      .record(z.string().min(1), z.number().int().min(0))
+      .optional(),
+    brief: RevisionRefSchema,
+    creativeCapabilities: RevisionRefSchema.optional(),
+    interrogation: RevisionRefSchema.optional(),
+    gameDesign: RevisionRefSchema.optional(),
+    gameDesignSpec: RevisionRefSchema.optional(),
+    projectGlossary: RevisionRefSchema.optional(),
+    decisionRecords: z.array(RevisionRefSchema).optional(),
+    visualDirectionSet: RevisionRefSchema.optional(),
+    selectedVisualDirectionRevisionId: z.string().min(1).optional(),
+    focusedDirectionChange: RevisionRefSchema.optional(),
+    visualBible: RevisionRefSchema.optional(),
+    concept: RevisionRefSchema.optional(),
+    conceptPlan: RevisionRefSchema.optional(),
+    conceptSet: RevisionRefSchema.optional(),
+    soundPlan: RevisionRefSchema.optional(),
+    soundSet: RevisionRefSchema.optional(),
+    gameDesignApproval: ApprovalDecisionSchema.optional(),
+    directionApproval: ApprovalDecisionSchema.optional(),
+    conceptSetApproval: ApprovalDecisionSchema.optional(),
+    soundSetApproval: ApprovalDecisionSchema.optional(),
+    assetPlan: RevisionRefSchema.optional(),
+    assetPlanApproval: ApprovalDecisionSchema.optional(),
+    assetPlanReplanCount: z.number().int().min(0).max(1).optional(),
+    assetBatch: z.record(z.string().min(1), AssetBatchEntrySchema).optional(),
+    asset: RevisionRefSchema.optional(),
+    assetEvaluation: RevisionRefSchema.optional(),
+    scene: RevisionRefSchema.optional(),
+    reviewImage: ArtifactRefSchema.optional(),
+    sliceApproval: ApprovalDecisionSchema.optional(),
+    blockedReason: BlockedReasonSchema.optional(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  })
+  .superRefine((state, context) => {
+    if (!stagesByMilestone[state.milestone].has(state.stage)) {
+      context.addIssue({
+        code: "custom",
+        path: ["stage"],
+        message: `${state.stage} is not valid for ${state.milestone}.`,
+      });
+    }
+  });
 export type ProjectState = z.infer<typeof ProjectStateSchema>;
 export type ProjectStateInput = z.input<typeof ProjectStateSchema>;
 
@@ -620,6 +720,8 @@ export const M1InFlightActionSchema = z.enum([
   "regenerate",
   "generate-sounds",
   "regenerate-sound",
+  "plan-assets",
+  "replan-assets",
 ]);
 export type M1InFlightAction = z.infer<typeof M1InFlightActionSchema>;
 
@@ -668,11 +770,22 @@ export const CreateProjectInputSchema = z
     implementationProvider: ExecutionProviderSchema.default("openai"),
     imageProvider: ImageProviderSchema.default("openai-subscription"),
     soundProvider: SoundProviderSchema.default("none"),
+    maxConcurrentExternalJobs: z.number().int().min(1).max(8).default(2),
     budgetUsd: z.number().positive().optional(),
     rightsConfirmed: z.literal(true),
   })
   .superRefine((value, context) => {
-    const needsBudget = value.milestone === "m0" || hasMeteredRoutes(value);
+    if (value.milestone === "m2" && value.soundProvider !== "none") {
+      context.addIssue({
+        code: "custom",
+        path: ["soundProvider"],
+        message: "M2 skips sound production; soundProvider must be none.",
+      });
+    }
+    const needsBudget =
+      value.milestone === "m0" ||
+      (value.milestone === "m2" && value.mode === "live") ||
+      hasMeteredRoutes(value);
     if (needsBudget && value.budgetUsd === undefined) {
       context.addIssue({
         code: "custom",
@@ -682,6 +795,110 @@ export const CreateProjectInputSchema = z
     }
   });
 export type CreateProjectInput = z.input<typeof CreateProjectInputSchema>;
+
+export const MacroGraphNodeIdSchema = z.enum([
+  "post-concept.route",
+  "m0.asset-production",
+  "m0.asset-quality",
+  "m0.scene-composition",
+  "m2.asset-planning",
+  "m2.asset-plan-approval",
+  "m2.expand-asset-paths",
+  "m2.asset.multiview-concept",
+  "m2.asset.production",
+  "m2.asset.deterministic-qa",
+  "m2.asset.turntable-evaluation",
+  "m2.asset.regeneration",
+  "m2.asset-batch-aggregation",
+  "m2.complete",
+]);
+export type MacroGraphNodeId = z.infer<typeof MacroGraphNodeIdSchema>;
+
+export const MacroGraphInputSchema = z.object({
+  projectId: z.string().min(1),
+  maxConcurrency: z.number().int().min(1).max(8),
+});
+export type MacroGraphInput = z.infer<typeof MacroGraphInputSchema>;
+
+export const MacroGraphOutputSchema = z.object({
+  projectId: z.string().min(1),
+  milestone: z.enum(["m0", "m2"]),
+  terminalStage: ProjectStageSchema,
+});
+export type MacroGraphOutput = z.infer<typeof MacroGraphOutputSchema>;
+
+export const MacroGraphResumeSchema = z.object({
+  trigger: z.enum(["http-poll", "approval-recorded", "reconstructed"]),
+});
+export type MacroGraphResume = z.infer<typeof MacroGraphResumeSchema>;
+
+export const MacroGraphSuspendSchema = z.object({
+  projectId: z.string().min(1),
+  nodeId: MacroGraphNodeIdSchema,
+  reason: z.enum(["provider-pending", "approval-required"]),
+  requestId: z.string().min(1).optional(),
+  resumeAfter: z.string().datetime().optional(),
+  assetId: z.string().min(1).optional(),
+});
+export type MacroGraphSuspend = z.infer<typeof MacroGraphSuspendSchema>;
+
+export const AssetPlanningNodeInputSchema = z.object({
+  projectId: z.string().min(1),
+});
+export const AssetPlanningNodeOutputSchema = z.object({
+  projectId: z.string().min(1),
+  assetPlan: RevisionRefSchema,
+  orderedAssetIds: z.array(z.string().min(1)).min(1),
+});
+
+export const AssetPathBaseSchema = z.object({
+  projectId: z.string().min(1),
+  assetPlan: RevisionRefSchema,
+  assetId: z.string().min(1),
+  classification: AssetClassificationSchema.optional(),
+});
+export const MultiviewNodeOutputSchema = AssetPathBaseSchema.extend({
+  multiviewConceptSet: RevisionRefSchema.optional(),
+  multiviewDecision: z.enum(["ready", "not-required"]),
+});
+export const AssetProductionNodeOutputSchema = MultiviewNodeOutputSchema.extend(
+  {
+    candidateAsset: RevisionRefSchema,
+  },
+);
+export const DeterministicQaNodeOutputSchema =
+  AssetProductionNodeOutputSchema.extend({
+    deterministicReport: RevisionRefSchema,
+  });
+export const TurntableEvaluationNodeOutputSchema =
+  DeterministicQaNodeOutputSchema.extend({
+    turntable: RevisionRefSchema.optional(),
+    semanticReport: RevisionRefSchema,
+    disposition: z.enum(["accept", "regenerate", "user-action-required"]),
+  });
+export const RegenerationNodeOutputSchema =
+  TurntableEvaluationNodeOutputSchema.extend({
+    bestAsset: RevisionRefSchema,
+    finalDeterministicReport: RevisionRefSchema,
+    finalSemanticReport: RevisionRefSchema,
+    decision: RevisionRefSchema.optional(),
+    attemptCount: z.number().int().nonnegative(),
+    validated: z.boolean(),
+  });
+export const AssetBatchNodeOutputSchema = z.object({
+  projectId: z.string().min(1),
+  assetPlan: RevisionRefSchema,
+  assets: z.array(RegenerationNodeOutputSchema).min(1),
+});
+
+export type MacroPhaseOutcome<T> =
+  | { status: "ready"; value: T }
+  | { status: "pending"; requestId: string; resumeAfter: string }
+  | { status: "failed"; error: WorkflowFailure };
+
+export interface MacroPhase<I, O> {
+  ensure(input: I): Promise<MacroPhaseOutcome<O>>;
+}
 
 export const ApprovalInputSchema = z.object({
   decision: z.enum(["approved", "rejected", "changes-requested"]),

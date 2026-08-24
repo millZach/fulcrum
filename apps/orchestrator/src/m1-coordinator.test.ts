@@ -139,6 +139,166 @@ const keepEveryGeneratedConcept = (
   return current;
 };
 
+const reachM2ConceptApproval = async (
+  coordinator: ProjectCoordinator,
+): Promise<ProjectSnapshot> => {
+  let project = await coordinator.create({
+    milestone: "m2",
+    brief: M1_BRIEF,
+    mode: "replay",
+    imageProvider: "none",
+    rightsConfirmed: true,
+  });
+  project = await finishInterrogation(coordinator, project);
+  project = await coordinator.creative.confirmSharedUnderstanding(
+    project.state.projectId,
+    {
+      interrogationRevisionId: project.state.interrogation!.revisionId,
+      confirmed: true,
+    },
+  );
+  project = await coordinator.creative.approveGameDesign(
+    project.state.projectId,
+    {
+      decision: "approved",
+      targetRevisionId: project.state.gameDesignSpec!.revisionId,
+      targetSha256: project.state.gameDesignSpec!.artifact.sha256,
+    },
+  );
+  const direction = project.visualDirections!.directions[0]!;
+  const directionRevision = coordinator.repository.getRevision(
+    direction.revisionId,
+  );
+  project = await coordinator.creative.approveDirection(
+    project.state.projectId,
+    {
+      decision: "approved",
+      targetRevisionId: directionRevision.revisionId,
+      targetSha256: directionRevision.artifact.sha256,
+    },
+  );
+  project = await coordinator.creative.confirmConceptPlan(
+    project.state.projectId,
+    {
+      conceptPlanRevisionId: project.state.conceptPlan!.revisionId,
+      confirmed: true,
+    },
+  );
+  return project;
+};
+
+describe("CreativeFrontCoordinator M2 handoff", () => {
+  it("m2_concept_approval_enters_asset_planning_without_sound_artifacts", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const coordinator = new ProjectCoordinator(repository);
+    let project = await reachM2ConceptApproval(coordinator);
+    project = keepEveryGeneratedConcept(coordinator, project);
+
+    project = coordinator.creative.approveConceptSet(project.state.projectId, {
+      decision: "approved",
+      targetRevisionId: project.state.conceptSet!.revisionId,
+      targetSha256: project.state.conceptSet!.artifact.sha256,
+    });
+
+    expect(project.state.stage).toBe("asset-planning");
+    expect(project.state.status).toBe("active");
+    expect(project.state.soundPlan).toBeUndefined();
+    expect(project.state.soundSet).toBeUndefined();
+    repository.close();
+  });
+
+  it("m2_changes_requested_remains_at_concept_set_approval", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const coordinator = new ProjectCoordinator(repository);
+    let project = keepEveryGeneratedConcept(
+      coordinator,
+      await reachM2ConceptApproval(coordinator),
+    );
+
+    project = coordinator.creative.approveConceptSet(project.state.projectId, {
+      decision: "changes-requested",
+      targetRevisionId: project.state.conceptSet!.revisionId,
+      targetSha256: project.state.conceptSet!.artifact.sha256,
+      notes: "Raise the hero silhouette.",
+    });
+
+    expect(project.state.stage).toBe("concept-set-approval");
+    expect(project.state.status).toBe("awaiting-approval");
+    repository.close();
+  });
+
+  it("m2_rejected_concept_set_blocks_without_starting_macro_graph", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const coordinator = new ProjectCoordinator(repository);
+    let project = keepEveryGeneratedConcept(
+      coordinator,
+      await reachM2ConceptApproval(coordinator),
+    );
+
+    project = coordinator.creative.approveConceptSet(project.state.projectId, {
+      decision: "rejected",
+      targetRevisionId: project.state.conceptSet!.revisionId,
+      targetSha256: project.state.conceptSet!.artifact.sha256,
+    });
+
+    expect(project.state.stage).toBe("blocked");
+    expect(
+      repository
+        .listEvents(project.state.projectId)
+        .some(({ type }) => type.startsWith("workflow.")),
+    ).toBe(false);
+    repository.close();
+  });
+
+  it("m2_rejects_stale_or_unselected_concept_revisions_before_handoff", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const coordinator = new ProjectCoordinator(repository);
+    let project = await reachM2ConceptApproval(coordinator);
+    expect(() =>
+      coordinator.creative.approveConceptSet(project.state.projectId, {
+        decision: "approved",
+        targetRevisionId: project.state.conceptSet!.revisionId,
+        targetSha256: project.state.conceptSet!.artifact.sha256,
+      }),
+    ).toThrow(/selected revision/i);
+
+    const staleTarget = project.state.conceptSet!;
+    project = keepEveryGeneratedConcept(coordinator, project);
+    expect(() =>
+      coordinator.creative.approveConceptSet(project.state.projectId, {
+        decision: "approved",
+        targetRevisionId: staleTarget.revisionId,
+        targetSha256: staleTarget.artifact.sha256,
+      }),
+    ).toThrow(/current immutable revision/i);
+    repository.close();
+  });
+
+  it("m2_advance_routes_to_macro_only_after_concept_approval", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const coordinator = new ProjectCoordinator(repository);
+    let project = keepEveryGeneratedConcept(
+      coordinator,
+      await reachM2ConceptApproval(coordinator),
+    );
+
+    project = await coordinator.approveConceptSet(project.state.projectId, {
+      decision: "approved",
+      targetRevisionId: project.state.conceptSet!.revisionId,
+      targetSha256: project.state.conceptSet!.artifact.sha256,
+    });
+
+    expect(project.state).toMatchObject({
+      stage: "blocked",
+      blockedReason: {
+        code: "asset-planner-unavailable",
+        failureKind: "user-action-required",
+      },
+    });
+    repository.close();
+  });
+});
+
 describe("M1Coordinator replay path", () => {
   it("persists a multi-round interview across restart and completes an M1 concept set", async () => {
     const root = temporaryRoot();

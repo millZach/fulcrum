@@ -16,7 +16,7 @@
     "@fulcrum/production": "workspace:*",
     "@fulcrum/project": "workspace:*",
     "@fulcrum/scene": "workspace:*",
-    "@mastra/core": "latest",
+    "@mastra/core": "1.59.0",
     "@fastify/cors": "latest",
     "dotenv": "latest",
     "fastify": "latest",
