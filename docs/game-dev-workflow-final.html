@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fulcrum — completed game production workflow</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #0b0d10;
+      }
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        padding: 24px 16px 36px;
+      }
+      svg {
+        width: min(1570px, 100%);
+        height: auto;
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <svg
+      viewBox="0 0 1570 1100"
+      xmlns="http://www.w3.org/2000/svg"
+      role="img"
+      aria-labelledby="title desc"
+    >
+      <title id="title">Fulcrum completed game production workflow</title>
+      <desc id="desc">
+        Inputs enter the orchestrator, where an orchestrator model delegates
+        bounded build tasks to an implementation model. Mastra runs specialist
+        loops through creative development, production, provider seams, and the
+        mandatory Gauntlet. Outputs are Studio events, a playable slice,
+        artifacts, and SQLite project state.
+      </desc>
+
+      <defs>
+        <marker
+          id="arrow"
+          viewBox="0 0 10 10"
+          refX="9"
+          refY="5"
+          markerWidth="7"
+          markerHeight="7"
+          orient="auto"
+        >
+          <path d="M0 1.4 L10 5 L0 8.6 Z" fill="#7d868f" />
+        </marker>
+        <style>
+          .band {
+            fill: #101418;
+          }
+          .band-muted {
+            stroke: #3b424a;
+            stroke-width: 1.35;
+          }
+          .band-blue {
+            stroke: #3d7eff;
+            stroke-width: 1.75;
+          }
+          .band-orange {
+            stroke: #e67a3a;
+            stroke-width: 1.75;
+          }
+          .box {
+            fill: #161b22;
+            stroke: #2c333b;
+            stroke-width: 1.15;
+          }
+          .title {
+            fill: #f3f5f7;
+            font:
+              600 15px Inter,
+              ui-sans-serif,
+              system-ui,
+              sans-serif;
+          }
+          .sub {
+            fill: #8b939c;
+            font:
+              400 11.5px Inter,
+              ui-sans-serif,
+              system-ui,
+              sans-serif;
+          }
+          .provider-title {
+            fill: #f3f5f7;
+            font:
+              600 12.5px Inter,
+              ui-sans-serif,
+              system-ui,
+              sans-serif;
+          }
+          .layer {
+            font:
+              600 13px Inter,
+              ui-sans-serif,
+              system-ui,
+              sans-serif;
+          }
+          .blue {
+            fill: #7aa6ff;
+          }
+          .orange {
+            fill: #f0a06a;
+          }
+          .edge {
+            fill: none;
+            stroke: #6f7882;
+            stroke-width: 1.2;
+            marker-end: url(#arrow);
+          }
+          .edge-halo {
+            fill: none;
+            stroke: #101418;
+            stroke-width: 5;
+          }
+          .pill {
+            fill: #1a1f25;
+            stroke: #3a424a;
+            stroke-width: 1;
+          }
+          .pt {
+            fill: #c5cbd2;
+            font:
+              500 10.5px Inter,
+              ui-sans-serif,
+              system-ui,
+              sans-serif;
+          }
+          .cyl {
+            fill: #161b22;
+            stroke: #2c333b;
+            stroke-width: 1.15;
+          }
+          .cyl-top {
+            fill: #1c2229;
+            stroke: #2c333b;
+            stroke-width: 1.15;
+          }
+        </style>
+      </defs>
+
+      <rect width="1570" height="1100" fill="#0b0d10" />
+
+      <rect
+        class="band band-muted"
+        x="48"
+        y="36"
+        width="1404"
+        height="148"
+        rx="10"
+      />
+      <rect
+        class="band band-blue"
+        x="48"
+        y="204"
+        width="1404"
+        height="260"
+        rx="10"
+      />
+      <rect
+        class="band band-orange"
+        x="48"
+        y="484"
+        width="1404"
+        height="348"
+        rx="10"
+      />
+      <rect
+        class="band band-muted"
+        x="48"
+        y="852"
+        width="1404"
+        height="220"
+        rx="10"
+      />
+
+      <text class="layer blue" x="72" y="230">Fulcrum Orchestrator</text>
+      <text class="layer orange" x="72" y="510">Production (per project)</text>
+
+      <!-- input -->
+      <g>
+        <rect class="box" x="140" y="64" width="260" height="88" rx="8" />
+        <text class="title" x="270" y="100" text-anchor="middle">
+          Game Brief
+        </text>
+        <text class="sub" x="270" y="122" text-anchor="middle">
+          natural-language pitch
+        </text>
+      </g>
+      <g>
+        <rect class="box" x="620" y="64" width="260" height="88" rx="8" />
+        <text class="title" x="750" y="100" text-anchor="middle">
+          Human Approvals
+        </text>
+        <text class="sub" x="750" y="122" text-anchor="middle">
+          creative director gates
+        </text>
+      </g>
+      <g>
+        <rect class="box" x="1100" y="64" width="260" height="88" rx="8" />
+        <text class="title" x="1230" y="100" text-anchor="middle">
+          Reference Images
+        </text>
+        <text class="sub" x="1230" y="122" text-anchor="middle">
+          optional visual refs
+        </text>
+      </g>
+
+      <!-- orchestrator -->
+      <g>
+        <rect class="box" x="140" y="248" width="320" height="88" rx="8" />
+        <text class="title" x="300" y="284" text-anchor="middle">
+          Orchestrator Model
+        </text>
+        <text class="sub" x="300" y="306" text-anchor="middle">
+          planning · interrogation · routing
+        </text>
+      </g>
+      <g>
+        <rect class="box" x="140" y="356" width="320" height="88" rx="8" />
+        <text class="title" x="300" y="392" text-anchor="middle">
+          Mastra Graph
+        </text>
+        <text class="sub" x="300" y="414" text-anchor="middle">
+          macro graph + suspend / resume
+        </text>
+      </g>
+      <g>
+        <rect class="box" x="800" y="248" width="320" height="88" rx="8" />
+        <text class="title" x="960" y="284" text-anchor="middle">
+          Implementation Model
+        </text>
+        <text class="sub" x="960" y="306" text-anchor="middle">
+          executes bounded build tasks
+        </text>
+      </g>
+
+      <!-- production -->
+      <g>
+        <rect class="box" x="180" y="532" width="300" height="88" rx="8" />
+        <text class="title" x="330" y="568" text-anchor="middle">
+          Creative Development
+        </text>
+        <text class="sub" x="330" y="590" text-anchor="middle">
+          design spec · visual bible · concepts
+        </text>
+      </g>
+      <g>
+        <rect class="box" x="560" y="532" width="300" height="88" rx="8" />
+        <text class="title" x="710" y="568" text-anchor="middle">
+          Production
+        </text>
+        <text class="sub" x="710" y="590" text-anchor="middle">
+          assets · Scene Spec · gameplay
+        </text>
+      </g>
+      <g>
+        <rect class="box" x="560" y="700" width="280" height="88" rx="8" />
+        <text class="title" x="700" y="736" text-anchor="middle">Gauntlet</text>
+        <text class="sub" x="700" y="758" text-anchor="middle">
+          visual · gameplay · technical
+        </text>
+      </g>
+
+      <!-- provider seams -->
+      <g>
+        <rect
+          class="band band-muted"
+          x="960"
+          y="520"
+          width="430"
+          height="268"
+          rx="8"
+        />
+        <text class="layer orange" x="980" y="544">Provider Seams</text>
+        <text class="sub" x="980" y="562">
+          each port: live adapter + deterministic replay twin
+        </text>
+
+        <rect class="box" x="980" y="580" width="185" height="72" rx="7" />
+        <text class="provider-title" x="1072.5" y="610" text-anchor="middle">
+          OpenAI — structured text
+        </text>
+        <text class="sub" x="1072.5" y="630" text-anchor="middle">
+          · images
+        </text>
+
+        <rect class="box" x="1180" y="580" width="190" height="72" rx="7" />
+        <text class="provider-title" x="1275" y="602" text-anchor="middle">
+          Meshy — image-to-3D
+        </text>
+        <text class="sub" x="1275" y="621" text-anchor="middle">
+          · submit / inspect / cancel
+        </text>
+
+        <rect class="box" x="980" y="674" width="185" height="72" rx="7" />
+        <text class="provider-title" x="1072.5" y="704" text-anchor="middle">
+          ElevenLabs
+        </text>
+        <text class="sub" x="1072.5" y="724" text-anchor="middle">
+          — sound effects
+        </text>
+
+        <rect class="box" x="1180" y="674" width="190" height="72" rx="7" />
+        <text class="provider-title" x="1275" y="704" text-anchor="middle">
+          Vision Eval
+        </text>
+        <text class="sub" x="1275" y="724" text-anchor="middle">
+          — turntables · slices
+        </text>
+      </g>
+
+      <!-- outputs -->
+      <g>
+        <rect class="box" x="110" y="900" width="250" height="96" rx="8" />
+        <text class="title" x="235" y="938" text-anchor="middle">Studio</text>
+        <text class="sub" x="235" y="960" text-anchor="middle">
+          live events + approvals
+        </text>
+      </g>
+      <g>
+        <rect class="box" x="450" y="900" width="280" height="96" rx="8" />
+        <text class="title" x="590" y="938" text-anchor="middle">
+          Playable Slice
+        </text>
+        <text class="sub" x="590" y="960" text-anchor="middle">
+          5–10 min vertical slice
+        </text>
+      </g>
+      <g>
+        <path class="cyl" d="M784 908 v72 a96 16 0 0 0 192 0 v-72" />
+        <ellipse class="cyl-top" cx="880" cy="908" rx="96" ry="16" />
+        <text class="title" x="880" y="950" text-anchor="middle">
+          Artifact Store
+        </text>
+        <text class="sub" x="880" y="970" text-anchor="middle">
+          images · GLBs · renders · builds
+        </text>
+      </g>
+      <g>
+        <path class="cyl" d="M1124 908 v72 a96 16 0 0 0 192 0 v-72" />
+        <ellipse class="cyl-top" cx="1220" cy="908" rx="96" ry="16" />
+        <text class="title" x="1220" y="950" text-anchor="middle">SQLite</text>
+        <text class="sub" x="1220" y="970" text-anchor="middle">
+          project state + event log
+        </text>
+      </g>
+
+      <!-- inputs converge -->
+      <path class="edge" d="M270 152 C270 196, 300 224, 300 248" />
+      <path class="edge" d="M750 152 C750 204, 430 220, 350 248" />
+      <path class="edge" d="M1230 152 C1230 216, 540 228, 390 248" />
+
+      <!-- orchestrator spine -->
+      <path class="edge" d="M300 336 V356" />
+      <path class="edge" d="M300 444 C300 484, 330 508, 330 532" />
+      <path class="edge" d="M460 292 H800" />
+
+      <!-- creative / production loop -->
+      <path class="edge" d="M480 576 H560" />
+      <path class="edge" d="M560 604 C510 640, 510 640, 480 604" />
+
+      <!-- production branches -->
+      <path class="edge" d="M710 620 V700" />
+      <path class="edge" d="M700 788 C700 840, 630 872, 590 900" />
+
+      <!-- provider traffic -->
+      <path class="edge" d="M390 532 V500 H1140 V520" />
+      <path class="edge" d="M820 620 V640 H960" />
+      <path class="edge" d="M840 744 H960" />
+
+      <!-- mastra to sqlite, right corridor -->
+      <path
+        class="edge"
+        d="M460 385 C980 385, 1510 390, 1510 520 V830 C1510 870, 1220 850, 1220 892"
+      />
+
+      <!-- implementation traffic crosses the provider lane on a visible overpass -->
+      <path class="edge-halo" d="M960 336 C960 430, 780 450, 780 532" />
+      <path class="edge" d="M960 336 C960 430, 780 450, 780 532" />
+
+      <!-- gauntlet fail back to orchestrator, left gutter -->
+      <path
+        class="edge"
+        d="M560 744 C88 744, 72 430, 72 300 C72 268, 120 262, 140 280"
+      />
+
+      <!-- mastra to studio, left corridor -->
+      <path class="edge" d="M140 400 C96 400, 96 820, 180 900" />
+
+      <!-- gauntlet evidence -->
+      <path class="edge" d="M820 788 C860 806, 880 838, 880 892" />
+
+      <!-- labels -->
+      <g>
+        <rect class="pill" x="246" y="184" width="48" height="20" rx="4" />
+        <text class="pt" x="270" y="198" text-anchor="middle">brief</text>
+      </g>
+      <g>
+        <rect class="pill" x="548" y="184" width="68" height="20" rx="4" />
+        <text class="pt" x="582" y="198" text-anchor="middle">approval</text>
+      </g>
+      <g>
+        <rect class="pill" x="900" y="184" width="40" height="20" rx="4" />
+        <text class="pt" x="920" y="198" text-anchor="middle">refs</text>
+      </g>
+      <g>
+        <rect class="pill" x="246" y="476" width="108" height="20" rx="4" />
+        <text class="pt" x="300" y="490" text-anchor="middle">
+          specialist loop
+        </text>
+      </g>
+      <g>
+        <rect class="pill" x="566" y="282" width="104" height="20" rx="4" />
+        <text class="pt" x="618" y="296" text-anchor="middle">
+          bounded tasks
+        </text>
+      </g>
+      <g>
+        <rect class="pill" x="446" y="556" width="148" height="20" rx="4" />
+        <text class="pt" x="520" y="570" text-anchor="middle">
+          approved ground truth
+        </text>
+      </g>
+      <g>
+        <rect class="pill" x="486" y="628" width="68" height="20" rx="4" />
+        <text class="pt" x="520" y="642" text-anchor="middle">rejected</text>
+      </g>
+      <g>
+        <rect class="pill" x="672" y="650" width="76" height="20" rx="4" />
+        <text class="pt" x="710" y="664" text-anchor="middle">every build</text>
+      </g>
+      <g>
+        <rect class="pill" x="612" y="848" width="56" height="20" rx="4" />
+        <text class="pt" x="640" y="862" text-anchor="middle">passed</text>
+      </g>
+      <g>
+        <rect class="pill" x="56" y="456" width="132" height="20" rx="4" />
+        <text class="pt" x="122" y="470" text-anchor="middle">
+          failed → re-diagnose
+        </text>
+      </g>
+      <g>
+        <rect class="pill" x="56" y="760" width="84" height="20" rx="4" />
+        <text class="pt" x="98" y="774" text-anchor="middle">live events</text>
+      </g>
+      <g>
+        <rect class="pill" x="1458" y="560" width="96" height="20" rx="4" />
+        <text class="pt" x="1506" y="574" text-anchor="middle">
+          checkpoints
+        </text>
+      </g>
+      <g>
+        <rect class="pill" x="846" y="812" width="68" height="20" rx="4" />
+        <text class="pt" x="880" y="826" text-anchor="middle">evidence</text>
+      </g>
+      <g>
+        <rect class="pill" x="790" y="632" width="136" height="20" rx="4" />
+        <text class="pt" x="858" y="646" text-anchor="middle">
+          durable submissions
+        </text>
+      </g>
+      <g>
+        <rect class="pill" x="850" y="714" width="96" height="20" rx="4" />
+        <text class="pt" x="898" y="728" text-anchor="middle">vision eval</text>
+      </g>
+    </svg>
+  </body>
+</html>

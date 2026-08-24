@@ -11778,10 +11778,29 @@ button.rr-card:hover {
   grid-template-columns: 240px minmax(0, 1fr) auto;
 }
 .variant-b-voxel.m1-studio .vx-plaque small {
+  display: block;
+  width: 100%;
   overflow: hidden;
   max-width: 100%;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+/* The `.vx-plaque small` display:block above outranks any flex layout on
+   this element, so the route label flows as inline spans and the parent's
+   nowrap + ellipsis handle overflow; JSX trims the whitespace between the
+   spans, so the separator spacing has to come from a margin. */
+.variant-b-voxel.m1-studio .vx-route-label > span + span {
+  margin-inline-start: 0.4ch;
+}
+@media (max-width: 1365px) {
+  .variant-b-voxel.m1-studio .vx-route-implementation {
+    display: none;
+  }
+}
+@media (max-width: 1080px) {
+  .variant-b-voxel.m1-studio .vx-route-label > span:nth-child(3) {
+    display: none;
+  }
 }
 /* The World Forge shell is 100vh / overflow:hidden. Prototype screens each
    own an inner scroller; studio screens did not, so anything taller than the
