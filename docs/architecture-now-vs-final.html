@@ -1,377 +1,1641 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Fulcrum — wired today vs. the final graph</title>
-<style>
-  :root {
-    --paper: #f6f3ea;
-    --grid: #e8e4d6;
-    --ink: #17211f;
-    --ink-soft: #4b544f;
-    --teal: #0e9488;
-    --teal-soft: #d7efec;
-    --amber: #f2b632;
-    --amber-soft: #fdf3d7;
-    --rose: #c9536a;
-    --rose-soft: #f9e3e8;
-    --card: #fbfaf4;
-    --line: #17211f;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    background: var(--paper);
-    background-image:
-      linear-gradient(var(--grid) 1px, transparent 1px),
-      linear-gradient(90deg, var(--grid) 1px, transparent 1px);
-    background-size: 28px 28px;
-    color: var(--ink);
-    font-family: "Archivo", "Inter", "Helvetica Neue", Arial, sans-serif;
-    padding: 48px 24px 96px;
-  }
-  main { max-width: 1240px; margin: 0 auto; }
-  .kicker {
-    font-family: "IBM Plex Mono", "Courier New", monospace;
-    font-size: 12px; letter-spacing: 0.22em; text-transform: uppercase;
-    color: var(--teal); font-weight: 600;
-  }
-  h1 { font-size: 40px; margin: 8px 0 6px; letter-spacing: -0.01em; }
-  .sub { color: var(--ink-soft); max-width: 70ch; line-height: 1.5; margin: 0 0 28px; }
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fulcrum — wired today vs. the final graph</title>
+    <style>
+      :root {
+        --paper: #f6f3ea;
+        --grid: #e8e4d6;
+        --ink: #17211f;
+        --ink-soft: #4b544f;
+        --teal: #0e9488;
+        --teal-soft: #d7efec;
+        --amber: #f2b632;
+        --amber-soft: #fdf3d7;
+        --rose: #c9536a;
+        --rose-soft: #f9e3e8;
+        --card: #fbfaf4;
+        --line: #17211f;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--paper);
+        background-image:
+          linear-gradient(var(--grid) 1px, transparent 1px),
+          linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+        background-size: 28px 28px;
+        color: var(--ink);
+        font-family: "Archivo", "Inter", "Helvetica Neue", Arial, sans-serif;
+        padding: 48px 24px 96px;
+      }
+      main {
+        max-width: 1240px;
+        margin: 0 auto;
+      }
+      .kicker {
+        font-family: "IBM Plex Mono", "Courier New", monospace;
+        font-size: 12px;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: var(--teal);
+        font-weight: 600;
+      }
+      h1 {
+        font-size: 40px;
+        margin: 8px 0 6px;
+        letter-spacing: -0.01em;
+      }
+      .sub {
+        color: var(--ink-soft);
+        max-width: 70ch;
+        line-height: 1.5;
+        margin: 0 0 28px;
+      }
 
-  .legend {
-    display: flex; gap: 18px; flex-wrap: wrap; align-items: center;
-    background: var(--card); border: 2px solid var(--ink); border-radius: 10px;
-    padding: 12px 18px; margin-bottom: 40px;
-    box-shadow: 4px 4px 0 rgba(23,33,31,0.9);
-    font-size: 13px;
-  }
-  .legend .chip { display: inline-flex; align-items: center; gap: 8px; }
-  .swatch { width: 22px; height: 14px; border-radius: 4px; border: 2px solid var(--ink); }
-  .swatch.human { background: var(--amber-soft); border-color: var(--amber); }
-  .swatch.model { background: var(--teal-soft); border-color: var(--teal); }
-  .swatch.det   { background: var(--card); }
-  .swatch.loop  { background: transparent; border-style: dashed; }
-  .swatch.gauntlet { background: var(--rose-soft); border-color: var(--rose); }
+      .legend {
+        display: flex;
+        gap: 18px;
+        flex-wrap: wrap;
+        align-items: center;
+        background: var(--card);
+        border: 2px solid var(--ink);
+        border-radius: 10px;
+        padding: 12px 18px;
+        margin-bottom: 40px;
+        box-shadow: 4px 4px 0 rgba(23, 33, 31, 0.9);
+        font-size: 13px;
+      }
+      .legend .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .swatch {
+        width: 22px;
+        height: 14px;
+        border-radius: 4px;
+        border: 2px solid var(--ink);
+      }
+      .swatch.human {
+        background: var(--amber-soft);
+        border-color: var(--amber);
+      }
+      .swatch.model {
+        background: var(--teal-soft);
+        border-color: var(--teal);
+      }
+      .swatch.det {
+        background: var(--card);
+      }
+      .swatch.loop {
+        background: transparent;
+        border-style: dashed;
+      }
+      .swatch.gauntlet {
+        background: var(--rose-soft);
+        border-color: var(--rose);
+      }
 
-  section.diagram {
-    background: var(--card);
-    border: 2.5px solid var(--ink);
-    border-radius: 14px;
-    box-shadow: 6px 6px 0 rgba(23,33,31,0.9);
-    padding: 34px 38px 42px;
-    margin-bottom: 56px;
-  }
-  .diagram-title { display: flex; align-items: baseline; gap: 14px; margin-bottom: 4px; }
-  .diagram-title h2 { font-size: 26px; margin: 0; }
-  .tag {
-    font-family: "IBM Plex Mono", monospace; font-size: 11px; font-weight: 700;
-    letter-spacing: 0.14em; text-transform: uppercase;
-    padding: 4px 10px; border-radius: 999px; border: 2px solid var(--ink);
-  }
-  .tag.now { background: var(--teal-soft); color: var(--teal); border-color: var(--teal); }
-  .tag.final { background: var(--rose-soft); color: var(--rose); border-color: var(--rose); }
-  .diagram > p.note { color: var(--ink-soft); font-size: 14px; line-height: 1.5; margin: 6px 0 30px; max-width: 82ch; }
+      section.diagram {
+        background: var(--card);
+        border: 2.5px solid var(--ink);
+        border-radius: 14px;
+        box-shadow: 6px 6px 0 rgba(23, 33, 31, 0.9);
+        padding: 34px 38px 42px;
+        margin-bottom: 56px;
+      }
+      .diagram-title {
+        display: flex;
+        align-items: baseline;
+        gap: 14px;
+        margin-bottom: 4px;
+      }
+      .diagram-title h2 {
+        font-size: 26px;
+        margin: 0;
+      }
+      .tag {
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        padding: 4px 10px;
+        border-radius: 999px;
+        border: 2px solid var(--ink);
+      }
+      .tag.now {
+        background: var(--teal-soft);
+        color: var(--teal);
+        border-color: var(--teal);
+      }
+      .tag.final {
+        background: var(--rose-soft);
+        color: var(--rose);
+        border-color: var(--rose);
+      }
+      .diagram > p.note {
+        color: var(--ink-soft);
+        font-size: 14px;
+        line-height: 1.5;
+        margin: 6px 0 30px;
+        max-width: 82ch;
+      }
 
-  /* nodes */
-  .node {
-    border: 2px solid var(--ink); border-radius: 10px;
-    background: #fff; padding: 12px 16px;
-    box-shadow: 3px 3px 0 rgba(23,33,31,0.85);
-  }
-  .node .nlabel {
-    font-family: "IBM Plex Mono", monospace; font-size: 10.5px; font-weight: 700;
-    letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-soft);
-    display: flex; gap: 8px; align-items: center; margin-bottom: 4px;
-  }
-  .node .ntitle { font-weight: 700; font-size: 15.5px; }
-  .node .ndesc { font-size: 12.5px; color: var(--ink-soft); line-height: 1.45; margin-top: 3px; }
-  .node.human { background: var(--amber-soft); }
-  .node.human .nlabel { color: #9a6c00; }
-  .node.model { background: var(--teal-soft); }
-  .node.model .nlabel { color: var(--teal); }
-  .node.gauntlet { background: var(--rose-soft); }
-  .node.gauntlet .nlabel { color: var(--rose); }
-  .node.loopbox { border-style: dashed; background: transparent; box-shadow: none; }
+      /* nodes */
+      .node {
+        border: 2px solid var(--ink);
+        border-radius: 10px;
+        background: #fff;
+        padding: 12px 16px;
+        box-shadow: 3px 3px 0 rgba(23, 33, 31, 0.85);
+      }
+      .node .nlabel {
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 10.5px;
+        font-weight: 700;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        color: var(--ink-soft);
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 4px;
+      }
+      .node .ntitle {
+        font-weight: 700;
+        font-size: 15.5px;
+      }
+      .node .ndesc {
+        font-size: 12.5px;
+        color: var(--ink-soft);
+        line-height: 1.45;
+        margin-top: 3px;
+      }
+      .node.human {
+        background: var(--amber-soft);
+      }
+      .node.human .nlabel {
+        color: #9a6c00;
+      }
+      .node.model {
+        background: var(--teal-soft);
+      }
+      .node.model .nlabel {
+        color: var(--teal);
+      }
+      .node.gauntlet {
+        background: var(--rose-soft);
+      }
+      .node.gauntlet .nlabel {
+        color: var(--rose);
+      }
+      .node.loopbox {
+        border-style: dashed;
+        background: transparent;
+        box-shadow: none;
+      }
 
-  .mchip {
-    font-family: "IBM Plex Mono", monospace; font-size: 10px; font-weight: 700;
-    border: 1.5px solid var(--ink); border-radius: 6px; padding: 1px 6px;
-    background: var(--amber); color: var(--ink); letter-spacing: 0.08em;
-  }
-  .mchip.done { background: var(--teal); color: #fff; border-color: var(--teal); }
+      .mchip {
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 10px;
+        font-weight: 700;
+        border: 1.5px solid var(--ink);
+        border-radius: 6px;
+        padding: 1px 6px;
+        background: var(--amber);
+        color: var(--ink);
+        letter-spacing: 0.08em;
+      }
+      .mchip.done {
+        background: var(--teal);
+        color: #fff;
+        border-color: var(--teal);
+      }
 
-  .arrow { text-align: center; font-size: 15px; color: var(--ink); line-height: 1; padding: 7px 0; }
-  .arrow span {
-    font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: 0.1em;
-    text-transform: uppercase; color: var(--ink-soft); margin-left: 8px;
-  }
+      .arrow {
+        text-align: center;
+        font-size: 15px;
+        color: var(--ink);
+        line-height: 1;
+        padding: 7px 0;
+      }
+      .arrow span {
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 10.5px;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--ink-soft);
+        margin-left: 8px;
+      }
 
-  .spine { max-width: 640px; margin: 0 auto; position: relative; }
+      .spine {
+        max-width: 640px;
+        margin: 0 auto;
+        position: relative;
+      }
 
-  /* current-version layout: spine + side rails */
-  .now-grid { display: grid; grid-template-columns: 250px 1fr 250px; gap: 26px; align-items: start; }
-  .rail { display: flex; flex-direction: column; gap: 14px; position: sticky; top: 20px; }
-  .rail .node { font-size: 13px; }
-  .railhead {
-    font-family: "IBM Plex Mono", monospace; font-size: 11px; font-weight: 700;
-    letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink-soft);
-    margin: 2px 0 2px;
-  }
+      /* current-version layout: spine + side rails */
+      .now-grid {
+        display: grid;
+        grid-template-columns: 250px 1fr 250px;
+        gap: 26px;
+        align-items: start;
+      }
+      .rail {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        position: sticky;
+        top: 20px;
+      }
+      .rail .node {
+        font-size: 13px;
+      }
+      .railhead {
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--ink-soft);
+        margin: 2px 0 2px;
+      }
 
-  .loop-note {
-    display: flex; align-items: center; gap: 10px;
-    border: 2px dashed var(--ink); border-radius: 10px;
-    padding: 8px 14px; font-size: 12.5px; color: var(--ink-soft);
-    margin: 2px 0 2px; background: transparent;
-  }
-  .loop-note b { color: var(--ink); }
+      .loop-note {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        border: 2px dashed var(--ink);
+        border-radius: 10px;
+        padding: 8px 14px;
+        font-size: 12.5px;
+        color: var(--ink-soft);
+        margin: 2px 0 2px;
+        background: transparent;
+      }
+      .loop-note b {
+        color: var(--ink);
+      }
 
-  /* layers in final diagram */
-  .layer {
-    border: 2px solid var(--ink); border-radius: 12px;
-    padding: 20px 22px 24px; margin: 0 auto; max-width: 880px;
-    background: rgba(255,255,255,0.55);
-  }
-  .layer .lhead {
-    display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px;
-  }
-  .layer .lhead h3 {
-    margin: 0; font-family: "IBM Plex Mono", monospace; font-size: 13px;
-    letter-spacing: 0.2em; text-transform: uppercase;
-  }
-  .layer .lhead .lsub { font-size: 12.5px; color: var(--ink-soft); }
-  .layer.creative { border-color: var(--teal); }
-  .layer.creative .lhead h3 { color: var(--teal); }
-  .layer.gauntletL { border-color: var(--rose); }
-  .layer.gauntletL .lhead h3 { color: var(--rose); }
+      /* layers in final diagram */
+      .layer {
+        border: 2px solid var(--ink);
+        border-radius: 12px;
+        padding: 20px 22px 24px;
+        margin: 0 auto;
+        max-width: 880px;
+        background: rgba(255, 255, 255, 0.55);
+      }
+      .layer .lhead {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        margin-bottom: 14px;
+      }
+      .layer .lhead h3 {
+        margin: 0;
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 13px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+      }
+      .layer .lhead .lsub {
+        font-size: 12.5px;
+        color: var(--ink-soft);
+      }
+      .layer.creative {
+        border-color: var(--teal);
+      }
+      .layer.creative .lhead h3 {
+        color: var(--teal);
+      }
+      .layer.gauntletL {
+        border-color: var(--rose);
+      }
+      .layer.gauntletL .lhead h3 {
+        color: var(--rose);
+      }
 
-  .row { display: grid; gap: 14px; }
-  .row.c2 { grid-template-columns: 1fr 1fr; }
-  .row.c3 { grid-template-columns: 1fr 1fr 1fr; }
-  .stack { display: flex; flex-direction: column; gap: 0; }
+      .row {
+        display: grid;
+        gap: 14px;
+      }
+      .row.c2 {
+        grid-template-columns: 1fr 1fr;
+      }
+      .row.c3 {
+        grid-template-columns: 1fr 1fr 1fr;
+      }
+      .stack {
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+      }
 
-  /* the gauntlet return loop */
-  .final-wrap { position: relative; max-width: 1050px; margin: 0 auto; padding-right: 150px; }
-  .loop-rail {
-    position: absolute; top: 336px; bottom: 160px; right: 24px; width: 122px;
-    border: 2.5px dashed var(--rose); border-left: none;
-    border-radius: 0 18px 18px 0;
-  }
-  .loop-rail .looplabel {
-    position: absolute; top: 50%; right: -15px; transform: translateY(-50%);
-    writing-mode: vertical-rl;
-    font-family: "IBM Plex Mono", monospace; font-size: 11px; font-weight: 700;
-    letter-spacing: 0.22em; text-transform: uppercase; color: var(--rose);
-    white-space: nowrap; background: var(--paper); padding: 10px 2px;
-  }
-  .loop-rail::before { /* arrowhead pointing back into production */
-    content: ""; position: absolute; left: -9px; top: -8px;
-    border: 8px solid transparent; border-right-color: var(--rose);
-    border-left: none;
-  }
-  .loop-rail .loopstart {
-    position: absolute; left: -6px; bottom: -6px; width: 10px; height: 10px;
-    background: var(--rose); border-radius: 50%;
-  }
+      /* the gauntlet return loop */
+      .final-wrap {
+        position: relative;
+        max-width: 1050px;
+        margin: 0 auto;
+        padding-right: 150px;
+      }
+      .loop-rail {
+        position: absolute;
+        top: 336px;
+        bottom: 160px;
+        right: 24px;
+        width: 122px;
+        border: 2.5px dashed var(--rose);
+        border-left: none;
+        border-radius: 0 18px 18px 0;
+      }
+      .loop-rail .looplabel {
+        position: absolute;
+        top: 50%;
+        right: -15px;
+        transform: translateY(-50%);
+        writing-mode: vertical-rl;
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: var(--rose);
+        white-space: nowrap;
+        background: var(--paper);
+        padding: 10px 2px;
+      }
+      .loop-rail::before {
+        /* arrowhead pointing back into production */
+        content: "";
+        position: absolute;
+        left: -9px;
+        top: -8px;
+        border: 8px solid transparent;
+        border-right-color: var(--rose);
+        border-left: none;
+      }
+      .loop-rail .loopstart {
+        position: absolute;
+        left: -6px;
+        bottom: -6px;
+        width: 10px;
+        height: 10px;
+        background: var(--rose);
+        border-radius: 50%;
+      }
 
-  footer {
-    max-width: 1240px; margin: 0 auto; color: var(--ink-soft);
-    font-size: 12.5px; font-family: "IBM Plex Mono", monospace;
-  }
-</style>
-</head>
-<body>
-<main>
-  <div class="kicker">Fulcrum · World Forge</div>
-  <h1>Wired today vs. the final graph</h1>
-  <p class="sub">Top: everything that actually runs in the current working tree (M1 with live creative
-  text, plus the M0 walking-skeleton tail). Bottom: the destination from VISION / ARCHITECTURE /
-  ROADMAP — one Mastra macro graph from brief to playable build, closed by the Gauntlet improvement loop.</p>
+      #system-map {
+        width: min(1480px, calc(100vw - 48px));
+        margin-left: 50%;
+        transform: translateX(-50%);
+      }
+      .system-map {
+        display: block;
+        width: 100%;
+        height: auto;
+        overflow: visible;
+      }
 
-  <div class="legend">
-    <span class="chip"><span class="swatch human"></span> Human gate (approval / confirm)</span>
-    <span class="chip"><span class="swatch model"></span> Live model call (durable submission)</span>
-    <span class="chip"><span class="swatch det"></span> Deterministic module</span>
-    <span class="chip"><span class="swatch gauntlet"></span> Gauntlet evaluation</span>
-    <span class="chip"><span class="swatch loop"></span> Bounded loop</span>
-    <span class="chip"><span class="mchip">M2</span> roadmap milestone &nbsp;·&nbsp; <span class="mchip done">✓</span> shipped</span>
-  </div>
+      footer {
+        max-width: 1240px;
+        margin: 0 auto;
+        color: var(--ink-soft);
+        font-size: 12.5px;
+        font-family: "IBM Plex Mono", monospace;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="kicker">Fulcrum · World Forge</div>
+      <h1>Wired today vs. the final graph</h1>
+      <p class="sub">
+        Top: everything that actually runs in the current working tree (M1 with
+        live creative text, plus the M0 walking-skeleton tail). Bottom: the
+        destination from VISION / ARCHITECTURE / ROADMAP — one Mastra macro
+        graph from brief to playable build, closed by the Gauntlet improvement
+        loop.
+      </p>
 
-  <!-- ================= CURRENT ================= -->
-  <section class="diagram">
-    <div class="diagram-title">
-      <h2>Wired today</h2><span class="tag now">this working tree</span>
-    </div>
-    <p class="note">The M1 pipeline is a hand-written stage machine in the orchestrator (repository +
-    event log + stale-command guards), not yet the macro graph. Every live call goes through the durable
-    submission layer, so a crash or restart never re-spends or re-asks.</p>
-
-    <div class="now-grid">
-      <div class="rail">
-        <div class="railhead">Surfaces</div>
-        <div class="node"><div class="nlabel">Studio · :4311</div><div class="ntitle">World Forge UI</div>
-          <div class="ndesc">React + Vite. Pitch, grill rounds, approvals, editable concept-plan and sound prompts, concept review, sound palette, Rusty.</div></div>
-        <div class="node"><div class="nlabel">Orchestrator · :4310</div><div class="ntitle">Fastify API + M1Coordinator</div>
-          <div class="ndesc">Stages, approvals, budgets, event log. SQLite + file artifacts. Replay path is byte-deterministic.</div></div>
-        <div class="node"><div class="nlabel">Execution</div><div class="ntitle">ModelExecution adapters</div>
-          <div class="ndesc">Codex subscription ($0 metered), Claude, Grok, OpenCode, OpenAI API (budget-reserved). Strict structured output.</div></div>
+      <div class="legend">
+        <span class="chip"
+          ><span class="swatch human"></span> Human gate (approval /
+          confirm)</span
+        >
+        <span class="chip"
+          ><span class="swatch model"></span> Live model call (durable
+          submission)</span
+        >
+        <span class="chip"
+          ><span class="swatch det"></span> Deterministic module</span
+        >
+        <span class="chip"
+          ><span class="swatch gauntlet"></span> Gauntlet evaluation</span
+        >
+        <span class="chip"><span class="swatch loop"></span> Bounded loop</span>
+        <span class="chip"
+          ><span class="mchip">M2</span> roadmap milestone &nbsp;·&nbsp;
+          <span class="mchip done">✓</span> shipped</span
+        >
       </div>
 
-      <div class="spine">
-        <div class="node"><div class="nlabel">Pitch</div><div class="ntitle">Your brief + mode toggle</div>
-          <div class="ndesc">REPLAY (fixtures, $0) or LIVE (real model text + real ImageGen). Budget cap set here.</div></div>
-        <div class="arrow">▼</div>
-        <div class="node model"><div class="nlabel">Grill Me <span class="mchip done">✓ live</span></div>
-          <div class="ntitle">Interrogation rounds</div>
-          <div class="ndesc">Model reads your brief, asks 2–4 pointed questions per round against the design tree. New rounds until understanding is complete.</div></div>
-        <div class="loop-note">↺ <span><b>answer frontier → next round</b> · hard cap 6 rounds · restart-safe, never re-asks</span></div>
-        <div class="arrow">▼</div>
-        <div class="node human"><div class="nlabel">Gate</div><div class="ntitle">Confirm shared understanding</div></div>
-        <div class="arrow">▼</div>
-        <div class="node model"><div class="nlabel">Creative <span class="mchip done">✓ live</span></div>
-          <div class="ntitle">Game Design Spec</div>
-          <div class="ndesc">Written by the model from brief + your answers; every fact/assumption cites its origin. Revisable.</div></div>
-        <div class="arrow">▼</div>
-        <div class="node human"><div class="nlabel">Gate</div><div class="ntitle">Approve game design</div></div>
-        <div class="arrow">▼</div>
-        <div class="node model"><div class="nlabel">Creative <span class="mchip done">✓ live</span></div>
-          <div class="ntitle">Three visual directions</div>
-          <div class="ndesc">Invented per project — named palettes, materials, lighting, one gameplay-focus color each. Replace one, or one focused change with pinned tokens.</div></div>
-        <div class="arrow">▼</div>
-        <div class="node human"><div class="nlabel">Gate</div><div class="ntitle">Approve a direction</div></div>
-        <div class="arrow">▼</div>
-        <div class="node"><div class="nlabel">Creative <span class="mchip done">✓</span></div>
-          <div class="ntitle">Concept plan — editable prompts</div>
-          <div class="ndesc">Slots derived from the spec. The exact ImageGen prompt per slot is shown and editable; sent byte-for-byte.</div></div>
-        <div class="arrow">▼</div>
-        <div class="node human"><div class="nlabel">Spend gate</div><div class="ntitle">Confirm list and generate</div></div>
-        <div class="arrow">▼</div>
-        <div class="node model"><div class="nlabel">Images</div><div class="ntitle">Concept images</div>
-          <div class="ndesc">Subscription ImageGen / OpenAI API / deterministic renderer. Per-slot regeneration, prompt-hashed idempotency.</div></div>
-        <div class="arrow">▼</div>
-        <div class="node human"><div class="nlabel">Gate</div><div class="ntitle">Approve concept set</div></div>
-        <div class="arrow">▼</div>
-        <div class="node"><div class="nlabel">Creative <span class="mchip done">✓</span></div>
-          <div class="ntitle">Sound palette — editable prompts</div>
-          <div class="ndesc">4–6 slots derived from spec + direction: foley, stings, ambience loops, UI ticks. Prompt, duration and loop flag per slot, all editable.</div></div>
-        <div class="arrow">▼</div>
-        <div class="node human"><div class="nlabel">Spend gate</div><div class="ntitle">Confirm palette and generate</div></div>
-        <div class="arrow">▼</div>
-        <div class="node model"><div class="nlabel">Sounds</div><div class="ntitle">SFX clips</div>
-          <div class="ndesc">ElevenLabs SFX (lights up with ELEVENLABS_API_KEY) / deterministic WAV. Per-slot regeneration, prompt-hashed idempotency.</div></div>
-        <div class="arrow">▼</div>
-        <div class="node human"><div class="nlabel">Gate</div><div class="ntitle">Approve sound set → M1 complete</div></div>
-      </div>
-
-      <div class="rail">
-        <div class="railhead">Under everything</div>
-        <div class="node"><div class="nlabel">Durability</div><div class="ntitle">Durable submissions</div>
-          <div class="ndesc">Idempotency keys, budget reservation on metered routes, transient-retry on subscription routes, completed work never re-calls the model.</div></div>
-        <div class="railhead" style="margin-top:10px">Already proven (M0)</div>
-        <div class="node"><div class="nlabel">Walking skeleton <span class="mchip done">✓</span></div>
-          <div class="ntitle">Concept → 3D → scene</div>
-          <div class="ndesc">One hero prop: approved concept → Meshy image-to-3D → deterministic QA → Three.js scene, full lineage. Mastra suspend/resume lives here.</div></div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ================= FINAL ================= -->
-  <section class="diagram">
-    <div class="diagram-title">
-      <h2>The final version</h2><span class="tag final">graph orchestration + gauntlet loop</span>
-    </div>
-    <p class="note">One Mastra macro graph owns the macro decisions; bounded specialist loops (attempts,
-    time, cost, termination) do the local work inside each node. Each node gets a compact context
-    envelope, independent nodes fan out in parallel under the budget, and humans are interrupted only at
-    high-leverage gates. The Gauntlet closes the loop: findings flow back into production until the
-    slice is genuinely good.</p>
-
-    <div class="final-wrap">
-      <div class="loop-rail">
-        <span class="looplabel">Improvement loop · bounded budgets</span>
-        <span class="loopstart"></span>
-      </div>
-
-      <div class="layer creative">
-        <div class="lhead"><h3>Creative layer</h3><span class="mchip done">✓ M1</span>
-          <span class="lsub">what runs today, unchanged — it becomes the graph's first nodes</span></div>
-        <div class="row c2">
-          <div class="node model"><div class="nlabel">Interrogation</div><div class="ntitle">Grill Me → Game Design Spec</div></div>
-          <div class="node model"><div class="nlabel">Direction</div><div class="ntitle">Visual directions → approved concepts</div></div>
+      <!-- ================= CURRENT ================= -->
+      <section class="diagram">
+        <div class="diagram-title">
+          <h2>Wired today</h2>
+          <span class="tag now">this working tree</span>
         </div>
-      </div>
+        <p class="note">
+          The M1 pipeline is a hand-written stage machine in the orchestrator
+          (repository + event log + stale-command guards), not yet the macro
+          graph. Every live call goes through the durable submission layer, so a
+          crash or restart never re-spends or re-asks.
+        </p>
 
-      <div class="arrow">▼ <span>approved visual ground truth</span></div>
+        <div class="now-grid">
+          <div class="rail">
+            <div class="railhead">Surfaces</div>
+            <div class="node">
+              <div class="nlabel">Studio · :4311</div>
+              <div class="ntitle">World Forge UI</div>
+              <div class="ndesc">
+                React + Vite. Pitch, grill rounds, approvals, editable
+                concept-plan and sound prompts, concept review, sound palette,
+                Rusty.
+              </div>
+            </div>
+            <div class="node">
+              <div class="nlabel">Orchestrator · :4310</div>
+              <div class="ntitle">Fastify API + M1Coordinator</div>
+              <div class="ndesc">
+                Stages, approvals, budgets, event log. SQLite + file artifacts.
+                Replay path is byte-deterministic.
+              </div>
+            </div>
+            <div class="node">
+              <div class="nlabel">Execution</div>
+              <div class="ntitle">ModelExecution adapters</div>
+              <div class="ndesc">
+                Codex subscription ($0 metered), Claude, Grok, OpenCode, OpenAI
+                API (budget-reserved). Strict structured output.
+              </div>
+            </div>
+          </div>
 
-      <div class="layer">
-        <div class="lhead"><h3>Production layer</h3><span class="lsub">every node added only when the path before it works with real artifacts</span></div>
-        <div class="stack">
-          <div class="row c2">
-            <div class="node"><div class="nlabel">Plan <span class="mchip">M2</span></div><div class="ntitle">Asset Planner</div>
-              <div class="ndesc">Classifies hero / kit / procedural / functional so effort matches player impact. Dependency graph.</div></div>
-            <div class="node model"><div class="nlabel">Concepts <span class="mchip">M2</span></div><div class="ntitle">Multiview generation</div>
-              <div class="ndesc">Extra views for hero assets where the 3D provider can use them.</div></div>
+          <div class="spine">
+            <div class="node">
+              <div class="nlabel">Pitch</div>
+              <div class="ntitle">Your brief + mode toggle</div>
+              <div class="ndesc">
+                REPLAY (fixtures, $0) or LIVE (real model text + real ImageGen).
+                Budget cap set here.
+              </div>
+            </div>
+            <div class="arrow">▼</div>
+            <div class="node model">
+              <div class="nlabel">
+                Grill Me <span class="mchip done">✓ live</span>
+              </div>
+              <div class="ntitle">Interrogation rounds</div>
+              <div class="ndesc">
+                Model reads your brief, asks 2–4 pointed questions per round
+                against the design tree. New rounds until understanding is
+                complete.
+              </div>
+            </div>
+            <div class="loop-note">
+              ↺
+              <span
+                ><b>answer frontier → next round</b> · hard cap 6 rounds ·
+                restart-safe, never re-asks</span
+              >
+            </div>
+            <div class="arrow">▼</div>
+            <div class="node human">
+              <div class="nlabel">Gate</div>
+              <div class="ntitle">Confirm shared understanding</div>
+            </div>
+            <div class="arrow">▼</div>
+            <div class="node model">
+              <div class="nlabel">
+                Creative <span class="mchip done">✓ live</span>
+              </div>
+              <div class="ntitle">Game Design Spec</div>
+              <div class="ndesc">
+                Written by the model from brief + your answers; every
+                fact/assumption cites its origin. Revisable.
+              </div>
+            </div>
+            <div class="arrow">▼</div>
+            <div class="node human">
+              <div class="nlabel">Gate</div>
+              <div class="ntitle">Approve game design</div>
+            </div>
+            <div class="arrow">▼</div>
+            <div class="node model">
+              <div class="nlabel">
+                Creative <span class="mchip done">✓ live</span>
+              </div>
+              <div class="ntitle">Three visual directions</div>
+              <div class="ndesc">
+                Invented per project — named palettes, materials, lighting, one
+                gameplay-focus color each. Replace one, or one focused change
+                with pinned tokens.
+              </div>
+            </div>
+            <div class="arrow">▼</div>
+            <div class="node human">
+              <div class="nlabel">Gate</div>
+              <div class="ntitle">Approve a direction</div>
+            </div>
+            <div class="arrow">▼</div>
+            <div class="node">
+              <div class="nlabel">
+                Creative <span class="mchip done">✓</span>
+              </div>
+              <div class="ntitle">Concept plan — editable prompts</div>
+              <div class="ndesc">
+                Slots derived from the spec. The exact ImageGen prompt per slot
+                is shown and editable; sent byte-for-byte.
+              </div>
+            </div>
+            <div class="arrow">▼</div>
+            <div class="node human">
+              <div class="nlabel">Spend gate</div>
+              <div class="ntitle">Confirm list and generate</div>
+            </div>
+            <div class="arrow">▼</div>
+            <div class="node model">
+              <div class="nlabel">Images</div>
+              <div class="ntitle">Concept images</div>
+              <div class="ndesc">
+                Subscription ImageGen / OpenAI API / deterministic renderer.
+                Per-slot regeneration, prompt-hashed idempotency.
+              </div>
+            </div>
+            <div class="arrow">▼</div>
+            <div class="node human">
+              <div class="nlabel">Gate</div>
+              <div class="ntitle">Approve concept set</div>
+            </div>
+            <div class="arrow">▼</div>
+            <div class="node">
+              <div class="nlabel">
+                Creative <span class="mchip done">✓</span>
+              </div>
+              <div class="ntitle">Sound palette — editable prompts</div>
+              <div class="ndesc">
+                4–6 slots derived from spec + direction: foley, stings, ambience
+                loops, UI ticks. Prompt, duration and loop flag per slot, all
+                editable.
+              </div>
+            </div>
+            <div class="arrow">▼</div>
+            <div class="node human">
+              <div class="nlabel">Spend gate</div>
+              <div class="ntitle">Confirm palette and generate</div>
+            </div>
+            <div class="arrow">▼</div>
+            <div class="node model">
+              <div class="nlabel">Sounds</div>
+              <div class="ntitle">SFX clips</div>
+              <div class="ndesc">
+                ElevenLabs SFX (lights up with ELEVENLABS_API_KEY) /
+                deterministic WAV. Per-slot regeneration, prompt-hashed
+                idempotency.
+              </div>
+            </div>
+            <div class="arrow">▼</div>
+            <div class="node human">
+              <div class="nlabel">Gate</div>
+              <div class="ntitle">Approve sound set → M1 complete</div>
+            </div>
           </div>
-          <div class="arrow">▼</div>
-          <div class="row c2">
-            <div class="node model"><div class="nlabel">3D <span class="mchip">M2</span></div><div class="ntitle">Image-to-3D batches</div>
-              <div class="ndesc">Meshy / Tripo behind one adapter seam. Parallel fan-out under budget.</div></div>
-            <div class="node"><div class="nlabel">Checks <span class="mchip">M2</span></div><div class="ntitle">Deterministic + semantic QA</div>
-              <div class="ndesc">Mesh/material/topology facts by tools; turntable qualities judged by vision models.</div></div>
+
+          <div class="rail">
+            <div class="railhead">Under everything</div>
+            <div class="node">
+              <div class="nlabel">Durability</div>
+              <div class="ntitle">Durable submissions</div>
+              <div class="ndesc">
+                Idempotency keys, budget reservation on metered routes,
+                transient-retry on subscription routes, completed work never
+                re-calls the model.
+              </div>
+            </div>
+            <div class="railhead" style="margin-top: 10px">
+              Already proven (M0)
+            </div>
+            <div class="node">
+              <div class="nlabel">
+                Walking skeleton <span class="mchip done">✓</span>
+              </div>
+              <div class="ntitle">Concept → 3D → scene</div>
+              <div class="ndesc">
+                One hero prop: approved concept → Meshy image-to-3D →
+                deterministic QA → Three.js scene, full lineage. Mastra
+                suspend/resume lives here.
+              </div>
+            </div>
           </div>
-          <div class="arrow">▼</div>
-          <div class="node loopbox"><div class="nlabel">Refine <span class="mchip">M3</span></div><div class="ntitle">↺ Blender refinement loop</div>
-            <div class="ndesc">Findings → structured geometry/material operations → re-render → re-evaluate. Keeps the best revision, not the newest.</div></div>
-          <div class="arrow">▼</div>
-          <div class="row c2">
-            <div class="node"><div class="nlabel">World <span class="mchip">M4</span></div><div class="ntitle">Kit + Scene Spec assembly</div>
-              <div class="ndesc">Modular environment kit; engine-independent Scene Spec compiled to Three.js first.</div></div>
-            <div class="node loopbox"><div class="nlabel">Visual graph <span class="mchip">M5</span></div><div class="ntitle">↺ Visual refinement</div>
-              <div class="ndesc">Classify each issue → route to asset / lighting / camera / composition → compare vs. best-known.</div></div>
-          </div>
-          <div class="arrow">▼</div>
-          <div class="row c2">
-            <div class="node"><div class="nlabel">Gameplay <span class="mchip">M6</span></div><div class="ntitle">Implementation</div>
-              <div class="ndesc">Movement, camera, interaction, objectives, UI for a 5–10 min slice — with instrumentation baked in.</div></div>
-            <div class="node human"><div class="nlabel">Gate</div><div class="ntitle">Visual-slice approval</div>
-              <div class="ndesc">One of the few high-leverage human stops.</div></div>
-          </div>
-          <div class="arrow">▼</div>
-          <div class="node"><div class="nlabel">Output</div><div class="ntitle">Playable build</div>
-            <div class="ndesc">Instrumented, versioned, reproducible.</div></div>
         </div>
-      </div>
+      </section>
 
-      <div class="arrow">▼ <span>every build enters the gauntlet</span></div>
-
-      <div class="layer gauntletL">
-        <div class="lhead"><h3>Gauntlet layer</h3><span class="mchip">M7</span>
-          <span class="lsub">three independent evaluation streams, run in parallel</span></div>
-        <div class="row c3">
-          <div class="node gauntlet"><div class="nlabel">Stream</div><div class="ntitle">Visual</div>
-            <div class="ndesc">Coherence, lighting, composition, readability, style consistency.</div></div>
-          <div class="node gauntlet"><div class="nlabel">Stream</div><div class="ntitle">Gameplay</div>
-            <div class="ndesc">Feel, loop clarity, pacing, difficulty — needs play-capable evaluation. Human playtest stays authoritative for fun.</div></div>
-          <div class="node gauntlet"><div class="nlabel">Stream</div><div class="ntitle">Technical</div>
-            <div class="ndesc">FPS, frame spikes, memory, draw calls, errors, regressions.</div></div>
+      <!-- ================= FINAL ================= -->
+      <section class="diagram">
+        <div class="diagram-title">
+          <h2>The final version</h2>
+          <span class="tag final">graph orchestration + gauntlet loop</span>
         </div>
-        <div class="arrow">▼</div>
-        <div class="row c2">
-          <div class="node gauntlet"><div class="nlabel">Findings</div><div class="ntitle">Versioned findings</div>
-            <div class="ndesc">Evidence, severity, confidence, estimated cost, dependencies, regression risk.</div></div>
-          <div class="node gauntlet"><div class="nlabel">Decide</div><div class="ntitle">Prioritizer</div>
-            <div class="ndesc">Picks the highest-value fixes → dispatches bounded improvement work back into the production nodes.</div></div>
-        </div>
-        <div class="arrow">▼</div>
-        <div class="node loopbox"><div class="nlabel">Safety</div><div class="ntitle">Best-known revisions + oscillation detector</div>
-          <div class="ndesc">Every dimension keeps its best revision. Repeated reversal = oscillation → stop the strategy, restore best, re-diagnose. Newest never silently beats best.</div></div>
-      </div>
-    </div>
-  </section>
+        <p class="note">
+          One Mastra macro graph owns the macro decisions; bounded specialist
+          loops (attempts, time, cost, termination) do the local work inside
+          each node. Each node gets a compact context envelope, independent
+          nodes fan out in parallel under the budget, and humans are interrupted
+          only at high-leverage gates. The Gauntlet closes the loop: findings
+          flow back into production until the slice is genuinely good.
+        </p>
 
-  <footer>Sources: VISION.md · ARCHITECTURE.md §12–14 · PRODUCT_SPEC.md §5–6 · ROADMAP.md M2–M7 — generated 2026-08-22, uncommitted.</footer>
-</main>
-</body>
+        <div class="final-wrap">
+          <div class="loop-rail">
+            <span class="looplabel">Improvement loop · bounded budgets</span>
+            <span class="loopstart"></span>
+          </div>
+
+          <div class="layer creative">
+            <div class="lhead">
+              <h3>Creative layer</h3>
+              <span class="mchip done">✓ M1</span>
+              <span class="lsub"
+                >what runs today, unchanged — it becomes the graph's first
+                nodes</span
+              >
+            </div>
+            <div class="row c2">
+              <div class="node model">
+                <div class="nlabel">Interrogation</div>
+                <div class="ntitle">Grill Me → Game Design Spec</div>
+              </div>
+              <div class="node model">
+                <div class="nlabel">Direction</div>
+                <div class="ntitle">Visual directions → approved concepts</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="arrow">▼ <span>approved visual ground truth</span></div>
+
+          <div class="layer">
+            <div class="lhead">
+              <h3>Production layer</h3>
+              <span class="lsub"
+                >every node added only when the path before it works with real
+                artifacts</span
+              >
+            </div>
+            <div class="stack">
+              <div class="row c2">
+                <div class="node">
+                  <div class="nlabel">Plan <span class="mchip">M2</span></div>
+                  <div class="ntitle">Asset Planner</div>
+                  <div class="ndesc">
+                    Classifies hero / kit / procedural / functional so effort
+                    matches player impact. Dependency graph.
+                  </div>
+                </div>
+                <div class="node model">
+                  <div class="nlabel">
+                    Concepts <span class="mchip">M2</span>
+                  </div>
+                  <div class="ntitle">Multiview generation</div>
+                  <div class="ndesc">
+                    Extra views for hero assets where the 3D provider can use
+                    them.
+                  </div>
+                </div>
+              </div>
+              <div class="arrow">▼</div>
+              <div class="row c2">
+                <div class="node model">
+                  <div class="nlabel">3D <span class="mchip">M2</span></div>
+                  <div class="ntitle">Image-to-3D batches</div>
+                  <div class="ndesc">
+                    Meshy / Tripo behind one adapter seam. Parallel fan-out
+                    under budget.
+                  </div>
+                </div>
+                <div class="node">
+                  <div class="nlabel">Checks <span class="mchip">M2</span></div>
+                  <div class="ntitle">Deterministic + semantic QA</div>
+                  <div class="ndesc">
+                    Mesh/material/topology facts by tools; turntable qualities
+                    judged by vision models.
+                  </div>
+                </div>
+              </div>
+              <div class="arrow">▼</div>
+              <div class="node loopbox">
+                <div class="nlabel">Refine <span class="mchip">M3</span></div>
+                <div class="ntitle">↺ Blender refinement loop</div>
+                <div class="ndesc">
+                  Findings → structured geometry/material operations → re-render
+                  → re-evaluate. Keeps the best revision, not the newest.
+                </div>
+              </div>
+              <div class="arrow">▼</div>
+              <div class="row c2">
+                <div class="node">
+                  <div class="nlabel">World <span class="mchip">M4</span></div>
+                  <div class="ntitle">Kit + Scene Spec assembly</div>
+                  <div class="ndesc">
+                    Modular environment kit; engine-independent Scene Spec
+                    compiled to Three.js first.
+                  </div>
+                </div>
+                <div class="node loopbox">
+                  <div class="nlabel">
+                    Visual graph <span class="mchip">M5</span>
+                  </div>
+                  <div class="ntitle">↺ Visual refinement</div>
+                  <div class="ndesc">
+                    Classify each issue → route to asset / lighting / camera /
+                    composition → compare vs. best-known.
+                  </div>
+                </div>
+              </div>
+              <div class="arrow">▼</div>
+              <div class="row c2">
+                <div class="node">
+                  <div class="nlabel">
+                    Gameplay <span class="mchip">M6</span>
+                  </div>
+                  <div class="ntitle">Implementation</div>
+                  <div class="ndesc">
+                    Movement, camera, interaction, objectives, UI for a 5–10 min
+                    slice — with instrumentation baked in.
+                  </div>
+                </div>
+                <div class="node human">
+                  <div class="nlabel">Gate</div>
+                  <div class="ntitle">Visual-slice approval</div>
+                  <div class="ndesc">
+                    One of the few high-leverage human stops.
+                  </div>
+                </div>
+              </div>
+              <div class="arrow">▼</div>
+              <div class="node">
+                <div class="nlabel">Output</div>
+                <div class="ntitle">Playable build</div>
+                <div class="ndesc">Instrumented, versioned, reproducible.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="arrow">
+            ▼ <span>every build enters the gauntlet</span>
+          </div>
+
+          <div class="layer gauntletL">
+            <div class="lhead">
+              <h3>Gauntlet layer</h3>
+              <span class="mchip">M7</span>
+              <span class="lsub"
+                >three independent evaluation streams, run in parallel</span
+              >
+            </div>
+            <div class="row c3">
+              <div class="node gauntlet">
+                <div class="nlabel">Stream</div>
+                <div class="ntitle">Visual</div>
+                <div class="ndesc">
+                  Coherence, lighting, composition, readability, style
+                  consistency.
+                </div>
+              </div>
+              <div class="node gauntlet">
+                <div class="nlabel">Stream</div>
+                <div class="ntitle">Gameplay</div>
+                <div class="ndesc">
+                  Feel, loop clarity, pacing, difficulty — needs play-capable
+                  evaluation. Human playtest stays authoritative for fun.
+                </div>
+              </div>
+              <div class="node gauntlet">
+                <div class="nlabel">Stream</div>
+                <div class="ntitle">Technical</div>
+                <div class="ndesc">
+                  FPS, frame spikes, memory, draw calls, errors, regressions.
+                </div>
+              </div>
+            </div>
+            <div class="arrow">▼</div>
+            <div class="row c2">
+              <div class="node gauntlet">
+                <div class="nlabel">Findings</div>
+                <div class="ntitle">Versioned findings</div>
+                <div class="ndesc">
+                  Evidence, severity, confidence, estimated cost, dependencies,
+                  regression risk.
+                </div>
+              </div>
+              <div class="node gauntlet">
+                <div class="nlabel">Decide</div>
+                <div class="ntitle">Prioritizer</div>
+                <div class="ndesc">
+                  Picks the highest-value fixes → dispatches bounded improvement
+                  work back into the production nodes.
+                </div>
+              </div>
+            </div>
+            <div class="arrow">▼</div>
+            <div class="node loopbox">
+              <div class="nlabel">Safety</div>
+              <div class="ntitle">
+                Best-known revisions + oscillation detector
+              </div>
+              <div class="ndesc">
+                Every dimension keeps its best revision. Repeated reversal =
+                oscillation → stop the strategy, restore best, re-diagnose.
+                Newest never silently beats best.
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= SYSTEM MAP ================= -->
+      <section class="diagram" id="system-map">
+        <div class="diagram-title">
+          <h2>The system map</h2>
+          <span class="tag final">components + dataflow</span>
+        </div>
+        <p class="note">
+          This is the same destination viewed as components and dataflow. It
+          shows where the Mastra macro graph runs, how the orchestrator model
+          plans and delegates while the implementation model executes bounded
+          build tasks, and how every external call crosses a provider seam
+          backed by a deterministic replay twin. The Gauntlet's failed →
+          re-diagnose loop closes back into the orchestrator.
+        </p>
+
+        <svg
+          class="system-map"
+          viewBox="0 0 1570 1100"
+          xmlns="http://www.w3.org/2000/svg"
+          role="img"
+          aria-labelledby="system-map-title system-map-desc"
+        >
+          <title id="system-map-title">
+            Fulcrum completed production system map
+          </title>
+          <desc id="system-map-desc">
+            Inputs enter a Mastra graph controlled by an orchestrator model. The
+            orchestrator delegates bounded tasks to an implementation model.
+            Creative development, production, provider seams, and the mandatory
+            Gauntlet lead to the playable slice and persisted outputs.
+          </desc>
+
+          <defs>
+            <marker
+              id="system-arrow"
+              viewBox="0 0 10 10"
+              refX="9"
+              refY="5"
+              markerWidth="7"
+              markerHeight="7"
+              orient="auto"
+            >
+              <path d="M0 1.4 L10 5 L0 8.6 Z" fill="#4b544f" />
+            </marker>
+            <filter
+              id="system-shadow"
+              x="-10%"
+              y="-10%"
+              width="130%"
+              height="140%"
+              color-interpolation-filters="sRGB"
+            >
+              <feDropShadow
+                dx="3"
+                dy="3"
+                stdDeviation="0"
+                flood-color="#17211f"
+                flood-opacity="0.88"
+              />
+            </filter>
+            <style>
+              .sm-band {
+                fill: rgba(255, 255, 255, 0.28);
+                stroke: #17211f;
+                stroke-width: 2;
+              }
+              .sm-provider {
+                fill: #f6f3ea;
+                stroke: #4b544f;
+                stroke-width: 1.6;
+                stroke-dasharray: 7 5;
+              }
+              .sm-box {
+                fill: #fff;
+                stroke: #17211f;
+                stroke-width: 2;
+                filter: url(#system-shadow);
+              }
+              .sm-model {
+                fill: #d7efec;
+                stroke: #0e9488;
+              }
+              .sm-human {
+                fill: #fdf3d7;
+                stroke: #f2b632;
+              }
+              .sm-gauntlet {
+                fill: #f9e3e8;
+                stroke: #c9536a;
+              }
+              .sm-title {
+                fill: #17211f;
+                font:
+                  700 15px Archivo,
+                  Inter,
+                  Helvetica,
+                  Arial,
+                  sans-serif;
+              }
+              .sm-provider-title {
+                fill: #17211f;
+                font:
+                  700 12.5px Archivo,
+                  Inter,
+                  Helvetica,
+                  Arial,
+                  sans-serif;
+              }
+              .sm-sub {
+                fill: #4b544f;
+                font:
+                  400 11.5px Archivo,
+                  Inter,
+                  Helvetica,
+                  Arial,
+                  sans-serif;
+              }
+              .sm-band-label {
+                font:
+                  700 13px "IBM Plex Mono",
+                  "Courier New",
+                  monospace;
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+              }
+              .sm-teal {
+                fill: #0e9488;
+              }
+              .sm-amber {
+                fill: #9a6c00;
+              }
+              .sm-provider-heading {
+                fill: #9a6c00;
+                font:
+                  700 13px "IBM Plex Mono",
+                  "Courier New",
+                  monospace;
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+              }
+              .sm-edge {
+                fill: none;
+                stroke: #4b544f;
+                stroke-width: 1.7;
+                marker-end: url(#system-arrow);
+              }
+              .sm-edge-halo {
+                fill: none;
+                stroke: #fbfaf4;
+                stroke-width: 7;
+              }
+              .sm-pill {
+                fill: #f6f3ea;
+                stroke: #17211f;
+                stroke-width: 1.5;
+              }
+              .sm-pill-text {
+                fill: #17211f;
+                font:
+                  700 10.5px "IBM Plex Mono",
+                  "Courier New",
+                  monospace;
+              }
+              .sm-cyl {
+                fill: #fff;
+                stroke: #17211f;
+                stroke-width: 2;
+              }
+              .sm-cyl-top {
+                fill: #f6f3ea;
+                stroke: #17211f;
+                stroke-width: 2;
+              }
+            </style>
+          </defs>
+
+          <rect
+            class="sm-band"
+            x="48"
+            y="36"
+            width="1404"
+            height="148"
+            rx="10"
+          />
+          <rect
+            class="sm-band"
+            x="48"
+            y="204"
+            width="1404"
+            height="260"
+            rx="10"
+          />
+          <rect
+            class="sm-band"
+            x="48"
+            y="484"
+            width="1404"
+            height="348"
+            rx="10"
+          />
+          <rect
+            class="sm-band"
+            x="48"
+            y="852"
+            width="1404"
+            height="220"
+            rx="10"
+          />
+
+          <text class="sm-band-label sm-teal" x="72" y="230">
+            Fulcrum Orchestrator
+          </text>
+          <text class="sm-band-label sm-amber" x="72" y="510">
+            Production (per project)
+          </text>
+
+          <!-- input -->
+          <g>
+            <rect
+              class="sm-box"
+              x="140"
+              y="64"
+              width="260"
+              height="88"
+              rx="8"
+            />
+            <text class="sm-title" x="270" y="100" text-anchor="middle">
+              Game Brief
+            </text>
+            <text class="sm-sub" x="270" y="122" text-anchor="middle">
+              natural-language pitch
+            </text>
+          </g>
+          <g>
+            <rect
+              class="sm-box sm-human"
+              x="620"
+              y="64"
+              width="260"
+              height="88"
+              rx="8"
+            />
+            <text class="sm-title" x="750" y="100" text-anchor="middle">
+              Human Approvals
+            </text>
+            <text class="sm-sub" x="750" y="122" text-anchor="middle">
+              creative director gates
+            </text>
+          </g>
+          <g>
+            <rect
+              class="sm-box"
+              x="1100"
+              y="64"
+              width="260"
+              height="88"
+              rx="8"
+            />
+            <text class="sm-title" x="1230" y="100" text-anchor="middle">
+              Reference Images
+            </text>
+            <text class="sm-sub" x="1230" y="122" text-anchor="middle">
+              optional visual refs
+            </text>
+          </g>
+
+          <!-- orchestrator -->
+          <g>
+            <rect
+              class="sm-box sm-model"
+              x="140"
+              y="248"
+              width="320"
+              height="88"
+              rx="8"
+            />
+            <text class="sm-title" x="300" y="284" text-anchor="middle">
+              Orchestrator Model
+            </text>
+            <text class="sm-sub" x="300" y="306" text-anchor="middle">
+              planning · interrogation · routing
+            </text>
+          </g>
+          <g>
+            <rect
+              class="sm-box"
+              x="140"
+              y="356"
+              width="320"
+              height="88"
+              rx="8"
+            />
+            <text class="sm-title" x="300" y="392" text-anchor="middle">
+              Mastra Graph
+            </text>
+            <text class="sm-sub" x="300" y="414" text-anchor="middle">
+              macro graph + suspend / resume
+            </text>
+          </g>
+          <g>
+            <rect
+              class="sm-box sm-model"
+              x="800"
+              y="248"
+              width="320"
+              height="88"
+              rx="8"
+            />
+            <text class="sm-title" x="960" y="284" text-anchor="middle">
+              Implementation Model
+            </text>
+            <text class="sm-sub" x="960" y="306" text-anchor="middle">
+              executes bounded build tasks
+            </text>
+          </g>
+
+          <!-- production -->
+          <g>
+            <rect
+              class="sm-box"
+              x="180"
+              y="532"
+              width="300"
+              height="88"
+              rx="8"
+            />
+            <text class="sm-title" x="330" y="568" text-anchor="middle">
+              Creative Development
+            </text>
+            <text class="sm-sub" x="330" y="590" text-anchor="middle">
+              design spec · visual bible · concepts
+            </text>
+          </g>
+          <g>
+            <rect
+              class="sm-box"
+              x="560"
+              y="532"
+              width="300"
+              height="88"
+              rx="8"
+            />
+            <text class="sm-title" x="710" y="568" text-anchor="middle">
+              Production
+            </text>
+            <text class="sm-sub" x="710" y="590" text-anchor="middle">
+              assets · Scene Spec · gameplay
+            </text>
+          </g>
+          <g>
+            <rect
+              class="sm-box sm-gauntlet"
+              x="560"
+              y="700"
+              width="280"
+              height="88"
+              rx="8"
+            />
+            <text class="sm-title" x="700" y="736" text-anchor="middle">
+              Gauntlet
+            </text>
+            <text class="sm-sub" x="700" y="758" text-anchor="middle">
+              visual · gameplay · technical
+            </text>
+          </g>
+
+          <!-- provider seams -->
+          <g>
+            <rect
+              class="sm-provider"
+              x="960"
+              y="520"
+              width="430"
+              height="268"
+              rx="8"
+            />
+            <text class="sm-provider-heading" x="980" y="544">
+              Provider Seams
+            </text>
+            <text class="sm-sub" x="980" y="562">
+              each port: live adapter + deterministic replay twin
+            </text>
+
+            <rect
+              class="sm-box"
+              x="980"
+              y="580"
+              width="185"
+              height="72"
+              rx="7"
+            />
+            <text
+              class="sm-provider-title"
+              x="1072.5"
+              y="610"
+              text-anchor="middle"
+            >
+              OpenAI — structured text
+            </text>
+            <text class="sm-sub" x="1072.5" y="630" text-anchor="middle">
+              · images
+            </text>
+
+            <rect
+              class="sm-box"
+              x="1180"
+              y="580"
+              width="190"
+              height="72"
+              rx="7"
+            />
+            <text
+              class="sm-provider-title"
+              x="1275"
+              y="602"
+              text-anchor="middle"
+            >
+              Meshy — image-to-3D
+            </text>
+            <text class="sm-sub" x="1275" y="621" text-anchor="middle">
+              · submit / inspect / cancel
+            </text>
+
+            <rect
+              class="sm-box"
+              x="980"
+              y="674"
+              width="185"
+              height="72"
+              rx="7"
+            />
+            <text
+              class="sm-provider-title"
+              x="1072.5"
+              y="704"
+              text-anchor="middle"
+            >
+              ElevenLabs
+            </text>
+            <text class="sm-sub" x="1072.5" y="724" text-anchor="middle">
+              — sound effects
+            </text>
+
+            <rect
+              class="sm-box"
+              x="1180"
+              y="674"
+              width="190"
+              height="72"
+              rx="7"
+            />
+            <text
+              class="sm-provider-title"
+              x="1275"
+              y="704"
+              text-anchor="middle"
+            >
+              Vision Eval
+            </text>
+            <text class="sm-sub" x="1275" y="724" text-anchor="middle">
+              — turntables · slices
+            </text>
+          </g>
+
+          <!-- outputs -->
+          <g>
+            <rect
+              class="sm-box"
+              x="110"
+              y="900"
+              width="250"
+              height="96"
+              rx="8"
+            />
+            <text class="sm-title" x="235" y="938" text-anchor="middle">
+              Studio
+            </text>
+            <text class="sm-sub" x="235" y="960" text-anchor="middle">
+              live events + approvals
+            </text>
+          </g>
+          <g>
+            <rect
+              class="sm-box"
+              x="450"
+              y="900"
+              width="280"
+              height="96"
+              rx="8"
+            />
+            <text class="sm-title" x="590" y="938" text-anchor="middle">
+              Playable Slice
+            </text>
+            <text class="sm-sub" x="590" y="960" text-anchor="middle">
+              5–10 min vertical slice
+            </text>
+          </g>
+          <g>
+            <path class="sm-cyl" d="M784 908 v72 a96 16 0 0 0 192 0 v-72" />
+            <ellipse class="sm-cyl-top" cx="880" cy="908" rx="96" ry="16" />
+            <text class="sm-title" x="880" y="950" text-anchor="middle">
+              Artifact Store
+            </text>
+            <text class="sm-sub" x="880" y="970" text-anchor="middle">
+              images · GLBs · renders · builds
+            </text>
+          </g>
+          <g>
+            <path class="sm-cyl" d="M1124 908 v72 a96 16 0 0 0 192 0 v-72" />
+            <ellipse class="sm-cyl-top" cx="1220" cy="908" rx="96" ry="16" />
+            <text class="sm-title" x="1220" y="950" text-anchor="middle">
+              SQLite
+            </text>
+            <text class="sm-sub" x="1220" y="970" text-anchor="middle">
+              project state + event log
+            </text>
+          </g>
+
+          <!-- inputs converge -->
+          <path class="sm-edge" d="M270 152 C270 196, 300 224, 300 248" />
+          <path class="sm-edge" d="M750 152 C750 204, 430 220, 350 248" />
+          <path class="sm-edge" d="M1230 152 C1230 216, 540 228, 390 248" />
+
+          <!-- orchestrator spine -->
+          <path class="sm-edge" d="M300 336 V356" />
+          <path class="sm-edge" d="M300 444 C300 484, 330 508, 330 532" />
+          <path class="sm-edge" d="M460 292 H800" />
+
+          <!-- creative / production loop -->
+          <path class="sm-edge" d="M480 576 H560" />
+          <path class="sm-edge" d="M560 604 C510 640, 510 640, 480 604" />
+
+          <!-- production branches -->
+          <path class="sm-edge" d="M710 620 V700" />
+          <path class="sm-edge" d="M700 788 C700 840, 630 872, 590 900" />
+
+          <!-- provider traffic -->
+          <path class="sm-edge" d="M390 532 V500 H1140 V520" />
+          <path class="sm-edge" d="M820 620 V640 H960" />
+          <path class="sm-edge" d="M840 744 H960" />
+
+          <!-- mastra to sqlite, right corridor -->
+          <path
+            class="sm-edge"
+            d="M460 385 C980 385, 1510 390, 1510 520 V830 C1510 870, 1220 850, 1220 892"
+          />
+
+          <!-- implementation traffic crosses the provider lane on a visible overpass -->
+          <path class="sm-edge-halo" d="M960 336 C960 430, 780 450, 780 532" />
+          <path class="sm-edge" d="M960 336 C960 430, 780 450, 780 532" />
+
+          <!-- gauntlet fail back to orchestrator, left gutter -->
+          <path
+            class="sm-edge"
+            d="M560 744 C88 744, 72 430, 72 300 C72 268, 120 262, 140 280"
+          />
+
+          <!-- persistence and output routes -->
+          <path class="sm-edge" d="M140 400 C96 400, 96 820, 180 900" />
+          <path class="sm-edge" d="M820 788 C860 806, 880 838, 880 892" />
+
+          <!-- labels -->
+          <g>
+            <rect
+              class="sm-pill"
+              x="246"
+              y="184"
+              width="48"
+              height="20"
+              rx="4"
+            />
+            <text class="sm-pill-text" x="270" y="198" text-anchor="middle">
+              brief
+            </text>
+          </g>
+          <g>
+            <rect
+              class="sm-pill"
+              x="548"
+              y="184"
+              width="68"
+              height="20"
+              rx="4"
+            />
+            <text class="sm-pill-text" x="582" y="198" text-anchor="middle">
+              approval
+            </text>
+          </g>
+          <g>
+            <rect
+              class="sm-pill"
+              x="900"
+              y="184"
+              width="40"
+              height="20"
+              rx="4"
+            />
+            <text class="sm-pill-text" x="920" y="198" text-anchor="middle">
+              refs
+            </text>
+          </g>
+          <g>
+            <rect
+              class="sm-pill"
+              x="246"
+              y="476"
+              width="108"
+              height="20"
+              rx="4"
+            />
+            <text class="sm-pill-text" x="300" y="490" text-anchor="middle">
+              specialist loop
+            </text>
+          </g>
+          <g>
+            <rect
+              class="sm-pill"
+              x="566"
+              y="282"
+              width="104"
+              height="20"
+              rx="4"
+            />
+            <text class="sm-pill-text" x="618" y="296" text-anchor="middle">
+              bounded tasks
+            </text>
+          </g>
+          <g>
+            <rect
+              class="sm-pill"
+              x="446"
+              y="556"
+              width="148"
+              height="20"
+              rx="4"
+            />
+            <text class="sm-pill-text" x="520" y="570" text-anchor="middle">
+              approved ground truth
+            </text>
+          </g>
+          <g>
+            <rect
+              class="sm-pill"
+              x="486"
+              y="628"
+              width="68"
+              height="20"
+              rx="4"
+            />
+            <text class="sm-pill-text" x="520" y="642" text-anchor="middle">
+              rejected
+            </text>
+          </g>
+          <g>
+            <rect
+              class="sm-pill"
+              x="672"
+              y="650"
+              width="76"
+              height="20"
+              rx="4"
+            />
+            <text class="sm-pill-text" x="710" y="664" text-anchor="middle">
+              every build
+            </text>
+          </g>
+          <g>
+            <rect
+              class="sm-pill"
+              x="612"
+              y="848"
+              width="56"
+              height="20"
+              rx="4"
+            />
+            <text class="sm-pill-text" x="640" y="862" text-anchor="middle">
+              passed
+            </text>
+          </g>
+          <g>
+            <rect
+              class="sm-pill"
+              x="56"
+              y="456"
+              width="132"
+              height="20"
+              rx="4"
+            />
+            <text class="sm-pill-text" x="122" y="470" text-anchor="middle">
+              failed → re-diagnose
+            </text>
+          </g>
+          <g>
+            <rect
+              class="sm-pill"
+              x="56"
+              y="760"
+              width="84"
+              height="20"
+              rx="4"
+            />
+            <text class="sm-pill-text" x="98" y="774" text-anchor="middle">
+              live events
+            </text>
+          </g>
+          <g>
+            <rect
+              class="sm-pill"
+              x="1458"
+              y="560"
+              width="96"
+              height="20"
+              rx="4"
+            />
+            <text class="sm-pill-text" x="1506" y="574" text-anchor="middle">
+              checkpoints
+            </text>
+          </g>
+          <g>
+            <rect
+              class="sm-pill"
+              x="846"
+              y="812"
+              width="68"
+              height="20"
+              rx="4"
+            />
+            <text class="sm-pill-text" x="880" y="826" text-anchor="middle">
+              evidence
+            </text>
+          </g>
+          <g>
+            <rect
+              class="sm-pill"
+              x="790"
+              y="632"
+              width="136"
+              height="20"
+              rx="4"
+            />
+            <text class="sm-pill-text" x="858" y="646" text-anchor="middle">
+              durable submissions
+            </text>
+          </g>
+          <g>
+            <rect
+              class="sm-pill"
+              x="850"
+              y="714"
+              width="96"
+              height="20"
+              rx="4"
+            />
+            <text class="sm-pill-text" x="898" y="728" text-anchor="middle">
+              vision eval
+            </text>
+          </g>
+        </svg>
+      </section>
+
+      <footer>
+        Sources: VISION.md · ARCHITECTURE.md §9 · ARCHITECTURE.md §12–14 ·
+        PRODUCT_SPEC.md §5–6 · ROADMAP.md M2–M7 · generated 2026-08-22 · updated
+        2026-08-24
+      </footer>
+    </main>
+  </body>
 </html>

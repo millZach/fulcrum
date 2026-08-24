@@ -36,6 +36,46 @@ export type StudioErrorView = {
   budgetRefused: boolean;
 };
 
+export type ConceptReviewViewState = {
+  projectId: string | undefined;
+  conceptSetRevisionId: string | undefined;
+  inspectingSlotId: string | undefined;
+  viewedRevisionId: string | undefined;
+  regenNotes: string;
+};
+
+export const initialConceptReviewViewState = (): ConceptReviewViewState => ({
+  projectId: undefined,
+  conceptSetRevisionId: undefined,
+  inspectingSlotId: undefined,
+  viewedRevisionId: undefined,
+  regenNotes: "",
+});
+
+/** Keep the concept review's browser-owned state in sync with the loaded
+ * project. Snapshot refreshes may advance the set revision, but only a project
+ * switch starts a fresh review. */
+export const reconcileConceptReviewView = (
+  current: ConceptReviewViewState,
+  snapshot: {
+    state: Pick<ProjectSnapshot["state"], "projectId" | "conceptSet">;
+  } | null,
+): ConceptReviewViewState => {
+  const projectId = snapshot?.state.projectId;
+  const conceptSetRevisionId = snapshot?.state.conceptSet?.revisionId;
+  if (current.projectId === projectId)
+    return current.conceptSetRevisionId === conceptSetRevisionId
+      ? current
+      : { ...current, conceptSetRevisionId };
+  return {
+    projectId,
+    conceptSetRevisionId,
+    inspectingSlotId: undefined,
+    viewedRevisionId: undefined,
+    regenNotes: "",
+  };
+};
+
 export type HotbarSlot = {
   key: "pitch" | "brief" | "style" | "images" | "sounds";
   label: string;

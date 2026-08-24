@@ -12,11 +12,13 @@ import {
   firstOpenSlotId,
   formatElapsed,
   hotbarForSnapshot,
+  initialConceptReviewViewState,
   liveGeneratingCopy,
   mascotForSnapshot,
   modelWaitForSnapshot,
   modelWaitForWorking,
   recordedAnswers,
+  reconcileConceptReviewView,
   routingCostNote,
   screenForSnapshot,
   showsMeteredBudget,
@@ -66,6 +68,75 @@ const baseState = {
 };
 
 describe("M1 snapshot adapter", () => {
+  it("keeps the regenerated slot and new revision when a fresh snapshot advances the concept set", () => {
+    const current = {
+      ...initialConceptReviewViewState(),
+      projectId: "p1",
+      conceptSetRevisionId: "concept-set-r01",
+      inspectingSlotId: "player-or-threat",
+      viewedRevisionId: "player-or-threat-r02",
+      regenNotes: "Make the threat read more clearly.",
+    };
+
+    expect(
+      reconcileConceptReviewView(current, {
+        state: {
+          projectId: "p1",
+          conceptSet: {
+            entityId: "concept-set",
+            revisionId: "concept-set-r02",
+            kind: "concept-set",
+            artifact: {
+              artifactId: "concept-set-artifact",
+              sha256: sha("c"),
+              mediaType: "application/json",
+              byteLength: 12,
+              uri: "/api/artifacts/concept-set-artifact",
+            },
+            createdAt: "2026-08-24T00:00:00.000Z",
+            createdByRunId: "run-1",
+          },
+        },
+      }),
+    ).toEqual({
+      ...current,
+      conceptSetRevisionId: "concept-set-r02",
+    });
+  });
+
+  it("keeps concept review state when a poll reapplies the current snapshot", () => {
+    const current = {
+      ...initialConceptReviewViewState(),
+      projectId: "p1",
+      conceptSetRevisionId: "concept-set-r01",
+      inspectingSlotId: "player-or-threat",
+      viewedRevisionId: "player-or-threat-r01",
+      regenNotes: "A draft note that the poll must not erase.",
+    };
+
+    expect(
+      reconcileConceptReviewView(current, {
+        state: {
+          projectId: "p1",
+          conceptSet: {
+            entityId: "concept-set",
+            revisionId: "concept-set-r01",
+            kind: "concept-set",
+            artifact: {
+              artifactId: "concept-set-artifact",
+              sha256: sha("c"),
+              mediaType: "application/json",
+              byteLength: 12,
+              uri: "/api/artifacts/concept-set-artifact",
+            },
+            createdAt: "2026-08-24T00:00:00.000Z",
+            createdByRunId: "run-1",
+          },
+        },
+      }),
+    ).toBe(current);
+  });
+
   it("maps coordinator stages onto studio screens", () => {
     expect(
       screenForSnapshot({

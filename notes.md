@@ -1,5 +1,9 @@
 # Fulcrum
 
+## 2026-08-24: A fresh snapshot rewound the screen after a paid regeneration
+
+I reproduced the slot jump with a 6,000 ms replay regeneration: the POST returned slot 02 r02, then an effect keyed to the new concept-set revision cleared the browser selection and exposed slot 01 r01. I made review state project-scoped, moved intentional form cleanup into the actions that own it, and found the same poll-triggered reset pattern in interrogation drafts, visual-direction notes, and sound notes; slot 02 r02 now survives the response and six 2.5-second poll intervals.
+
 ## 2026-08-24: Subscription ImageGen was charging a fictional penny
 
 I traced every $0.01 subscription image charge to a fixed bookkeeping reserve, not provider usage: the runner returned $0.00, but the durable image path reserved one cent and copied that reserve into every cost record. I removed subscription routes from budget mechanics, kept the API and ElevenLabs caps intact, and added typed 429/quota warnings as the honest usage brake.

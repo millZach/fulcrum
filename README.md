@@ -15,19 +15,11 @@ The initial north star is to transform a detailed natural-language brief into a 
 - Use deterministic evaluation for measurable facts and visual models for semantic judgment.
 - Preserve best-known states and make every important decision traceable.
 
-## First proof
+## The workflow
 
-```text
-game brief
-    ↓
-visual bible
-    ↓
-approved concept image
-    ↓
-generated and validated 3D asset
-    ↓
-coherent Three.js scene
-```
+The completed production workflow Fulcrum is building toward:
+
+![Fulcrum production workflow — inputs through the orchestrator, per-project production and the Gauntlet loop, out to a playable slice](docs/game-dev-workflow-final.png)
 
 Fulcrum completed its first live M0 acceptance run on 2026-08-18. The OpenAI subscription and Meshy path carried one immutable lineage from brief through two human approvals, a generated GLB, deterministic QA, a Three.js review, and a stored review image. The deterministic replay path remains the offline development and CI route; Tripo is available as an alternate 3D adapter. See the [M0 live acceptance report](milestones/M0_REPORT.md) for evidence and accepted limitations.
 

@@ -48,6 +48,7 @@ import {
   formatElapsed,
   formatUsd,
   hotbarForSnapshot,
+  initialConceptReviewViewState,
   liveGeneratingCopy,
   liveSoundGeneratingCopy,
   mascotForSnapshot,
@@ -55,6 +56,7 @@ import {
   modelWaitForWorking,
   projectTitle,
   recordedAnswers,
+  reconcileConceptReviewView,
   routingCostNote,
   screenForSnapshot,
   selectedDirection,
@@ -348,9 +350,9 @@ export function M1Studio() {
   const [directionPanel, setDirectionPanel] = useState<
     "none" | "replace" | "change"
   >("none");
-  const [inspectingSlotId, setInspectingSlotId] = useState<string>();
-  const [viewedRevisionId, setViewedRevisionId] = useState<string>();
-  const [regenNotes, setRegenNotes] = useState("");
+  const [conceptReviewView, setConceptReviewView] = useState(
+    initialConceptReviewViewState,
+  );
   const [pendingAction, setPendingAction] = useState<PendingStudioAction>();
   const [raiseDraft, setRaiseDraft] = useState(2);
   const [shown, setShown] = useState(0);
@@ -485,6 +487,18 @@ export function M1Studio() {
     const frontier = project?.interrogation?.frontier ?? [];
     const revision = project?.state.interrogation?.revisionId;
     if (!revision) return;
+    setDrafts((current) =>
+      Object.fromEntries(
+        frontier.map((question) => [
+          question.questionId,
+          current[question.questionId] ?? question.recommendation,
+        ]),
+      ),
+    );
+  }, [project?.state.interrogation?.revisionId]);
+
+  useEffect(() => {
+    const frontier = project?.interrogation?.frontier ?? [];
     setDrafts(
       Object.fromEntries(
         frontier.map((question) => [
@@ -493,24 +507,18 @@ export function M1Studio() {
         ]),
       ),
     );
-  }, [project?.state.interrogation?.revisionId]);
-
-  useEffect(() => {
     setViewedDirectionId(project?.state.selectedVisualDirectionRevisionId);
     setDirectionPanel("none");
     setReplaceNotes("");
     setChangeText("");
-  }, [project?.state.visualDirectionSet?.revisionId]);
-
-  useEffect(() => {
-    setInspectingSlotId(undefined);
-    setViewedRevisionId(undefined);
-    setRegenNotes("");
-  }, [project?.state.conceptSet?.revisionId]);
-
-  useEffect(() => {
     setSoundRegenNotes({});
-  }, [project?.state.soundSet?.revisionId]);
+  }, [project?.state.projectId]);
+
+  useEffect(() => {
+    setConceptReviewView((current) =>
+      reconcileConceptReviewView(current, project),
+    );
+  }, [project]);
 
   const snapshotWait = project ? modelWaitForSnapshot(project) : undefined;
   const effectiveWorking = working || snapshotWait?.action || "";
@@ -531,6 +539,19 @@ export function M1Studio() {
   const round = project ? currentRound(project) : undefined;
   const answers = project ? recordedAnswers(project) : [];
   const slots = project?.conceptSet?.slots ?? [];
+  const { inspectingSlotId, regenNotes, viewedRevisionId } = conceptReviewView;
+  const setInspectingSlotId = (slotId: string | undefined) =>
+    setConceptReviewView((current) => ({
+      ...current,
+      inspectingSlotId: slotId,
+    }));
+  const setViewedRevisionId = (revisionId: string | undefined) =>
+    setConceptReviewView((current) => ({
+      ...current,
+      viewedRevisionId: revisionId,
+    }));
+  const setRegenNotes = (notes: string) =>
+    setConceptReviewView((current) => ({ ...current, regenNotes: notes }));
   const activeSlotId =
     inspectingSlotId ?? (project ? firstOpenSlotId(project) : undefined);
   const activeSlot = slots.find((slot) => slot.slotId === activeSlotId);
@@ -736,13 +757,17 @@ export function M1Studio() {
       !replaceNotes.trim()
     )
       return;
-    await mutate("replace", () =>
+    const next = await mutate("replace", () =>
       m1.replaceDirection(project.state.projectId, {
         directionSetRevisionId: project.state.visualDirectionSet!.revisionId,
         directionRevisionId: direction.revisionId,
         notes: replaceNotes.trim(),
       }),
     );
+    if (next) {
+      setDirectionPanel("none");
+      setReplaceNotes("");
+    }
   };
 
   const submitChange = async () => {
@@ -753,7 +778,7 @@ export function M1Studio() {
       pinnedAspects.length === 0
     )
       return;
-    await mutate("change", () =>
+    const next = await mutate("change", () =>
       m1.changeDirection(project.state.projectId, {
         directionSetRevisionId: project.state.visualDirectionSet!.revisionId,
         directionRevisionId: direction.revisionId,
@@ -761,6 +786,11 @@ export function M1Studio() {
         pinnedAspects,
       }),
     );
+    if (next) {
+      setViewedDirectionId(next.state.selectedVisualDirectionRevisionId);
+      setDirectionPanel("none");
+      setChangeText("");
+    }
   };
 
   const submitConceptPlan = async (
@@ -1238,11 +1268,28 @@ export function M1Studio() {
           </span>
         </div>
         <div className="vx-plaque">
-          <small>
-            {project
-              ? `${project.state.mode.toUpperCase()} · ${project.state.stage} · ORCH ${executionProviderLabels[project.state.orchestratorProvider]} · IMPL ${executionProviderLabels[project.state.implementationProvider]} · IMAGE ${imageProviderLabels[project.state.imageProvider]}`
-              : "WORLD SLOT 01"}
-          </small>
+          {project ? (
+            <small
+              aria-label={`${project.state.mode.toUpperCase()} · ${project.state.stage} · ORCH ${executionProviderLabels[project.state.orchestratorProvider]} · IMPL ${executionProviderLabels[project.state.implementationProvider]} · IMAGE ${imageProviderLabels[project.state.imageProvider]}`}
+              className="vx-route-label"
+            >
+              <span>{project.state.mode.toUpperCase()}</span>
+              <span>· {project.state.stage}</span>
+              <span>
+                · ORCH{" "}
+                {executionProviderLabels[project.state.orchestratorProvider]}
+              </span>
+              <span className="vx-route-implementation">
+                · IMPL{" "}
+                {executionProviderLabels[project.state.implementationProvider]}
+              </span>
+              <span className="vx-route-image">
+                · IMAGE {imageProviderLabels[project.state.imageProvider]}
+              </span>
+            </small>
+          ) : (
+            <small>WORLD SLOT 01</small>
+          )}
           <strong>
             {title.length > 62 ? `${title.slice(0, 62)}…` : title}
           </strong>
