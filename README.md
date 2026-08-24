@@ -1,4 +1,6 @@
 # Fulcrum
+<img width="1600" height="1200" alt="image" src="https://github.com/user-attachments/assets/85c35127-fe15-4b53-9f7c-b4e943609e81" />
+
 
 **From creative intent to playable worlds.**
 
