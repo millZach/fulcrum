@@ -1,6 +1,6 @@
 # Fulcrum
-<img width="1600" height="1200" alt="image" src="https://github.com/user-attachments/assets/85c35127-fe15-4b53-9f7c-b4e943609e81" />
 
+![Fulcrum production workflow — inputs through the orchestrator, per-project production and the Gauntlet loop, out to a playable slice](docs/game-dev-workflow-final.png)
 
 **From creative intent to playable worlds.**
 
@@ -19,9 +19,7 @@ The initial north star is to transform a detailed natural-language brief into a 
 
 ## The workflow
 
-The completed production workflow Fulcrum is building toward:
-
-![Fulcrum production workflow — inputs through the orchestrator, per-project production and the Gauntlet loop, out to a playable slice](docs/game-dev-workflow-final.png)
+The diagram above is the completed production workflow Fulcrum is building toward — every milestone from [the roadmap](ROADMAP.md) deepens a working slice of it.
 
 Fulcrum completed its first live M0 acceptance run on 2026-08-18. The OpenAI subscription and Meshy path carried one immutable lineage from brief through two human approvals, a generated GLB, deterministic QA, a Three.js review, and a stored review image. The deterministic replay path remains the offline development and CI route; Tripo is available as an alternate 3D adapter. See the [M0 live acceptance report](milestones/M0_REPORT.md) for evidence and accepted limitations.
 
