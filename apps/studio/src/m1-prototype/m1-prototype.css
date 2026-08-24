@@ -11777,6 +11777,12 @@ button.rr-card:hover {
 .variant-b-voxel.m1-studio .vx-topbar {
   grid-template-columns: 240px minmax(0, 1fr) auto;
 }
+.variant-b-voxel.m1-studio .vx-plaque small {
+  overflow: hidden;
+  max-width: 100%;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 /* The World Forge shell is 100vh / overflow:hidden. Prototype screens each
    own an inner scroller; studio screens did not, so anything taller than the
    middle track was clipped with no way to reach it. Make the stage the
@@ -11924,6 +11930,47 @@ button.rr-card:hover {
   gap: 10px;
   align-items: center;
 }
+.variant-b-voxel.m1-studio .vx-error-recoverable {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+.variant-b-voxel.m1-studio .vx-error-copy {
+  flex: 1;
+  min-width: 0;
+}
+.variant-b-voxel.m1-studio .vx-error-copy small {
+  display: block;
+  margin-top: 7px;
+  color: var(--muted);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+.variant-b-voxel.m1-studio .vx-error-dismiss {
+  flex: 0 0 auto;
+  min-width: 104px;
+}
+.variant-b-voxel.m1-studio .vx-error-notice {
+  border-color: var(--teal-deep);
+  color: var(--ink);
+  background: #f1fbf8;
+  box-shadow: 4px 4px 0 color-mix(in srgb, var(--teal) 35%, transparent);
+}
+.variant-b-voxel.m1-studio .vx-error-warning {
+  border-color: #bb7829;
+  color: #76501f;
+  background: #fff8e8;
+  box-shadow: 4px 4px 0 rgba(187, 120, 41, 0.2);
+}
+@media (max-width: 680px) {
+  .variant-b-voxel.m1-studio .vx-error-recoverable {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+  }
+}
 
 .variant-b-voxel.m1-studio .vx-mode-row {
   display: grid;
@@ -11952,6 +11999,72 @@ button.rr-card:hover {
   color: var(--muted);
   font-family: "Fulcrum Mono", monospace;
   font-size: 10px;
+}
+.variant-b-voxel.m1-studio .vx-model-routing {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  border-top: 2px solid var(--ink-22);
+  padding-top: 10px;
+}
+.variant-b-voxel.m1-studio .vx-routing-heading {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.variant-b-voxel.m1-studio .vx-routing-heading strong,
+.variant-b-voxel.m1-studio .vx-model-routing label > span {
+  color: var(--ink);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.variant-b-voxel.m1-studio .vx-routing-heading small,
+.variant-b-voxel.m1-studio .vx-model-routing label > small {
+  color: var(--muted);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 9px;
+  line-height: 1.35;
+}
+.variant-b-voxel.m1-studio .vx-model-routing label {
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  align-content: start;
+  gap: 5px;
+  min-width: 0;
+  border: 2px solid var(--ink-22);
+  border-radius: 5px;
+  padding: 9px;
+  background: #fffdf7;
+}
+.variant-b-voxel.m1-studio .vx-model-routing select {
+  min-width: 0;
+  width: 100%;
+  border: 2px solid var(--ink);
+  border-radius: 4px;
+  padding: 7px 24px 7px 8px;
+  color: var(--ink);
+  background: var(--paper-2);
+  font-family: "Fulcrum Text", sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+}
+.variant-b-voxel.m1-studio .vx-model-routing select:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
+}
+.variant-b-voxel.m1-studio .vx-model-routing select:disabled {
+  border-color: var(--ink-22);
+  color: var(--ink-45);
+  background: var(--paper-3);
+  cursor: not-allowed;
+}
+.variant-b-voxel.m1-studio .vx-model-routing label > small.ready {
+  color: var(--teal-deep);
 }
 .variant-b-voxel.m1-studio .vx-budget-field,
 .variant-b-voxel.m1-studio .vx-rights {
@@ -11992,6 +12105,14 @@ button.rr-card:hover {
   letter-spacing: 0;
   text-transform: none;
   font-weight: 500;
+}
+.variant-b-voxel.m1-studio .vx-routing-cost-note {
+  margin: 0;
+  color: var(--muted);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
 }
 
 .variant-b-voxel.m1-studio .vx-project-list {
@@ -12095,24 +12216,39 @@ button.rr-card:hover {
   background: #fffdf7;
 }
 
+/* Game Design Spec: a full-screen reading layout. No world panel, no Rusty
+   (data-mascot="off") — one generous centered column, and the decision row
+   pinned inside the card so Approve never needs a scroll hunt. */
 .variant-b-voxel.m1-studio .vx-gds-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 640px);
-  gap: 24px;
-  align-items: start;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  align-content: center;
   min-width: 0;
 }
 .variant-b-voxel.m1-studio .vx-gds {
   display: grid;
-  align-content: start;
-  gap: 16px;
-  overflow: auto;
+  grid-template-rows: auto minmax(0, max-content) auto;
+  gap: 18px;
+  overflow: hidden;
   min-width: 0;
+  width: min(100%, 880px);
+  max-height: calc(100vh - 194px);
   border: 3px solid var(--ink);
   border-radius: 8px;
   padding: 28px;
   background: var(--paper-2);
   box-shadow: 7px 7px 0 var(--ink-10);
+}
+.variant-b-voxel.m1-studio .vx-gds-body {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 8px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-22) transparent;
 }
 .variant-b-voxel.m1-studio .vx-gds h1 {
   font-size: 34px;
@@ -12158,6 +12294,8 @@ button.rr-card:hover {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 10px;
+  border-top: 2px solid var(--ink-22);
+  padding-top: 16px;
 }
 
 .variant-b-voxel.m1-studio .vx-swatches {
@@ -12214,33 +12352,67 @@ button.rr-card:hover {
 .variant-b-voxel.m1-studio .vx-rail-world {
   min-height: 160px;
 }
+.variant-b-voxel.m1-studio .vx-meter {
+  position: relative;
+  z-index: 3;
+  min-height: 28px;
+  align-content: end;
+  padding-top: 8px;
+  background: var(--paper-2);
+}
 
 @media (max-width: 980px) {
   .variant-b-voxel.m1-studio .vx-start,
   .variant-b-voxel.m1-studio .vx-understand,
   .variant-b-voxel.m1-studio .vx-signoff,
-  .variant-b-voxel.m1-studio .vx-gds-layout,
   .variant-b-voxel.m1-studio .vx-gds-lists {
     grid-template-columns: minmax(0, 1fr);
   }
 }
 
-/* Rusty sits in leftover paper, never on a control. He is position:absolute
-   on the 100vh shell (a sibling of the stage), so stage scroll does not
-   move or clip him. data-mascot=off keeps him mounted and seated.
+/* Rusty is anchored to the scene he is composed into, never to the viewport.
+   M1Studio mounts <MascotStage> INSIDE the .vx-stage scroller, so both free
+   parking and measured docks resolve in scrolled-content coordinates: when
+   the stage scrolls, he moves with his diorama like any other content and can
+   never detach from his perch. (The previous position:fixed free mode also
+   nulled offsetParent, which silently disabled every measured dock — capture,
+   panel and finale — across the whole studio.)
 
-   Home / shared-understanding / game-design have no data-mascot-frame (the
-   prototype only frames interrogation, look-dev, and the finale). Free-mode
-   parking therefore falls through to the prototype .vx-mascot[data-screen]
-   rules so he stays the small corner robot, not a full-column capture dock.
-
-   Frameless worlds size to the prototype's stage fill (100vh − topbar 62 −
-   hotbar 88 − stage padding 44) so .vx-world keeps its aspect instead of
-   being squashed by a 1fr leftover row. The resume list stacks under the
-   home world and the stage scroller takes the overflow. */
+   Studio screens dock him to a scene wherever one exists:
+   - interrogation → the build log's capture window (data-mascot-frame on
+     .vx-rail-world), scaled to the diorama's own block unit;
+   - visual-direction → the "your world in …" shelf (.vx-restyle);
+   - complete → the finished world (.vx-finale), where he plants the flag;
+   - concept-plan / sound-plan / package / sound-review → a .vx-mascot-perch
+     box hung in the card's header band, so he sits with the card at every
+     width instead of floating over its content.
+   Home and the two sign-off screens keep the big free-mode workshop composed
+   over their world panels; their geometry below is restated relative to the
+   stage box (stage bottom = hotbar top, so prototype bottoms lose the 88px
+   hotbar allowance). */
 .variant-b-voxel.m1-studio[data-mascot="off"] .vx-mascot {
   opacity: 0;
   visibility: hidden;
+}
+/* The prototype's --vx-gutter assumes the 1640px content cap at every width,
+   but the stage only caps content at 1640px from 1800px up — between 1500
+   and 1799px it caps at 1450px (the large-viewport padding rules) — so a
+   gutter-anchored box sat up to ~95px past its panel's right border there
+   (filmed as Rusty's block pile poking out of the pitch panel at 1700px).
+   Restate the studio gutter to match the stage's actual padding steps. */
+.variant-b-voxel.m1-studio .vx-mascot {
+  --vx-gutter: 26px;
+  bottom: 12px;
+}
+@media (min-width: 1500px) {
+  .variant-b-voxel.m1-studio .vx-mascot {
+    --vx-gutter: max(26px, calc((100vw - 1450px) / 2));
+  }
+}
+@media (min-width: 1800px) {
+  .variant-b-voxel.m1-studio .vx-mascot {
+    --vx-gutter: max(26px, calc((100vw - 1640px) / 2));
+  }
 }
 .variant-b-voxel.m1-studio .vx-start {
   align-items: start;
@@ -12259,28 +12431,49 @@ button.rr-card:hover {
   min-height: 0;
 }
 .variant-b-voxel.m1-studio .vx-home-side .vx-start-world,
-.variant-b-voxel.m1-studio .vx-signoff-world,
-.variant-b-voxel.m1-studio .vx-gds-layout .vx-signoff-world {
+.variant-b-voxel.m1-studio .vx-signoff-world {
   height: calc(100vh - 194px);
   min-height: calc(100vh - 194px);
 }
+/* Home: the big workshop composed over the world panel, exactly the pitch
+   composition — restated stage-relative (heights are % of the stage box, which
+   is ~84% of the viewport, hence 55% ≈ the prototype's 46%). */
+.variant-b-voxel.m1-studio .vx-mascot[data-screen="start"] {
+  right: calc(var(--vx-gutter) + 6px);
+  bottom: 8px;
+  width: min(36vw, 560px);
+  height: min(55%, 452px);
+}
+/* Sign-off / game-design: composed over the left world panel. */
+.variant-b-voxel.m1-studio .vx-mascot[data-screen="signoff"] {
+  right: 41%;
+  bottom: 11px;
+  width: min(36vw, 600px);
+  height: min(55%, 480px);
+}
+/* (The game-design screen used to pin the free-mode workshop beside its
+   640px spec column; the spec is a full-width reading layout with Rusty
+   hidden now, so that pin is gone.) */
+/* The rules below are fallbacks only: on these screens a measured dock
+   (capture window, restyle shelf, header perch, finale world) normally takes
+   over with inline geometry. */
 .variant-b-voxel.m1-studio .vx-mascot[data-screen="question"] {
   right: auto;
   left: calc(var(--vx-gutter) + 12px);
-  bottom: 108px;
+  bottom: 20px;
   width: min(18vw, 260px);
   height: min(28%, 220px);
 }
 .variant-b-voxel.m1-studio .vx-mascot[data-screen="direction"] {
   right: auto;
   left: calc(var(--vx-gutter) + 24px);
-  bottom: 196px;
+  bottom: 108px;
   width: min(16vw, 240px);
   height: min(22%, 180px);
 }
 .variant-b-voxel.m1-studio .vx-mascot[data-screen="package"] {
   right: calc(var(--vx-gutter) + 6px);
-  bottom: calc(100% - 176px);
+  bottom: calc(100% - 140px);
   width: min(22vw, 280px);
   height: 96px;
 }
@@ -12288,9 +12481,60 @@ button.rr-card:hover {
   .vx-mascot[data-screen="concepts"] {
   right: auto;
   left: 22px;
-  bottom: 100px;
+  bottom: 12px;
   width: min(16vw, 260px);
   height: min(26%, 200px);
+}
+
+/* Facing: he looks toward the content he is beside. Left-parked free screens
+   mirror the whole workshop so he reads facing right, into the page. Docked
+   modes are never mirrored — their block flights are aimed in canvas pixels
+   and a mirror would flip the aim. */
+.variant-b-voxel.m1-studio
+  .vx-mascot[data-dock="free"][data-screen="signoff"]
+  canvas,
+.variant-b-voxel.m1-studio
+  .vx-mascot[data-dock="free"][data-screen="question"]
+  canvas,
+.variant-b-voxel.m1-studio
+  .vx-mascot[data-dock="free"][data-screen="concepts"]
+  canvas {
+  transform: scaleX(-1);
+}
+
+/* The perch: an empty box hung in a card's header band. MascotStage measures
+   it (data-mascot-frame="perch") and fits the whole workshop inside, so he
+   sits beside the card's title, scaled to the band, and moves with the card. */
+.variant-b-voxel.m1-studio .voxel-concept-host .concept-plan-review > header,
+.variant-b-voxel.m1-studio .voxel-concept-host .sound-playback-review > header,
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .concept-package-review
+  > header {
+  position: relative;
+}
+.variant-b-voxel.m1-studio .vx-mascot-perch {
+  position: absolute;
+  top: 0;
+  right: 8px;
+  bottom: 2px;
+  width: min(24vw, 360px);
+  /* Thin header bands (the package screen's) would shrink him to a squint;
+     the band below every header leaves at least this much clear paper. */
+  min-height: 84px;
+  pointer-events: none;
+}
+
+/* The spec/brief column moves in with the viewport while a right-anchored box
+   does not, so below the layout's 1640px cap he is pinned off the world
+   panel's left edge instead — the whole canvas stays over his own scene. */
+@media (max-width: 1639px) {
+  .variant-b-voxel.m1-studio .vx-mascot[data-screen="signoff"] {
+    right: auto;
+    left: 23%;
+    width: min(30vw, 480px);
+    height: min(50%, 413px);
+  }
 }
 
 @media (max-width: 1599px) {
@@ -12302,26 +12546,407 @@ button.rr-card:hover {
     height: min(22%, 160px);
   }
   .variant-b-voxel.m1-studio .vx-mascot[data-screen="direction"] {
-    bottom: 188px;
+    bottom: 100px;
     width: min(14vw, 180px);
     height: min(18%, 140px);
   }
   .variant-b-voxel.m1-studio:has(.concept-plan-review)
     .vx-mascot[data-screen="concepts"] {
     left: 18px;
-    bottom: 96px;
+    bottom: 8px;
     width: min(16vw, 180px);
     height: 110px;
-  }
-  .variant-b-voxel.m1-studio .voxel-concept-host .concept-plan-review {
-    padding-bottom: 132px;
   }
 }
 
 @media (max-width: 1365px) {
+  .variant-b-voxel.m1-studio .vx-mascot[data-screen="signoff"] {
+    left: 18%;
+    width: min(26vw, 340px);
+    height: min(44%, 330px);
+  }
   .variant-b-voxel.m1-studio:has(.concept-plan-review)
     .vx-mascot[data-screen="concepts"] {
     height: 88px;
     width: min(16vw, 150px);
   }
+  .variant-b-voxel.m1-studio .vx-mascot-perch {
+    width: min(20vw, 280px);
+  }
+}
+
+/* Task J — editable ImageGen prompt on the concept plan, exact prompt on
+   review. Scoped to studio so the prototype plan screen stays untouched. */
+.variant-b-voxel.m1-studio .voxel-concept-host .concept-plan-list {
+  grid-template-columns: minmax(0, 1fr);
+}
+.variant-b-voxel.m1-studio .voxel-concept-host .concept-plan-list article {
+  min-width: 0;
+  overflow: hidden;
+}
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .concept-plan-list
+  article
+  > span {
+  min-width: 0;
+}
+.variant-b-voxel.m1-studio .voxel-concept-host .slot-prompt {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 8px;
+}
+.variant-b-voxel.m1-studio .voxel-concept-host .slot-prompt > span {
+  color: var(--ink-70);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.variant-b-voxel.m1-studio .voxel-concept-host .slot-prompt textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 4.5rem;
+  max-height: 12rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+  resize: none;
+  field-sizing: content;
+  border: 1px solid var(--ink-22);
+  border-radius: 3px;
+  padding: 8px 10px;
+  color: var(--ink);
+  background: #f3efe4;
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.variant-b-voxel.m1-studio .voxel-concept-host .slot-prompt textarea:focus {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
+  border-color: var(--ink);
+}
+.variant-b-voxel.m1-studio .voxel-concept-host .slot-prompt-reset {
+  justify-self: start;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: var(--ink-70);
+  background: transparent;
+  cursor: pointer;
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.variant-b-voxel.m1-studio .voxel-concept-host .slot-prompt-reset:hover {
+  color: var(--ink);
+}
+.variant-b-voxel.m1-studio .voxel-concept-host .exact-prompt-sent {
+  min-width: 0;
+  border: 2px solid var(--ink-22);
+  border-radius: 5px;
+  padding: 8px 10px;
+  background: #fffdf7;
+}
+.variant-b-voxel.m1-studio .voxel-concept-host .exact-prompt-sent summary {
+  cursor: pointer;
+  color: var(--teal-deep);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.variant-b-voxel.m1-studio .voxel-concept-host .exact-prompt-sent pre {
+  margin: 8px 0 0;
+  max-height: 12rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  color: var(--ink);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.variant-b-voxel.m1-studio .vx-frontier-card h2 {
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 42rem;
+}
+.variant-b-voxel.m1-studio .vx-frontier-card .vx-tag {
+  overflow-wrap: anywhere;
+}
+.variant-b-voxel.m1-studio .vx-advisor p {
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
+/* Task M — sound palette stage. Studio-only; prototype screens stay untouched. */
+.variant-b-voxel.m1-studio .vx-hotbar {
+  gap: 6px;
+  padding: 0 16px;
+}
+.variant-b-voxel.m1-studio .vx-slot {
+  width: 132px;
+  min-width: 108px;
+  flex: 1 1 0;
+  padding: 0 8px 0 2px;
+}
+.variant-b-voxel.m1-studio .vx-sound-provider-row {
+  margin-top: 8px;
+}
+.variant-b-voxel.m1-studio .voxel-concept-host:has(.sound-plan-review),
+.variant-b-voxel.m1-studio .voxel-concept-host:has(.sound-playback-review) {
+  height: 100%;
+  min-height: 0;
+}
+.variant-b-voxel.m1-studio .voxel-concept-host .sound-plan-review,
+.variant-b-voxel.m1-studio .voxel-concept-host .sound-playback-review {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  align-self: stretch;
+  align-content: stretch;
+  gap: 12px;
+  min-height: 0;
+  height: 100%;
+  max-height: calc(100vh - 194px);
+  overflow: hidden;
+  padding: 18px 18px 10px;
+}
+.variant-b-voxel.m1-studio .sound-plan-review .concept-plan-list,
+.variant-b-voxel.m1-studio .sound-playback-list {
+  overflow: auto;
+  min-height: 0;
+  padding-right: 4px;
+  align-content: start;
+  grid-auto-rows: max-content;
+}
+.variant-b-voxel.m1-studio .sound-plan-review .concept-plan-list article {
+  overflow: visible;
+}
+.variant-b-voxel.m1-studio .sound-plan-review > footer,
+.variant-b-voxel.m1-studio .sound-playback-review > footer {
+  position: relative;
+  z-index: 2;
+  margin: 0 -4px;
+  padding: 8px 8px 4px;
+  background: #fbf8ef;
+  border-top: 2px solid var(--ink-22);
+}
+.variant-b-voxel.m1-studio .sound-playback-review > header .m1-kicker,
+.variant-b-voxel.m1-studio .sound-plan-review > header .m1-kicker {
+  color: var(--teal-deep);
+}
+.variant-b-voxel.m1-studio .sound-playback-review > header h1 {
+  margin: 4px 0 6px;
+  font-size: 26px;
+}
+.variant-b-voxel.m1-studio .sound-playback-review > header p {
+  max-width: 46rem;
+  color: var(--ink-70);
+}
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .sound-playback-review
+  > .sound-playback-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.variant-b-voxel.m1-studio .sound-playback-list article {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+  overflow: hidden;
+  border: 2px solid var(--ink-22);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: #fffdf7;
+}
+.variant-b-voxel.m1-studio .sound-playback-list article i {
+  color: var(--teal-deep);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 13px;
+  font-weight: 700;
+  font-style: normal;
+}
+.variant-b-voxel.m1-studio .sound-playback-list article > span {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.variant-b-voxel.m1-studio .sound-playback-list .slot-prompt textarea {
+  min-height: 2.4rem;
+  max-height: 2.8rem;
+}
+.variant-b-voxel.m1-studio .sound-playback-list small {
+  color: var(--ink-70);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.variant-b-voxel.m1-studio .sound-playback-list strong {
+  font-size: 16px;
+}
+.variant-b-voxel.m1-studio .sound-playback-list audio {
+  display: block;
+  width: 100%;
+  max-width: 36rem;
+  height: 36px;
+}
+.variant-b-voxel.m1-studio .sound-playback-list .m1-secondary {
+  justify-self: start;
+}
+.variant-b-voxel.m1-studio .sound-playback-review > footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding-top: 8px;
+}
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .sound-plan-review
+  .concept-plan-list
+  article
+  p {
+  color: var(--ink-70);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 11px;
+}
+.variant-b-voxel.m1-studio .sound-plan-review .slot-prompt textarea {
+  min-height: 3.2rem;
+  max-height: 7rem;
+}
+
+/* ---------- "the forge is thinking" — live model-wait banner ----------
+   Pinned to the top of the stage while an awaited model call is in flight
+   (interrogation rounds, the Game Design Spec, visual directions…). Reveals
+   itself only after ~0.35 s so replay's instant transitions never flash it. */
+.variant-b-voxel.m1-studio .vx-thinking {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 14px;
+  border: 3px solid var(--ink);
+  border-radius: 7px;
+  padding: 14px 20px;
+  background: var(--paper-2);
+  box-shadow: 5px 5px 0 var(--teal);
+  opacity: 0;
+  animation: vx-thinking-in 0.4s cubic-bezier(0.22, 0.9, 0.3, 1) 0.35s forwards;
+}
+.variant-b-voxel.m1-studio .vx-thinking-blocks {
+  display: flex;
+  gap: 11px;
+  padding: 8px 6px 2px;
+}
+.variant-b-voxel.m1-studio .vx-thinking-blocks .vx-cube {
+  --c: 15px;
+  /* `translate`, not `transform`: the cube's own isometric transform must
+     survive the march. */
+  animation: vx-thinking-march 1.6s ease-in-out infinite;
+}
+.variant-b-voxel.m1-studio .vx-thinking-blocks .vx-cube:nth-child(2) {
+  animation-delay: 0.16s;
+}
+.variant-b-voxel.m1-studio .vx-thinking-blocks .vx-cube:nth-child(3) {
+  animation-delay: 0.32s;
+}
+.variant-b-voxel.m1-studio .vx-thinking-blocks .vx-cube:nth-child(4) {
+  animation-delay: 0.48s;
+}
+.variant-b-voxel.m1-studio .vx-thinking-copy {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+  min-width: 0;
+}
+.variant-b-voxel.m1-studio .vx-thinking-copy strong {
+  font-size: 17px;
+  line-height: 1.2;
+}
+.variant-b-voxel.m1-studio .vx-thinking-copy small {
+  color: var(--muted);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.variant-b-voxel.m1-studio .vx-thinking-clock {
+  border: 2px solid var(--ink-22);
+  border-radius: 5px;
+  padding: 7px 12px;
+  color: var(--teal-deep);
+  background: #fffdf7;
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 17px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+@keyframes vx-thinking-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes vx-thinking-march {
+  0%,
+  55%,
+  100% {
+    translate: 0 0;
+  }
+  25% {
+    translate: 0 -7px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .variant-b-voxel.m1-studio .vx-thinking {
+    animation-duration: 0.01s;
+  }
+  .variant-b-voxel.m1-studio .vx-thinking-blocks .vx-cube {
+    animation: none;
+  }
+}
+
+/* ---------- capture-dock fit: the whole build stays in frame ----------
+   The build log's diorama grows to a four-block tower (plus ghost caps) by
+   round two, and a fixed 28–32px unit clipped its top against the frame.
+   Size the unit off the frame itself: the build spans ~6.3 units of height
+   (3.8 above the plate centre-line, ~2.5 below including the base slab) and
+   ~7.2 units of width, so the unit is whatever lets all of that fit with a
+   margin on top and floor left under it for Rusty. */
+.variant-b-voxel.m1-studio .vx-rail-world {
+  container-type: size;
+}
+.variant-b-voxel.m1-studio .vx-rail-world .vx-world {
+  --u: clamp(10px, min((100cqh - 64px) / 6.3, (100cqw - 24px) / 7.2), 26px);
+}
+.variant-b-voxel.m1-studio .vx-rail-world .vx-scene {
+  top: calc(10px + 3.8 * var(--u));
 }

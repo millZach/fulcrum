@@ -4,21 +4,29 @@ import { ApiError } from "../api.js";
 import {
   allSlotsSelected,
   budgetRaisePrompt,
+  choreographySafetyDelay,
+  choreographyStep,
   currentRound,
   describeStudioError,
   directionSha256,
   firstOpenSlotId,
+  formatElapsed,
   hotbarForSnapshot,
   liveGeneratingCopy,
   mascotForSnapshot,
+  modelWaitForSnapshot,
+  modelWaitForWorking,
   recordedAnswers,
+  routingCostNote,
   screenForSnapshot,
+  showsMeteredBudget,
   slotRevisionViews,
+  soundRouteLabel,
   suggestedNextBudgetUsd,
   voxelPaletteFromTokens,
   voxelWorldView,
 } from "./snapshot-view.js";
-import type { ConceptSlot } from "@fulcrum/domain";
+import { M1InFlightActionSchema, type ConceptSlot } from "@fulcrum/domain";
 
 const sha = (n: string) => n.repeat(64);
 
@@ -32,6 +40,7 @@ const baseState = {
   orchestratorProvider: "openai" as const,
   implementationProvider: "openai" as const,
   imageProvider: "none" as const,
+  soundProvider: "none" as const,
   status: "awaiting-input" as const,
   stage: "interrogation" as const,
   runId: "run-1",
@@ -100,6 +109,16 @@ describe("M1 snapshot adapter", () => {
         state: { ...baseState, stage: "concept-set-approval" },
       }),
     ).toBe("concept-review");
+    expect(
+      screenForSnapshot({
+        state: { ...baseState, stage: "sound-planning" },
+      }),
+    ).toBe("sound-plan");
+    expect(
+      screenForSnapshot({
+        state: { ...baseState, stage: "sound-set-approval" },
+      }),
+    ).toBe("sound-review");
     expect(
       screenForSnapshot({ state: { ...baseState, stage: "complete" } }),
     ).toBe("complete");
@@ -317,6 +336,8 @@ describe("M1 snapshot adapter", () => {
         ),
       ),
     ).toEqual({
+      kind: "budget",
+      title: "Budget cap reached",
       message: "Budget exhausted: ImageGen requires $0.01.",
       budgetRefused: true,
     });
@@ -324,6 +345,83 @@ describe("M1 snapshot adapter", () => {
       "Generating with your OpenAI subscription…",
     );
     expect(liveGeneratingCopy("replay")).toBe("Building replay concepts…");
+  });
+
+  it("turns a pinned-aspect refusal into specific recovery copy", () => {
+    expect(
+      describeStudioError(
+        new Error("The focused change altered pinned aspect palette."),
+      ),
+    ).toEqual({
+      kind: "pinned-aspect",
+      title: "Focused change not applied",
+      message:
+        "Palette changed even though it is pinned, so Fulcrum kept the current direction.",
+      guidance:
+        "Adjust the note or unpin palette, then try again. Your note is still here.",
+      pinnedAspect: "palette",
+      budgetRefused: false,
+    });
+  });
+
+  it("presents duplicate-action rejection as a calm working notice", () => {
+    expect(
+      describeStudioError(
+        new Error("Project p1 is already processing change."),
+      ),
+    ).toEqual({
+      kind: "in-flight",
+      title: "Previous request still working",
+      message: "Fulcrum is still applying the focused change.",
+      guidance: "Wait for it to finish before starting another request.",
+      budgetRefused: false,
+    });
+  });
+
+  it("presents subscription quota pressure as a dismissible warning", () => {
+    expect(
+      describeStudioError(
+        new ApiError(
+          "OpenAI subscription usage is temporarily limited.",
+          500,
+          "subscription-quota",
+        ),
+      ),
+    ).toEqual({
+      kind: "quota",
+      title: "Subscription limit reached",
+      message: "OpenAI subscription usage is temporarily limited.",
+      guidance:
+        "Wait for the subscription allowance to reset, then try this generation again.",
+      budgetRefused: false,
+    });
+  });
+
+  it("describes budget and sound routes from the selected providers", () => {
+    expect(showsMeteredBudget(baseState)).toBe(false);
+    expect(routingCostNote(baseState)).toBe(
+      "Replay and local generators use no metered services.",
+    );
+    const subscription = {
+      ...baseState,
+      mode: "live" as const,
+      imageProvider: "openai-subscription" as const,
+    };
+    expect(showsMeteredBudget(subscription)).toBe(false);
+    expect(routingCostNote(subscription)).toBe(
+      "Runs on your OpenAI subscription · no metered spend.",
+    );
+    expect(
+      showsMeteredBudget({
+        ...subscription,
+        soundProvider: "elevenlabs",
+      }),
+    ).toBe(true);
+    expect(soundRouteLabel(baseState)).toBe("Replay · deterministic WAV");
+    expect(soundRouteLabel(subscription)).toBe("None · deterministic WAV");
+    expect(
+      soundRouteLabel({ ...subscription, soundProvider: "elevenlabs" }),
+    ).toBe("ElevenLabs · text-to-sound");
   });
 
   it("suggests a one-dollar raise and maps bible palettes onto voxel tints", () => {
@@ -426,6 +524,7 @@ describe("M1 snapshot adapter", () => {
     });
     expect(slots.find((slot) => slot.key === "style")?.locked).toBe(true);
     expect(slots.find((slot) => slot.key === "images")?.locked).toBe(true);
+    expect(slots.find((slot) => slot.key === "sounds")?.locked).toBe(true);
     expect(slots.find((slot) => slot.key === "brief")?.active).toBe(true);
   });
 });
@@ -598,10 +697,10 @@ describe("mascotForSnapshot", () => {
         ],
       },
     });
-    const complete = mascotForSnapshot({
+    const soundPlanned = mascotForSnapshot({
       state: {
         ...baseState,
-        stage: "complete",
+        stage: "sound-planning",
         gameDesignApproval: gdsApproval,
         directionApproval,
         conceptSetApproval: {
@@ -626,13 +725,53 @@ describe("mascotForSnapshot", () => {
         ],
       },
     });
+    const complete = mascotForSnapshot({
+      state: {
+        ...baseState,
+        stage: "complete",
+        gameDesignApproval: gdsApproval,
+        directionApproval,
+        conceptSetApproval: {
+          approvalId: "a3",
+          projectId: "p1",
+          targetType: "concept-set",
+          targetRevisionId: "set-1",
+          targetSha256: sha("c"),
+          decision: "approved",
+          decidedBy: "user",
+          decidedAt: "2026-08-21T00:05:00.000Z",
+        },
+        soundSetApproval: {
+          approvalId: "a4",
+          projectId: "p1",
+          targetType: "sound-set",
+          targetRevisionId: "snd-1",
+          targetSha256: sha("s"),
+          decision: "approved",
+          decidedBy: "user",
+          decidedAt: "2026-08-21T00:06:00.000Z",
+        },
+      },
+      interrogation: interrogationDone,
+      conceptSet: {
+        conceptSetId: "set-1",
+        sourceDirectionRevisionId: "dir-1",
+        slots: [
+          slot("hero", "rev-1"),
+          slot("creature", "rev-2"),
+          slot("place", "rev-3"),
+        ],
+      },
+    });
 
     expect(created).toBe(1);
     expect(answered).toBe(3);
     expect(understood).toEqual({
       screen: "signoff",
       decisions: 4,
-      visible: true,
+      /* The game-design-approval screen is a full-width reading layout: Rusty
+         is hidden there via the data-mascot="off" pattern. */
+      visible: false,
     });
     expect(gdsApproved).toEqual({
       screen: "direction",
@@ -651,9 +790,14 @@ describe("mascotForSnapshot", () => {
       decisions: 9,
       visible: true,
     });
+    expect(soundPlanned).toEqual({
+      screen: "concepts",
+      decisions: 10,
+      visible: true,
+    });
     expect(complete).toEqual({
       screen: "package",
-      decisions: 10,
+      decisions: 11,
       visible: true,
     });
     expect(created).toBeLessThan(answered);
@@ -662,7 +806,8 @@ describe("mascotForSnapshot", () => {
     expect(gdsApproved.decisions).toBeLessThan(directionApproved.decisions);
     expect(directionApproved.decisions).toBeLessThan(oneSlot.decisions);
     expect(oneSlot.decisions).toBeLessThan(packaged.decisions);
-    expect(packaged.decisions).toBeLessThan(complete.decisions);
+    expect(packaged.decisions).toBeLessThan(soundPlanned.decisions);
+    expect(soundPlanned.decisions).toBeLessThan(complete.decisions);
   });
 
   it("rebuilds the same decision count from stage when approval fields are missing", () => {
@@ -671,6 +816,15 @@ describe("mascotForSnapshot", () => {
         state: { ...baseState, stage: "concept-planning" },
       }).decisions,
     ).toBe(4);
+  });
+
+  it("hides on the game-design reading screen", () => {
+    expect(
+      mascotForSnapshot({
+        state: { ...baseState, stage: "game-design-approval" },
+        interrogation: { rounds: [answeredRound], frontier: [] },
+      }).visible,
+    ).toBe(false);
   });
 
   it("hides on single-slot review and on blocked", () => {
@@ -700,5 +854,215 @@ describe("mascotForSnapshot", () => {
         },
       }),
     ).toEqual({ screen: "question", decisions: 1, visible: false });
+  });
+});
+
+describe("formatElapsed", () => {
+  it("formats seconds as m:ss", () => {
+    expect(formatElapsed(0)).toBe("0:00");
+    expect(formatElapsed(7)).toBe("0:07");
+    expect(formatElapsed(59)).toBe("0:59");
+    expect(formatElapsed(60)).toBe("1:00");
+    expect(formatElapsed(98.8)).toBe("1:38");
+    expect(formatElapsed(605)).toBe("10:05");
+  });
+
+  it("never goes negative", () => {
+    expect(formatElapsed(-3)).toBe("0:00");
+  });
+});
+
+describe("modelWaitForWorking", () => {
+  it("maps every model-backed operation to a titled wait", () => {
+    for (const label of [
+      "create",
+      ...M1InFlightActionSchema.options,
+      "generate-sounds",
+      "regenerate-sound",
+    ]) {
+      const view = modelWaitForWorking(label, "live");
+      expect(view, label).toBeDefined();
+      expect(view!.title.length).toBeGreaterThan(0);
+      expect(view!.hint.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("uses the plain-words stage copy with real expectations", () => {
+    expect(modelWaitForWorking("answers", "live")).toEqual({
+      title: "Interrogation round underway…",
+      hint: "Fulcrum is writing the next round · usually 15–40 seconds",
+    });
+    expect(modelWaitForWorking("confirm", "live")!.title).toBe(
+      "Writing the Game Design Spec…",
+    );
+    expect(modelWaitForWorking("confirm", "live")!.hint).toContain(
+      "1–2 minutes",
+    );
+    expect(modelWaitForWorking("approve-gds", "live")!.title).toBe(
+      "Inventing visual directions…",
+    );
+  });
+
+  it("swaps the expectation line for replay projects", () => {
+    expect(modelWaitForWorking("confirm", "replay")!.hint).toContain("Replay");
+  });
+
+  it("maps fast, model-free mutations to nothing", () => {
+    for (const label of [
+      "",
+      "select",
+      "approve-set",
+      "approve-sounds",
+      "approve-direction",
+      "gds-decision",
+      "raise-budget",
+    ]) {
+      expect(modelWaitForWorking(label, "live"), label).toBeUndefined();
+    }
+  });
+});
+
+describe("modelWaitForSnapshot", () => {
+  it("derives the reload banner and preserves the server start time", () => {
+    const startedAt = "2026-08-24T15:00:12.000Z";
+    expect(
+      modelWaitForSnapshot({
+        state: baseState,
+        inFlight: { action: "confirm", startedAt },
+      }),
+    ).toEqual({
+      action: "confirm",
+      startedAt,
+      banner: {
+        title: "Writing the Game Design Spec…",
+        hint: "Replay is offline · this stays quick",
+      },
+    });
+  });
+});
+
+describe("choreographyStep", () => {
+  const MAX = 6;
+
+  it("syncs instantly when the project changes (reload / open / home)", () => {
+    expect(
+      choreographyStep(
+        { projectId: undefined, decisions: 0 },
+        { projectId: "p1", decisions: 9, screen: "interrogation" },
+        MAX,
+      ),
+    ).toEqual({ kind: "sync" });
+    expect(
+      choreographyStep(
+        { projectId: "p1", decisions: 9 },
+        { projectId: undefined, decisions: 0, screen: "home" },
+        MAX,
+      ),
+    ).toEqual({ kind: "sync" });
+  });
+
+  it("does nothing when the decision count is unchanged", () => {
+    expect(
+      choreographyStep(
+        { projectId: "p1", decisions: 5 },
+        { projectId: "p1", decisions: 5, screen: "interrogation" },
+        MAX,
+      ),
+    ).toEqual({ kind: "none" });
+  });
+
+  it("clamps down without choreography if the count ever shrinks", () => {
+    expect(
+      choreographyStep(
+        { projectId: "p1", decisions: 5 },
+        { projectId: "p1", decisions: 3, screen: "interrogation" },
+        MAX,
+      ),
+    ).toEqual({ kind: "sync" });
+  });
+
+  it("queues one level-stride trip per world level in interrogation", () => {
+    expect(
+      choreographyStep(
+        { projectId: "p1", decisions: 0 },
+        { projectId: "p1", decisions: 4, screen: "interrogation" },
+        MAX,
+      ),
+    ).toEqual({ kind: "trips", count: 4, stride: "level" });
+    expect(
+      choreographyStep(
+        { projectId: "p1", decisions: 1 },
+        { projectId: "p1", decisions: 5, screen: "interrogation" },
+        MAX,
+      ),
+    ).toEqual({ kind: "trips", count: 4, stride: "level" });
+    expect(
+      choreographyStep(
+        { projectId: "p1", decisions: 4 },
+        { projectId: "p1", decisions: 8, screen: "interrogation" },
+        MAX,
+      ),
+    ).toEqual({ kind: "trips", count: 2, stride: "level" });
+  });
+
+  it("collapses decisions past the blueprint cap into a single trip", () => {
+    expect(
+      choreographyStep(
+        { projectId: "p1", decisions: 0 },
+        { projectId: "p1", decisions: 8, screen: "interrogation" },
+        MAX,
+      ),
+    ).toEqual({ kind: "trips", count: 6, stride: "level" });
+    expect(
+      choreographyStep(
+        { projectId: "p1", decisions: 9 },
+        { projectId: "p1", decisions: 13, screen: "interrogation" },
+        MAX,
+      ),
+    ).toEqual({ kind: "trips", count: 1, stride: "level" });
+    expect(
+      choreographyStep(
+        { projectId: "p1", decisions: 5 },
+        { projectId: "p1", decisions: 9, screen: "interrogation" },
+        MAX,
+      ),
+    ).toEqual({ kind: "trips", count: 1, stride: "level" });
+  });
+
+  it("keeps the prototype collapse on every non-interrogation screen", () => {
+    expect(
+      choreographyStep(
+        { projectId: "p1", decisions: 5 },
+        { projectId: "p1", decisions: 10, screen: "shared-understanding" },
+        MAX,
+      ),
+    ).toEqual({ kind: "trips", count: 1, stride: "all" });
+    expect(
+      choreographyStep(
+        { projectId: "p1", decisions: 10 },
+        { projectId: "p1", decisions: 11, screen: "game-design" },
+        MAX,
+      ),
+    ).toEqual({ kind: "trips", count: 1, stride: "all" });
+  });
+});
+
+describe("choreographySafetyDelay", () => {
+  const MAX = 6;
+
+  it("gives every queued visible-level trip its own watchdog window", () => {
+    expect(choreographySafetyDelay(0, 4, MAX)).toBe(96_000);
+    expect(choreographySafetyDelay(4, 8, MAX)).toBe(48_000);
+    expect(choreographySafetyDelay(5, 9, MAX)).toBe(24_000);
+  });
+
+  it("re-arms from the remaining queue after each placement", () => {
+    expect(choreographySafetyDelay(1, 4, MAX)).toBe(72_000);
+    expect(choreographySafetyDelay(3, 4, MAX)).toBe(24_000);
+  });
+
+  it("keeps one watchdog window for cap-collapsed work and none at truth", () => {
+    expect(choreographySafetyDelay(6, 10, MAX)).toBe(24_000);
+    expect(choreographySafetyDelay(10, 10, MAX)).toBeUndefined();
   });
 });

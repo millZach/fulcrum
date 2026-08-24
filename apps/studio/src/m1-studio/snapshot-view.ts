@@ -1,10 +1,15 @@
-import type {
-  ConceptSlot,
-  InterrogationQuestion,
-  InterrogationRound,
-  M1ConceptDocument,
-  ProjectSnapshot,
-  VisualDirection,
+import {
+  hasMeteredRoutes,
+  type ConceptSlot,
+  type InterrogationQuestion,
+  type InterrogationRound,
+  type M1ConceptDocument,
+  type M1InFlightAction,
+  type ProjectRouting,
+  type ProjectSnapshot,
+  type ProviderMode,
+  type SoundProvider,
+  type VisualDirection,
 } from "@fulcrum/domain";
 
 import { isApiError } from "../api.js";
@@ -17,16 +22,22 @@ export type M1StudioScreen =
   | "visual-direction"
   | "concept-plan"
   | "concept-review"
+  | "sound-plan"
+  | "sound-review"
   | "complete"
   | "blocked";
 
 export type StudioErrorView = {
+  kind: "budget" | "quota" | "pinned-aspect" | "in-flight" | "refusal";
+  title: string;
   message: string;
+  guidance?: string;
+  pinnedAspect?: string;
   budgetRefused: boolean;
 };
 
 export type HotbarSlot = {
-  key: "pitch" | "brief" | "style" | "images";
+  key: "pitch" | "brief" | "style" | "images" | "sounds";
   label: string;
   tone: string;
   filled: boolean;
@@ -65,6 +76,11 @@ export const screenForSnapshot = (
       return "concept-plan";
     case "concept-set-approval":
       return "concept-review";
+    case "sound-planning":
+    case "sound-generation":
+      return "sound-plan";
+    case "sound-set-approval":
+      return "sound-review";
     case "complete":
       return "complete";
     case "blocked":
@@ -120,10 +136,174 @@ export const formatUsd = (amount: number): string => `$${amount.toFixed(2)}`;
 export const describeStudioError = (error: unknown): StudioErrorView => {
   const message = error instanceof Error ? error.message : String(error);
   const code = isApiError(error) ? error.code : undefined;
+  const budgetRefused =
+    code === "budget-refused" || /budget exhausted/i.test(message);
+  if (budgetRefused)
+    return {
+      kind: "budget",
+      title: "Budget cap reached",
+      message,
+      budgetRefused: true,
+    };
+
+  const quotaPressure =
+    code === "subscription-quota" ||
+    /(?:subscription.*(?:quota|rate limit)|\b429\b|too many requests)/i.test(
+      message,
+    );
+  if (quotaPressure)
+    return {
+      kind: "quota",
+      title: "Subscription limit reached",
+      message,
+      guidance:
+        "Wait for the subscription allowance to reset, then try this generation again.",
+      budgetRefused: false,
+    };
+
+  const pinned = message.match(
+    /focused change (?:targets|altered) pinned aspect ([^.]+)\.?/i,
+  )?.[1];
+  if (pinned) {
+    const pinnedAspect = pinned.trim().toLocaleLowerCase("en-US");
+    const label = `${pinnedAspect.charAt(0).toUpperCase()}${pinnedAspect.slice(1)}`;
+    return {
+      kind: "pinned-aspect",
+      title: "Focused change not applied",
+      message: `${label} changed even though it is pinned, so Fulcrum kept the current direction.`,
+      guidance: `Adjust the note or unpin ${pinnedAspect}, then try again. Your note is still here.`,
+      pinnedAspect,
+      budgetRefused: false,
+    };
+  }
+
+  const activeAction = message.match(/already processing ([a-z-]+)\.?/i)?.[1];
+  if (activeAction) {
+    const activities: Record<string, string> = {
+      answers: "writing the next interrogation round",
+      confirm: "writing the Game Design Spec",
+      revise: "revising the Game Design Spec",
+      "approve-gds": "creating visual directions",
+      replace: "forging the replacement direction",
+      change: "applying the focused change",
+      generate: "generating concept images",
+      regenerate: "regenerating the concept image",
+      "generate-sounds": "generating the sound palette",
+      "regenerate-sound": "regenerating the sound",
+    };
+    return {
+      kind: "in-flight",
+      title: "Previous request still working",
+      message: `Fulcrum is still ${activities[activeAction] ?? "working on the previous request"}.`,
+      guidance: "Wait for it to finish before starting another request.",
+      budgetRefused: false,
+    };
+  }
+
   return {
+    kind: "refusal",
+    title: "The forge refused this step",
     message,
-    budgetRefused:
-      code === "budget-refused" || /budget exhausted/i.test(message),
+    guidance: "Adjust the request and try again.",
+    budgetRefused: false,
+  };
+};
+
+/** Elapsed wait time as m:ss, so a two-minute spec generation reads as a
+ *  clock and not a scary raw number. */
+export const formatElapsed = (seconds: number): string => {
+  const whole = Math.max(0, Math.floor(seconds));
+  const minutes = Math.floor(whole / 60);
+  const rest = whole % 60;
+  return `${minutes}:${String(rest).padStart(2, "0")}`;
+};
+
+export type ModelWaitView = {
+  /** What Fulcrum is doing right now, in plain words. */
+  title: string;
+  /** Set-expectation line (real numbers from live runs where we have them). */
+  hint: string;
+};
+
+/** The studio talks to the coordinator through awaited POSTs, so the `working`
+ *  label is the exact in-flight window of every live model call. Map the
+ *  labels that sit on a model call to banner copy; fast, model-free mutations
+ *  (select, approve-set, raise-budget…) map to nothing. Expectations come from
+ *  a real live run: rounds 13–35 s, Game Design Spec 98.8 s, directions
+ *  75.9 s. */
+export const modelWaitForWorking = (
+  working: string,
+  mode: ProviderMode,
+): ModelWaitView | undefined => {
+  const replay = mode !== "live";
+  const titles: Record<string, [title: string, liveHint: string]> = {
+    create: [
+      "Reading your pitch…",
+      "Opening interrogation round one · usually 15–40 seconds",
+    ],
+    answers: [
+      "Interrogation round underway…",
+      "Fulcrum is writing the next round · usually 15–40 seconds",
+    ],
+    confirm: [
+      "Writing the Game Design Spec…",
+      "Turning your answers into the spec · usually 1–2 minutes",
+    ],
+    revise: [
+      "Rewriting the Game Design Spec…",
+      "Folding your change in · this can take 1–2 minutes",
+    ],
+    "approve-gds": [
+      "Inventing visual directions…",
+      "Three distinct looks for your world · usually 1–2 minutes",
+    ],
+    replace: [
+      "Forging a replacement direction…",
+      "One new look, same spec · this can take 1–2 minutes",
+    ],
+    change: [
+      "Applying your focused change…",
+      "Re-rendering the chosen look · this can take 1–2 minutes",
+    ],
+    generate: [
+      "Generating concept images…",
+      "Building the approved concept set · this can take a few minutes",
+    ],
+    regenerate: [
+      "Regenerating the concept image…",
+      "Building one focused revision · this can take a few minutes",
+    ],
+    "generate-sounds": [
+      "Generating the sound palette…",
+      "Rendering the approved sound set · this can take a few minutes",
+    ],
+    "regenerate-sound": [
+      "Regenerating the sound…",
+      "Rendering one focused sound revision · this can take a few minutes",
+    ],
+  };
+  const entry = titles[working];
+  if (!entry) return undefined;
+  return {
+    title: entry[0],
+    hint: replay ? "Replay is offline · this stays quick" : entry[1],
+  };
+};
+
+export type SnapshotModelWait = {
+  action: M1InFlightAction;
+  startedAt: string;
+  banner: ModelWaitView | undefined;
+};
+
+export const modelWaitForSnapshot = (
+  snapshot: Pick<ProjectSnapshot, "state" | "inFlight">,
+): SnapshotModelWait | undefined => {
+  if (!snapshot.inFlight) return undefined;
+  return {
+    action: snapshot.inFlight.action,
+    startedAt: snapshot.inFlight.startedAt,
+    banner: modelWaitForWorking(snapshot.inFlight.action, snapshot.state.mode),
   };
 };
 
@@ -131,6 +311,11 @@ export const liveGeneratingCopy = (mode: "replay" | "live"): string =>
   mode === "live"
     ? "Generating with your OpenAI subscription…"
     : "Building replay concepts…";
+
+export const liveSoundGeneratingCopy = (mode: "replay" | "live"): string =>
+  mode === "live"
+    ? "Generating sound effects…"
+    : "Building replay sound palette…";
 
 export type SlotRevisionView = {
   revisionId: string;
@@ -165,9 +350,37 @@ export const firstOpenSlotId = (
   snapshot.conceptSet?.slots.find((slot) => !slot.selectedRevisionId)?.slotId ??
   snapshot.conceptSet?.slots[0]?.slotId;
 
-/** Default live ImageGen reserve shown next to regenerate. Matches
- *  FULCRUM_SUBSCRIPTION_IMAGE_RESERVE_USD when that env is unset. */
-export const IMAGE_RESERVE_USD = 0.01;
+/** Default live ElevenLabs SFX reserve. Matches
+ *  FULCRUM_ELEVENLABS_SFX_COST_USD when that env is unset. */
+export const SOUND_RESERVE_USD = 0.05;
+
+export const routingCostNote = (routing: ProjectRouting): string => {
+  if (routing.mode === "replay")
+    return "Replay and local generators use no metered services.";
+  if (
+    routing.orchestratorProvider === "openai" &&
+    routing.implementationProvider === "openai" &&
+    (routing.imageProvider === "openai-subscription" ||
+      routing.imageProvider === "none") &&
+    routing.soundProvider === "none"
+  )
+    return "Runs on your OpenAI subscription · no metered spend.";
+  return "Runs on subscription and local routes · no metered spend.";
+};
+
+export const soundRouteLabel = (routing: {
+  mode: ProviderMode;
+  soundProvider: SoundProvider;
+}): string => {
+  if (routing.soundProvider === "elevenlabs")
+    return "ElevenLabs · text-to-sound";
+  return routing.mode === "replay"
+    ? "Replay · deterministic WAV"
+    : "None · deterministic WAV";
+};
+
+export const showsMeteredBudget = (routing: ProjectRouting): boolean =>
+  hasMeteredRoutes(routing);
 
 export const suggestedNextBudgetUsd = (budgetUsd: number): number =>
   Math.round((budgetUsd + 1) * 100) / 100;
@@ -222,8 +435,17 @@ export const hotbarForSnapshot = (
   ].includes(screen);
   const styleFilled =
     snapshot.state.directionApproval?.decision === "approved" ||
-    ["concept-plan", "concept-review", "complete"].includes(screen);
-  const imagesFilled = snapshot.state.stage === "complete";
+    [
+      "concept-plan",
+      "concept-review",
+      "sound-plan",
+      "sound-review",
+      "complete",
+    ].includes(screen);
+  const imagesFilled =
+    snapshot.state.conceptSetApproval?.decision === "approved" ||
+    ["sound-plan", "sound-review", "complete"].includes(screen);
+  const soundsFilled = snapshot.state.stage === "complete";
   const roundCount = snapshot.interrogation?.rounds.length ?? 0;
   const frontier = snapshot.interrogation?.frontier.length ?? 0;
   const kept =
@@ -291,6 +513,24 @@ export const hotbarForSnapshot = (
             ? "Plan pending"
             : "Needs style",
     },
+    {
+      key: "sounds",
+      label: "SOUNDS",
+      tone: "wood",
+      filled: soundsFilled,
+      locked:
+        !imagesFilled && screen !== "sound-plan" && screen !== "sound-review",
+      active: screen === "sound-plan" || screen === "sound-review",
+      status: soundsFilled
+        ? "Approved"
+        : screen === "sound-review"
+          ? "Playback"
+          : screen === "sound-plan"
+            ? "Palette pending"
+            : imagesFilled
+              ? "Plan pending"
+              : "Needs images",
+    },
   ];
 };
 
@@ -337,6 +577,64 @@ export type MascotView = {
   visible: boolean;
 };
 
+/* ---------- choreography: how the diorama earns its blocks ----------
+   The world's shown level is gated behind Rusty's walk-and-place: a decision
+   recorded on the coordinator only *queues* a performance, and the block
+   lands on the grid when he sets it down. This step function decides, for
+   one snapshot-to-snapshot transition, whether the world snaps to the truth
+   instantly (reload, project switch) or earns it one placed block at a
+   time. */
+
+export type ChoreographyState = {
+  projectId: string | undefined;
+  decisions: number;
+};
+
+export type ChoreographyStep =
+  /** Nothing changed — leave the shown level and the queue alone. */
+  | { kind: "none" }
+  /** Render the truth immediately: a reload or project switch must not replay
+   *  old choreography, and a decision count that went down must clamp. */
+  | { kind: "sync" }
+  /** Queue this many trips. stride "level" advances the shown world one
+   *  level per placement (the interrogation build log); stride "all" snaps
+   *  to the full truth on the single placement (every other screen keeps
+   *  the prototype's collapse-the-backlog behavior). */
+  | { kind: "trips"; count: number; stride: "level" | "all" };
+
+export const choreographyStep = (
+  prev: ChoreographyState,
+  next: ChoreographyState & { screen: M1StudioScreen },
+  maxLevel: number,
+): ChoreographyStep => {
+  if (prev.projectId !== next.projectId) return { kind: "sync" };
+  if (next.decisions < prev.decisions) return { kind: "sync" };
+  if (next.decisions === prev.decisions) return { kind: "none" };
+  if (next.screen !== "interrogation")
+    return { kind: "trips", count: 1, stride: "all" };
+  /* One trip per level the diorama can actually grow by; decisions past the
+     blueprint's cap collapse into a single trip so a four-answer round on a
+     finished world does not queue four pointless walks. */
+  const count = Math.max(
+    Math.min(next.decisions, maxLevel) - Math.min(prev.decisions, maxLevel),
+    1,
+  );
+  return { kind: "trips", count, stride: "level" };
+};
+
+/** Give every queued visible-level trip its own watchdog window. Placements
+ *  re-run this calculation, so the delay shrinks with the remaining queue. */
+export const choreographySafetyDelay = (
+  shown: number,
+  decisions: number,
+  maxLevel: number,
+): number | undefined => {
+  if (shown >= decisions) return undefined;
+  const visibleTrips =
+    Math.min(decisions, maxLevel) - Math.min(shown, maxLevel);
+  return Math.max(visibleTrips, 1) * 24_000;
+};
+
 const flag = (on: boolean): 0 | 1 => (on ? 1 : 0);
 
 const mascotScreenFor = (
@@ -358,6 +656,10 @@ const mascotScreenFor = (
       return "concepts";
     case "concept-review":
       return slotReview ? "concepts" : "package";
+    case "sound-plan":
+      return "concepts";
+    case "sound-review":
+      return "package";
     case "complete":
       return "package";
   }
@@ -387,15 +689,25 @@ export const mascotForSnapshot = (
     studio === "visual-direction" ||
     studio === "concept-plan" ||
     studio === "concept-review" ||
+    studio === "sound-plan" ||
+    studio === "sound-review" ||
     studio === "complete";
   const pastGameDesign =
     studio === "visual-direction" ||
     studio === "concept-plan" ||
     studio === "concept-review" ||
+    studio === "sound-plan" ||
+    studio === "sound-review" ||
     studio === "complete";
   const pastDirection =
     studio === "concept-plan" ||
     studio === "concept-review" ||
+    studio === "sound-plan" ||
+    studio === "sound-review" ||
+    studio === "complete";
+  const pastConcepts =
+    studio === "sound-plan" ||
+    studio === "sound-review" ||
     studio === "complete";
 
   const decisions =
@@ -416,11 +728,19 @@ export const mascotForSnapshot = (
     selectedSlots +
     flag(
       snapshot.state.conceptSetApproval?.decision === "approved" ||
+        pastConcepts,
+    ) +
+    flag(
+      snapshot.state.soundSetApproval?.decision === "approved" ||
         studio === "complete",
     );
 
+  /* game-design is a full-width reading screen: no world panel, no Rusty —
+     the spec gets the whole stage (data-mascot="off" pattern). */
   const visible =
-    studio !== "blocked" && !(studio === "concept-review" && slotReview);
+    studio !== "blocked" &&
+    studio !== "game-design" &&
+    !(studio === "concept-review" && slotReview);
 
   return {
     screen: mascotScreenFor(studio, slotReview),

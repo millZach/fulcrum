@@ -11,6 +11,7 @@ import {
   type ApprovalDecision,
   type ArtifactRef,
   type ProjectState,
+  type ProjectStateInput,
   type RevisionRef,
   type SubmissionRecord,
   type SubmissionStatus,
@@ -58,6 +59,8 @@ const extensionFor = (mediaType: string): string => {
     "image/webp": "webp",
     "image/svg+xml": "svg",
     "text/plain": "txt",
+    "audio/wav": "wav",
+    "audio/mpeg": "mp3",
   };
   return known[mediaType] ?? "bin";
 };
@@ -164,7 +167,7 @@ export class ProjectRepository {
       );
   }
 
-  createProject(state: ProjectState): ProjectState {
+  createProject(state: ProjectStateInput): ProjectState {
     const parsed = ProjectStateSchema.parse(state);
     const existing = this.database
       .prepare("SELECT state_json FROM projects WHERE project_id = ?")

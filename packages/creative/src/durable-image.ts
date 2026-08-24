@@ -15,13 +15,12 @@ import type { SubscriptionImageRunner } from "@fulcrum/execution";
 import { ProjectRepository } from "@fulcrum/project";
 import sharp from "sharp";
 
+import { subscriptionQuotaError } from "./provider-usage.js";
+
 export const M1_LIVE_AUTHORIZATION_ENV = "FULCRUM_M1_LIVE_AUTHORIZED";
-export const SUBSCRIPTION_IMAGE_RESERVE_ENV =
-  "FULCRUM_SUBSCRIPTION_IMAGE_RESERVE_USD";
 export const M1_IMAGE_RETRY_LIMIT_ENV = "FULCRUM_M1_IMAGE_RETRY_LIMIT";
 export const M1_IMAGE_TIMEOUT_MS_ENV = "FULCRUM_M1_IMAGE_TIMEOUT_MS";
 
-const DEFAULT_SUBSCRIPTION_RESERVE_USD = 0.01;
 const DEFAULT_RETRY_LIMIT = 2;
 const DEFAULT_TIMEOUT_MS = 360_000;
 
@@ -49,27 +48,13 @@ export const m1ConceptImageIdempotencyKey = (input: {
   attempt: number;
   mode: ProviderMode;
   imageProvider: ImageProvider;
+  prompt: string;
 }): string => {
   const lineage = createHash("sha256")
     .update([...new Set(input.sourceRevisionIds)].join("|"))
     .digest("hex");
-  return `m1-concept:${input.projectId}:${input.slotId}:${lineage}:${input.attempt}:${input.mode}:${input.imageProvider}`;
-};
-
-export const subscriptionImageReserveUsd = (
-  environment: NodeJS.ProcessEnv = process.env,
-): number => {
-  const amount = Number(
-    environment[SUBSCRIPTION_IMAGE_RESERVE_ENV] ??
-      DEFAULT_SUBSCRIPTION_RESERVE_USD,
-  );
-  if (!Number.isFinite(amount) || amount < 0) {
-    throw new ProviderPreflightError(
-      "payload-invalid",
-      `${SUBSCRIPTION_IMAGE_RESERVE_ENV} must be a finite non-negative number.`,
-    );
-  }
-  return amount;
+  const promptHash = createHash("sha256").update(input.prompt).digest("hex");
+  return `m1-concept:${input.projectId}:${input.slotId}:${lineage}:${input.attempt}:${input.mode}:${input.imageProvider}:${promptHash}`;
 };
 
 const readPositiveLimit = (name: string, fallback: number): number => {
@@ -137,6 +122,12 @@ const refuseBeforeProviderCall = (
   };
 };
 
+const retryableSubscriptionQuota = (
+  submission: SubmissionRecord | undefined,
+): submission is SubmissionRecord =>
+  submission?.status === "failed" &&
+  submission.payload.usageCode === "subscription-quota";
+
 export const ensureDurableSubscriptionImage = async (input: {
   repository: ProjectRepository;
   runner: SubscriptionImageRunner;
@@ -181,7 +172,9 @@ export const ensureDurableSubscriptionImage = async (input: {
     };
   }
 
-  const decision = decideDurableSubmission(prior, input.mode);
+  const decision = retryableSubscriptionQuota(prior)
+    ? ({ kind: "proceed", submission: prior } as const)
+    : decideDurableSubmission(prior, input.mode);
   if (decision.kind === "ready") {
     return {
       status: "failed",
@@ -260,7 +253,6 @@ export const ensureDurableSubscriptionImage = async (input: {
       M1_IMAGE_TIMEOUT_MS_ENV,
       DEFAULT_TIMEOUT_MS,
     );
-    const reservedCost = subscriptionImageReserveUsd();
     const attempts = Number(submission.payload.providerAttemptCount ?? 0);
     const storedRetryLimit = Number(
       submission.payload.retryLimit ?? retryLimit,
@@ -271,15 +263,10 @@ export const ensureDurableSubscriptionImage = async (input: {
         `ImageGen retry limit of ${storedRetryLimit} has been reached for this idempotency key.`,
       );
     }
-    input.repository.reserveBudget(
-      input.projectId,
-      reservedCost,
-      "OpenAI subscription ImageGen",
-    );
-
     const {
       preflightCode: _preflightCode,
       error: _preflightError,
+      usageCode: _usageCode,
       ...intentPayload
     } = submission.payload;
     const storedTimeoutMs = Number(intentPayload.timeoutMs ?? timeoutMs);
@@ -303,10 +290,32 @@ export const ensureDurableSubscriptionImage = async (input: {
         Number.isFinite(storedTimeoutMs) ? storedTimeoutMs : timeoutMs,
       );
     } catch (error) {
+      const quota = subscriptionQuotaError(error, "OpenAI");
+      const current =
+        input.repository.getSubmissionByKey(input.idempotencyKey) ?? submission;
+      if (quota) {
+        input.repository.updateSubmission(submission.requestId, {
+          status: "failed",
+          payload: {
+            ...current.payload,
+            usageCode: quota.code,
+            error: quota.message,
+          },
+        });
+        return {
+          status: "failed",
+          requestId: submission.requestId,
+          error: {
+            code: quota.code,
+            message: quota.message,
+            recoverable: true,
+          },
+        };
+      }
       const message = error instanceof Error ? error.message : String(error);
       input.repository.updateSubmission(submission.requestId, {
         status: "submission-unknown",
-        payload: { ...submission.payload, error: message },
+        payload: { ...current.payload, error: message },
       });
       return {
         status: "failed",
@@ -328,7 +337,7 @@ export const ensureDurableSubscriptionImage = async (input: {
       payload: {
         ...current.payload,
         model: generated.model,
-        costUsd: reservedCost,
+        costUsd: 0,
         imageArtifact: artifact,
       },
     });
@@ -339,7 +348,7 @@ export const ensureDurableSubscriptionImage = async (input: {
       payload: {
         requestId: submission.requestId,
         imageArtifactId: artifact.artifactId,
-        costUsd: reservedCost,
+        costUsd: 0,
       },
     });
     return {
@@ -348,7 +357,7 @@ export const ensureDurableSubscriptionImage = async (input: {
       value: {
         bytes: png,
         model: generated.model,
-        costUsd: reservedCost,
+        costUsd: 0,
         artifact,
       },
     };

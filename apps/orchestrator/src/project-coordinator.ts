@@ -1,5 +1,10 @@
+import type {
+  SoundGenerationRunner,
+  StructuredModelExecution,
+} from "@fulcrum/creative";
 import {
   CreateProjectInputSchema,
+  hasMeteredRoutes,
   IncreaseBudgetInputSchema,
   type ApprovalInput,
   type CreateProjectInput,
@@ -13,6 +18,8 @@ import { M1Coordinator } from "./m1-coordinator.js";
 
 export type ProjectCoordinatorOptions = {
   imageRunner?: SubscriptionImageRunner;
+  execution?: StructuredModelExecution;
+  soundRunner?: SoundGenerationRunner;
 };
 
 /** Routes a project to its milestone-specific state machine. */
@@ -68,9 +75,7 @@ export class ProjectCoordinator {
 
   approveSlice(projectId: string, input: ApprovalInput): ProjectSnapshot {
     if (this.isM1(projectId))
-      throw new Error(
-        "M1 ends at concept-set approval and has no visual slice.",
-      );
+      throw new Error("M1 ends at sound-set approval and has no visual slice.");
     return this.m0.approveSlice(projectId, input);
   }
 
@@ -87,6 +92,8 @@ export class ProjectCoordinator {
       throw new Error(
         "A completed or blocked project cannot raise its budget.",
       );
+    if (state.milestone === "m1" && !hasMeteredRoutes(state))
+      throw new Error("This project has no metered routes to budget.");
     if (!(parsed.budgetUsd > state.budgetUsd))
       throw new Error(
         `The new budget must be greater than the current $${state.budgetUsd.toFixed(2)} cap.`,

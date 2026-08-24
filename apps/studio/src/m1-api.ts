@@ -3,12 +3,14 @@ import type {
   ChangeVisualDirectionInput,
   ConfigurationStatus,
   ConfirmConceptPlanInput,
+  ConfirmSoundPlanInput,
   ConfirmSharedUnderstandingInput,
   CreateProjectInput,
   IncreaseBudgetInput,
   M1ApprovalInput,
   ProjectSnapshot,
   RegenerateConceptInput,
+  RegenerateSoundInput,
   ReplaceVisualDirectionInput,
   ReviseGameDesignSpecInput,
   SelectConceptRevisionInput,
@@ -144,6 +146,36 @@ export const approveConceptSet = (
 ): Promise<ProjectSnapshot> =>
   api<ProjectSnapshot>(
     `/api/projects/${projectId}/approvals/concept-set`,
+    json(input),
+  );
+
+export const confirmSoundPlan = (
+  projectId: string,
+  input: ConfirmSoundPlanInput,
+): Promise<ProjectSnapshot> =>
+  api<ProjectSnapshot>(
+    `/api/projects/${projectId}/sound-plan/confirm`,
+    json(input),
+  );
+
+export const regenerateSound = (
+  projectId: string,
+  input: RegenerateSoundInput,
+): Promise<ProjectSnapshot> =>
+  api<ProjectSnapshot>(
+    `/api/projects/${projectId}/sounds/${input.slotId}/regenerate`,
+    json({
+      soundSetRevisionId: input.soundSetRevisionId,
+      ...(input.notes ? { notes: input.notes } : {}),
+    }),
+  );
+
+export const approveSoundSet = (
+  projectId: string,
+  input: M1ApprovalInput,
+): Promise<ProjectSnapshot> =>
+  api<ProjectSnapshot>(
+    `/api/projects/${projectId}/approvals/sound-set`,
     json(input),
   );
 

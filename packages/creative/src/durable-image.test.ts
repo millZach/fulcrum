@@ -24,7 +24,6 @@ const temporaryRoot = (): string => {
 };
 
 afterEach(() => {
-  delete process.env.FULCRUM_SUBSCRIPTION_IMAGE_RESERVE_USD;
   delete process.env.FULCRUM_M1_IMAGE_RETRY_LIMIT;
   delete process.env.FULCRUM_M1_IMAGE_TIMEOUT_MS;
   for (const root of roots.splice(0))
@@ -82,17 +81,18 @@ const openProject = (
       attempt: 0,
       mode: "live",
       imageProvider: "openai-subscription",
+      prompt: "A readable greenhouse airlock",
     }),
   };
 };
 
 describe("ensureDurableSubscriptionImage", () => {
-  it("records intent, idempotency, and a budget decision on a successful fake run", async () => {
+  it("records intent and idempotency without touching budget on a successful subscription run", async () => {
     const { repository, projectId, runId, idempotencyKey } = openProject(1);
     const runner = vi.fn(async () => ({
       bytes: PNG_1x1,
       model: "gpt-image-2",
-      costUsd: 0,
+      costUsd: 0.42,
     }));
 
     const first = await ensureDurableSubscriptionImage({
@@ -123,25 +123,26 @@ describe("ensureDurableSubscriptionImage", () => {
     expect(submission?.idempotencyKey).toBe(idempotencyKey);
     expect(submission?.payload.retryLimit).toBe(2);
     expect(submission?.payload.timeoutMs).toBe(360_000);
-    expect(repository.getProject(projectId).spentUsd).toBe(0.01);
+    expect(submission?.payload.costUsd).toBe(0);
+    if (first.status === "ready") expect(first.value.costUsd).toBe(0);
+    expect(repository.getProject(projectId).spentUsd).toBe(0);
     expect(
       repository
         .listEvents(projectId)
         .some((event) => event.type === "budget.reserved"),
-    ).toBe(true);
+    ).toBe(false);
     repository.close();
   });
 
-  it("refuses a budget-exhausted key without calling the provider, then proceeds after the cap is raised", async () => {
-    const { repository, projectId, runId, idempotencyKey } = openProject(0.01);
-    repository.reserveBudget(projectId, 0.01, "exhaust the cap");
+  it("bypasses an exhausted project budget for subscription generation", async () => {
+    const { repository, projectId, runId, idempotencyKey } = openProject(0);
     const runner = vi.fn(async () => ({
       bytes: PNG_1x1,
       model: "gpt-image-2",
       costUsd: 0,
     }));
 
-    const refused = await ensureDurableSubscriptionImage({
+    const outcome = await ensureDurableSubscriptionImage({
       repository,
       runner,
       projectId,
@@ -151,29 +152,62 @@ describe("ensureDurableSubscriptionImage", () => {
       mode: "live",
     });
 
-    expect(refused.status).toBe("failed");
-    if (refused.status === "failed")
-      expect(refused.error.code).toBe("budget-refused");
-    expect(runner).not.toHaveBeenCalled();
-    expect(repository.getSubmissionByKey(idempotencyKey)?.status).toBe(
-      "intent-recorded",
-    );
-
-    const project = repository.getProject(projectId);
-    repository.saveProject({ ...project, budgetUsd: 1 });
-    const retried = await ensureDurableSubscriptionImage({
-      repository,
-      runner,
-      projectId,
-      runId,
-      idempotencyKey,
-      prompt: "A readable greenhouse airlock",
-      mode: "live",
-    });
-
-    expect(retried.status).toBe("ready");
-    expect(retried.requestId).toBe(refused.requestId);
+    expect(outcome.status).toBe("ready");
     expect(runner).toHaveBeenCalledTimes(1);
+    expect(repository.getProject(projectId).spentUsd).toBe(0);
+    expect(
+      repository
+        .listEvents(projectId)
+        .some((event) => event.type === "budget.refused"),
+    ).toBe(false);
+    repository.close();
+  });
+
+  it("returns a retryable subscription-quota error without budget spend", async () => {
+    const { repository, projectId, runId, idempotencyKey } = openProject(0);
+    const runner = vi.fn(async () => {
+      throw Object.assign(new Error("quota_exceeded: too many requests"), {
+        status: 429,
+      });
+    });
+
+    const first = await ensureDurableSubscriptionImage({
+      repository,
+      runner,
+      projectId,
+      runId,
+      idempotencyKey,
+      prompt: "A readable greenhouse airlock",
+      mode: "live",
+    });
+    const second = await ensureDurableSubscriptionImage({
+      repository,
+      runner,
+      projectId,
+      runId,
+      idempotencyKey,
+      prompt: "A readable greenhouse airlock",
+      mode: "live",
+    });
+
+    expect(first).toEqual(
+      expect.objectContaining({
+        status: "failed",
+        error: expect.objectContaining({
+          code: "subscription-quota",
+          message: expect.stringMatching(/subscription usage.*limited/i),
+          recoverable: true,
+        }),
+      }),
+    );
+    expect(second.status).toBe("failed");
+    expect(runner).toHaveBeenCalledTimes(2);
+    expect(repository.getSubmissionByKey(idempotencyKey)?.payload).toEqual(
+      expect.objectContaining({
+        usageCode: "subscription-quota",
+      }),
+    );
+    expect(repository.getProject(projectId).spentUsd).toBe(0);
     repository.close();
   });
 
@@ -262,5 +296,32 @@ describe("ensureDurableSubscriptionImage", () => {
     expect(retried.status).toBe("failed");
     expect(runner).toHaveBeenCalledTimes(1);
     repository.close();
+  });
+});
+
+describe("m1ConceptImageIdempotencyKey", () => {
+  it("changes when the prompt changes and stays put when only the text is identical", () => {
+    const base = {
+      projectId: "p1",
+      slotId: "gameplay-anchor",
+      sourceRevisionIds: ["rev-a", "rev-b"],
+      attempt: 0,
+      mode: "live" as const,
+      imageProvider: "openai-subscription" as const,
+    };
+    const first = m1ConceptImageIdempotencyKey({
+      ...base,
+      prompt: "unedited greenhouse airlock",
+    });
+    const edited = m1ConceptImageIdempotencyKey({
+      ...base,
+      prompt: "edited greenhouse airlock",
+    });
+    const again = m1ConceptImageIdempotencyKey({
+      ...base,
+      prompt: "unedited greenhouse airlock",
+    });
+    expect(edited).not.toBe(first);
+    expect(again).toBe(first);
   });
 });

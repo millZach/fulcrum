@@ -7,13 +7,16 @@ import {
   approveGameDesign,
   approveVisualDirection,
   changeDirection,
+  approveSoundSet,
   confirmConceptPlan,
+  confirmSoundPlan,
   confirmSharedUnderstanding,
   createM1Project,
   getProject,
   increaseBudget,
   m1Projects,
   regenerateConcept,
+  regenerateSound,
   replaceDirection,
   reviseGameDesign,
   selectConcept,
@@ -45,7 +48,7 @@ describe("Studio API client", () => {
           {
             error: "Fulcrum could not complete the request.",
             detail:
-              "Budget exhausted: OpenAI subscription ImageGen requires $0.01, but only $0.00 remains.",
+              "Budget exhausted: ElevenLabs sound generation requires $0.05, but only $0.00 remains.",
             code: "budget-refused",
           },
           { status: 500 },
@@ -59,7 +62,7 @@ describe("Studio API client", () => {
       expect.objectContaining({
         name: "ApiError",
         message:
-          "Budget exhausted: OpenAI subscription ImageGen requires $0.01, but only $0.00 remains.",
+          "Budget exhausted: ElevenLabs sound generation requires $0.05, but only $0.00 remains.",
         status: 500,
         code: "budget-refused",
       }),
@@ -68,6 +71,32 @@ describe("Studio API client", () => {
       api("/api/projects/project-1/concept-plan/confirm"),
     ).rejects.toSatisfy(
       (error) => isApiError(error) && error instanceof ApiError,
+    );
+  });
+
+  it("preserves the subscription quota warning code", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json(
+          {
+            error: "Fulcrum could not complete the request.",
+            detail:
+              "OpenAI subscription usage is temporarily limited. Wait for its quota or rate limit to reset, then try again.",
+            code: "subscription-quota",
+          },
+          { status: 500 },
+        ),
+      ),
+    );
+
+    await expect(
+      api("/api/projects/project-1/interrogation/answers"),
+    ).rejects.toEqual(
+      expect.objectContaining({
+        code: "subscription-quota",
+        message: expect.stringMatching(/subscription usage.*limited/i),
+      }),
     );
   });
 });
@@ -135,6 +164,12 @@ describe("M1 API client", () => {
     await confirmConceptPlan("p1", {
       conceptPlanRevisionId: "plan-1",
       confirmed: true,
+      promptOverrides: [
+        {
+          slotId: "gameplay-anchor",
+          prompt: "TASK-J-API-EDIT pixel-perfect lunar airlock",
+        },
+      ],
     });
     await regenerateConcept("p1", {
       conceptSetRevisionId: "set-c",
@@ -150,6 +185,27 @@ describe("M1 API client", () => {
       targetType: "concept-set",
       targetRevisionId: "set-c",
       targetSha256: "c".repeat(64),
+      decision: "approved",
+    });
+    await confirmSoundPlan("p1", {
+      soundPlanRevisionId: "plan-s",
+      confirmed: true,
+      promptOverrides: [
+        {
+          slotId: "core-loop-foley",
+          prompt: "TASK-M-API-EDIT lunar airlock hiss",
+        },
+      ],
+    });
+    await regenerateSound("p1", {
+      soundSetRevisionId: "set-s",
+      slotId: "core-loop-foley",
+      notes: "Make the hiss shorter.",
+    });
+    await approveSoundSet("p1", {
+      targetType: "sound-set",
+      targetRevisionId: "set-s",
+      targetSha256: "d".repeat(64),
       decision: "approved",
     });
     await increaseBudget("p1", { budgetUsd: 2 });
@@ -208,7 +264,16 @@ describe("M1 API client", () => {
       },
       {
         path: "/api/projects/p1/concept-plan/confirm",
-        body: { conceptPlanRevisionId: "plan-1", confirmed: true },
+        body: {
+          conceptPlanRevisionId: "plan-1",
+          confirmed: true,
+          promptOverrides: [
+            {
+              slotId: "gameplay-anchor",
+              prompt: "TASK-J-API-EDIT pixel-perfect lunar airlock",
+            },
+          ],
+        },
       },
       {
         path: "/api/projects/p1/concepts/hero/regenerate",
@@ -227,6 +292,30 @@ describe("M1 API client", () => {
       {
         path: "/api/projects/p1/approvals/concept-set",
         body: expect.objectContaining({ targetType: "concept-set" }),
+      },
+      {
+        path: "/api/projects/p1/sound-plan/confirm",
+        body: {
+          soundPlanRevisionId: "plan-s",
+          confirmed: true,
+          promptOverrides: [
+            {
+              slotId: "core-loop-foley",
+              prompt: "TASK-M-API-EDIT lunar airlock hiss",
+            },
+          ],
+        },
+      },
+      {
+        path: "/api/projects/p1/sounds/core-loop-foley/regenerate",
+        body: {
+          soundSetRevisionId: "set-s",
+          notes: "Make the hiss shorter.",
+        },
+      },
+      {
+        path: "/api/projects/p1/approvals/sound-set",
+        body: expect.objectContaining({ targetType: "sound-set" }),
       },
       {
         path: "/api/projects/p1/budget",

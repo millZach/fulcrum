@@ -29,6 +29,41 @@ export const ImageProviderSchema = z.enum([
 ]);
 export type ImageProvider = z.infer<typeof ImageProviderSchema>;
 
+export const SoundProviderSchema = z.enum(["elevenlabs", "none"]);
+export type SoundProvider = z.infer<typeof SoundProviderSchema>;
+
+export type ProjectRouting = {
+  mode: ProviderMode;
+  orchestratorProvider: ExecutionProvider;
+  implementationProvider: ExecutionProvider;
+  imageProvider: ImageProvider;
+  soundProvider: SoundProvider;
+};
+
+export const isMeteredExecutionProvider = (
+  provider: ExecutionProvider,
+): boolean => provider === "openai-api";
+
+export const isMeteredImageProvider = (provider: ImageProvider): boolean =>
+  provider === "openai-gpt-image-2" || provider === "custom-api";
+
+export const isMeteredSoundProvider = (provider: SoundProvider): boolean =>
+  provider === "elevenlabs";
+
+/**
+ * A project budget caps provider routes billed per call. Subscription and
+ * local routes never participate, even when an older snapshot carries a
+ * legacy budget value.
+ */
+export const hasMeteredRoutes = (routing: ProjectRouting): boolean =>
+  routing.mode === "live" &&
+  (isMeteredExecutionProvider(routing.orchestratorProvider) ||
+    isMeteredExecutionProvider(routing.implementationProvider) ||
+    isMeteredImageProvider(routing.imageProvider) ||
+    isMeteredSoundProvider(routing.soundProvider));
+
+export const SOUND_PROMPT_MAX = 450;
+
 export const ProjectStageSchema = z.enum([
   "creative-development",
   "interrogation",
@@ -38,6 +73,9 @@ export const ProjectStageSchema = z.enum([
   "concept-planning",
   "concept-generation",
   "concept-set-approval",
+  "sound-planning",
+  "sound-generation",
+  "sound-set-approval",
   "asset-production",
   "asset-quality",
   "scene-composition",
@@ -261,6 +299,9 @@ export type RevisionAncestor = z.infer<typeof RevisionAncestorSchema>;
 /** M1 provenance contract; the M0 ConceptDocument remains unchanged. */
 export const M1ConceptDocumentSchema = ConceptDocumentSchema.extend({
   ancestors: z.array(RevisionAncestorSchema).min(2),
+  /** Confirmed ImageGen base prompt without a regeneration note. Optional for
+   *  documents written before plan-time prompts existed. */
+  basePrompt: z.string().min(1).optional(),
 });
 export type M1ConceptDocument = z.infer<typeof M1ConceptDocumentSchema>;
 
@@ -271,20 +312,26 @@ export const ConceptRevisionSchema = z.object({
 });
 export type ConceptRevision = z.infer<typeof ConceptRevisionSchema>;
 
+/** Hard cap on any ImageGen prompt, stored or overridden. Assemblers must
+ *  fit within it — live specs write token values long enough to blow past
+ *  it when stitched naively. */
+export const CONCEPT_PROMPT_MAX_CHARS = 4000;
+
+export const ConceptPlanSlotSchema = z.object({
+  slotId: z.string().min(1),
+  name: z.string().min(1),
+  purpose: z.string().min(1),
+  tokenCategories: z.array(VisualTokenSchema.shape.category).min(1),
+  /** Exact ImageGen prompt assembled at plan time. Optional so persisted
+   *  revisions from existing projects still parse. */
+  prompt: z.string().min(1).max(CONCEPT_PROMPT_MAX_CHARS).optional(),
+});
+export type ConceptPlanSlot = z.infer<typeof ConceptPlanSlotSchema>;
+
 export const ConceptPlanSchema = z.object({
   sourceGameDesignRevisionId: z.string().min(1),
   sourceDirectionRevisionId: z.string().min(1),
-  slots: z
-    .array(
-      z.object({
-        slotId: z.string().min(1),
-        name: z.string().min(1),
-        purpose: z.string().min(1),
-        tokenCategories: z.array(VisualTokenSchema.shape.category).min(1),
-      }),
-    )
-    .min(1)
-    .max(3),
+  slots: z.array(ConceptPlanSlotSchema).min(1).max(3),
 });
 export type ConceptPlan = z.infer<typeof ConceptPlanSchema>;
 
@@ -303,6 +350,63 @@ export const ConceptSetSchema = z.object({
   slots: z.array(ConceptSlotSchema).min(1).max(3),
 });
 export type ConceptSet = z.infer<typeof ConceptSetSchema>;
+
+export const SoundPlanSlotSchema = z.object({
+  slotId: z.string().min(1),
+  title: z.string().min(1),
+  purpose: z.string().min(1),
+  prompt: z.string().min(1).max(SOUND_PROMPT_MAX),
+  durationSeconds: z.number().gte(0.5).lte(22),
+  loop: z.boolean(),
+});
+export type SoundPlanSlot = z.infer<typeof SoundPlanSlotSchema>;
+
+export const SoundPlanSchema = z.object({
+  sourceGameDesignRevisionId: z.string().min(1),
+  sourceDirectionRevisionId: z.string().min(1),
+  slots: z.array(SoundPlanSlotSchema).min(4).max(6),
+});
+export type SoundPlan = z.infer<typeof SoundPlanSchema>;
+
+export const SoundDocumentSchema = z.object({
+  soundId: z.string().min(1),
+  slotId: z.string().min(1),
+  title: z.string().min(1),
+  basePrompt: z.string().min(1).max(SOUND_PROMPT_MAX),
+  prompt: z.string().min(1).max(2_000),
+  durationSeconds: z.number().gte(0.5).lte(22),
+  loop: z.boolean(),
+  audio: ArtifactRefSchema,
+  provider: z.string().min(1),
+  model: z.string().min(1),
+  promptHash: z.string().regex(/^[a-f0-9]{64}$/),
+  sourceRevisionIds: z.array(z.string().min(1)).min(1),
+  costUsd: z.number().nonnegative(),
+});
+export type SoundDocument = z.infer<typeof SoundDocumentSchema>;
+
+export const SoundRevisionSchema = z.object({
+  revision: RevisionRefSchema,
+  staleReason: z.string().min(1).optional(),
+});
+export type SoundRevision = z.infer<typeof SoundRevisionSchema>;
+
+export const SoundSlotSchema = z.object({
+  slotId: z.string().min(1),
+  title: z.string().min(1),
+  purpose: z.string().min(1),
+  revisions: z.array(SoundRevisionSchema).min(1),
+  selectedRevisionId: z.string().min(1).optional(),
+});
+export type SoundSlot = z.infer<typeof SoundSlotSchema>;
+
+export const SoundSetSchema = z.object({
+  soundSetId: z.string().min(1),
+  sourceSoundPlanRevisionId: z.string().min(1),
+  sourceDirectionRevisionId: z.string().min(1),
+  slots: z.array(SoundSlotSchema).min(4).max(6),
+});
+export type SoundSet = z.infer<typeof SoundSetSchema>;
 
 export const AssetDocumentSchema = z.object({
   assetId: z.string().min(1),
@@ -420,6 +524,7 @@ export const ApprovalTargetTypeSchema = z.enum([
   "game-design",
   "visual-direction",
   "concept-set",
+  "sound-set",
   "visual-slice",
 ]);
 export type ApprovalTargetType = z.infer<typeof ApprovalTargetTypeSchema>;
@@ -454,16 +559,22 @@ export const ProjectStateSchema = z.object({
   orchestratorProvider: ExecutionProviderSchema.default("openai"),
   implementationProvider: ExecutionProviderSchema.default("openai"),
   imageProvider: ImageProviderSchema.default("openai-subscription"),
+  soundProvider: SoundProviderSchema.default("none"),
   status: ProjectStatusSchema,
   stage: ProjectStageSchema,
   runId: z.string().min(1),
   workflowRunId: z.string().optional(),
-  budgetUsd: z.number().nonnegative(),
+  // Keep a numeric zero in normalized state so old snapshots and M0 readers
+  // retain their stable shape. New no-metered M1 inputs may omit the field.
+  budgetUsd: z.number().nonnegative().default(0),
   spentUsd: z.number().nonnegative(),
   conceptReplacementCount: z.number().int().min(0).max(1).default(0),
   directionReplacementCount: z.number().int().min(0).max(1).optional(),
   focusedDirectionChangeCount: z.number().int().min(0).max(1).optional(),
   conceptRegenerationCounts: z
+    .record(z.string().min(1), z.number().int().min(0))
+    .optional(),
+  soundRegenerationCounts: z
     .record(z.string().min(1), z.number().int().min(0))
     .optional(),
   brief: RevisionRefSchema,
@@ -480,9 +591,12 @@ export const ProjectStateSchema = z.object({
   concept: RevisionRefSchema.optional(),
   conceptPlan: RevisionRefSchema.optional(),
   conceptSet: RevisionRefSchema.optional(),
+  soundPlan: RevisionRefSchema.optional(),
+  soundSet: RevisionRefSchema.optional(),
   gameDesignApproval: ApprovalDecisionSchema.optional(),
   directionApproval: ApprovalDecisionSchema.optional(),
   conceptSetApproval: ApprovalDecisionSchema.optional(),
+  soundSetApproval: ApprovalDecisionSchema.optional(),
   asset: RevisionRefSchema.optional(),
   assetEvaluation: RevisionRefSchema.optional(),
   scene: RevisionRefSchema.optional(),
@@ -493,10 +607,32 @@ export const ProjectStateSchema = z.object({
   updatedAt: z.string().datetime(),
 });
 export type ProjectState = z.infer<typeof ProjectStateSchema>;
+export type ProjectStateInput = z.input<typeof ProjectStateSchema>;
+
+export const M1InFlightActionSchema = z.enum([
+  "answers",
+  "confirm",
+  "revise",
+  "approve-gds",
+  "replace",
+  "change",
+  "generate",
+  "regenerate",
+  "generate-sounds",
+  "regenerate-sound",
+]);
+export type M1InFlightAction = z.infer<typeof M1InFlightActionSchema>;
+
+export const M1InFlightSchema = z.object({
+  action: M1InFlightActionSchema,
+  startedAt: z.string().datetime(),
+});
+export type M1InFlight = z.infer<typeof M1InFlightSchema>;
 
 export const ProjectSnapshotSchema = z.object({
   state: ProjectStateSchema,
   briefText: z.string(),
+  inFlight: M1InFlightSchema.optional(),
   interrogation: InterrogationStateSchema.optional(),
   gameDesign: GameDesignDigestSchema.optional(),
   gameDesignSpec: GameDesignSpecSchema.optional(),
@@ -511,23 +647,40 @@ export const ProjectSnapshotSchema = z.object({
   conceptDocuments: z
     .record(z.string().min(1), z.array(M1ConceptDocumentSchema).min(1))
     .optional(),
+  soundPlan: SoundPlanSchema.optional(),
+  soundSet: SoundSetSchema.optional(),
+  soundDocuments: z
+    .record(z.string().min(1), z.array(SoundDocumentSchema).min(1))
+    .optional(),
   asset: AssetDocumentSchema.optional(),
   assetEvaluation: AssetEvaluationSchema.optional(),
   scene: FulcrumSceneSpecV0Schema.optional(),
 });
 export type ProjectSnapshot = z.infer<typeof ProjectSnapshotSchema>;
 
-export const CreateProjectInputSchema = z.object({
-  milestone: MilestoneSchema.default("m0"),
-  brief: z.string().min(40),
-  mode: ProviderModeSchema,
-  assetProvider: AssetProviderSchema.default("meshy"),
-  orchestratorProvider: ExecutionProviderSchema.default("openai"),
-  implementationProvider: ExecutionProviderSchema.default("openai"),
-  imageProvider: ImageProviderSchema.default("openai-subscription"),
-  budgetUsd: z.number().positive(),
-  rightsConfirmed: z.literal(true),
-});
+export const CreateProjectInputSchema = z
+  .object({
+    milestone: MilestoneSchema.default("m0"),
+    brief: z.string().min(40),
+    mode: ProviderModeSchema,
+    assetProvider: AssetProviderSchema.default("meshy"),
+    orchestratorProvider: ExecutionProviderSchema.default("openai"),
+    implementationProvider: ExecutionProviderSchema.default("openai"),
+    imageProvider: ImageProviderSchema.default("openai-subscription"),
+    soundProvider: SoundProviderSchema.default("none"),
+    budgetUsd: z.number().positive().optional(),
+    rightsConfirmed: z.literal(true),
+  })
+  .superRefine((value, context) => {
+    const needsBudget = value.milestone === "m0" || hasMeteredRoutes(value);
+    if (needsBudget && value.budgetUsd === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["budgetUsd"],
+        message: "A positive USD budget is required for metered routes.",
+      });
+    }
+  });
 export type CreateProjectInput = z.input<typeof CreateProjectInputSchema>;
 
 export const ApprovalInputSchema = z.object({
@@ -560,16 +713,52 @@ export type ConfirmSharedUnderstandingInput = z.infer<
   typeof ConfirmSharedUnderstandingInputSchema
 >;
 
+export const ConceptPlanPromptOverrideSchema = z.object({
+  slotId: z.string().min(1),
+  prompt: z.string().min(1).max(CONCEPT_PROMPT_MAX_CHARS),
+});
+export type ConceptPlanPromptOverride = z.infer<
+  typeof ConceptPlanPromptOverrideSchema
+>;
+
 export const ConfirmConceptPlanInputSchema = z.object({
   conceptPlanRevisionId: z.string().min(1),
   confirmed: z.literal(true),
+  promptOverrides: z.array(ConceptPlanPromptOverrideSchema).optional(),
 });
 export type ConfirmConceptPlanInput = z.infer<
   typeof ConfirmConceptPlanInputSchema
 >;
 
+export const SoundPlanPromptOverrideSchema = z.object({
+  slotId: z.string().min(1),
+  prompt: z.string().min(1).max(SOUND_PROMPT_MAX),
+});
+export type SoundPlanPromptOverride = z.infer<
+  typeof SoundPlanPromptOverrideSchema
+>;
+
+export const ConfirmSoundPlanInputSchema = z.object({
+  soundPlanRevisionId: z.string().min(1),
+  confirmed: z.literal(true),
+  promptOverrides: z.array(SoundPlanPromptOverrideSchema).optional(),
+});
+export type ConfirmSoundPlanInput = z.infer<typeof ConfirmSoundPlanInputSchema>;
+
+export const RegenerateSoundInputSchema = z.object({
+  soundSetRevisionId: z.string().min(1),
+  slotId: z.string().min(1),
+  notes: z.string().max(1_000).optional(),
+});
+export type RegenerateSoundInput = z.infer<typeof RegenerateSoundInputSchema>;
+
 export const M1ApprovalInputSchema = ApprovalInputSchema.extend({
-  targetType: z.enum(["game-design", "visual-direction", "concept-set"]),
+  targetType: z.enum([
+    "game-design",
+    "visual-direction",
+    "concept-set",
+    "sound-set",
+  ]),
   targetRevisionId: z.string().min(1),
   targetSha256: z.string().regex(/^[a-f0-9]{64}$/),
 });
@@ -662,6 +851,14 @@ export const ConfigurationStatusSchema = z.object({
       detail: z.string(),
     }),
   ),
+  soundProviders: z.array(
+    z.object({
+      provider: SoundProviderSchema,
+      ready: z.boolean(),
+      missingConfiguration: z.array(z.string()),
+      detail: z.string(),
+    }),
+  ),
   assetProviders: z.array(
     z.object({
       provider: AssetProviderSchema,
@@ -722,6 +919,23 @@ export class ProviderPreflightError extends Error {
 export const isProviderPreflightError = (
   error: unknown,
 ): error is ProviderPreflightError => error instanceof ProviderPreflightError;
+
+export const ProviderUsageCodeSchema = z.enum(["subscription-quota"]);
+export type ProviderUsageCode = z.infer<typeof ProviderUsageCodeSchema>;
+
+export class ProviderUsageError extends Error {
+  readonly code: ProviderUsageCode;
+
+  constructor(code: ProviderUsageCode, message: string) {
+    super(message);
+    this.name = "ProviderUsageError";
+    this.code = code;
+  }
+}
+
+export const isProviderUsageError = (
+  error: unknown,
+): error is ProviderUsageError => error instanceof ProviderUsageError;
 
 export const preflightCodeFromPayload = (
   payload: Record<string, unknown>,

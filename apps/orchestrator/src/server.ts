@@ -10,7 +10,11 @@ import {
 import { fileURLToPath } from "node:url";
 
 import cors from "@fastify/cors";
-import { M0_FIXTURE_BRIEF, isProviderPreflightError } from "@fulcrum/domain";
+import {
+  M0_FIXTURE_BRIEF,
+  isProviderPreflightError,
+  isProviderUsageError,
+} from "@fulcrum/domain";
 import {
   inspectExecutionProviders,
   runCodexSubscriptionImage,
@@ -243,7 +247,11 @@ server.post<{
 );
 server.post<{
   Params: { projectId: string };
-  Body: { conceptPlanRevisionId: string; confirmed: true };
+  Body: {
+    conceptPlanRevisionId: string;
+    confirmed: true;
+    promptOverrides?: Array<{ slotId: string; prompt: string }>;
+  };
 }>("/api/projects/:projectId/concept-plan/confirm", async (request) =>
   coordinator.m1.confirmConceptPlan(
     request.params.projectId,
@@ -272,6 +280,36 @@ server.post<{ Params: { projectId: string } }>(
   "/api/projects/:projectId/approvals/concept-set",
   async (request) =>
     coordinator.m1.approveConceptSet(
+      request.params.projectId,
+      request.body as never,
+    ),
+);
+server.post<{
+  Params: { projectId: string };
+  Body: {
+    soundPlanRevisionId: string;
+    confirmed: true;
+    promptOverrides?: Array<{ slotId: string; prompt: string }>;
+  };
+}>("/api/projects/:projectId/sound-plan/confirm", async (request) =>
+  coordinator.m1.confirmSoundPlan(
+    request.params.projectId,
+    request.body as never,
+  ),
+);
+server.post<{
+  Params: { projectId: string; slotId: string };
+  Body: { soundSetRevisionId: string; notes?: string };
+}>("/api/projects/:projectId/sounds/:slotId/regenerate", async (request) =>
+  coordinator.m1.regenerateSound(request.params.projectId, {
+    ...request.body,
+    slotId: request.params.slotId,
+  }),
+);
+server.post<{ Params: { projectId: string } }>(
+  "/api/projects/:projectId/approvals/sound-set",
+  async (request) =>
+    coordinator.m1.approveSoundSet(
       request.params.projectId,
       request.body as never,
     ),
@@ -313,7 +351,9 @@ server.setErrorHandler((error, _request, reply) => {
     error:
       statusCode === 500 ? "Fulcrum could not complete the request." : message,
     detail: message,
-    ...(isProviderPreflightError(error) ? { code: error.code } : {}),
+    ...(isProviderPreflightError(error) || isProviderUsageError(error)
+      ? { code: error.code }
+      : {}),
   });
 });
 

@@ -524,6 +524,8 @@ export class ModelExecution {
         model,
       };
     } else if (provider === "claude") {
+      const claudeJsonSchema = { ...jsonSchema };
+      delete claudeJsonSchema.$schema;
       const result = await this.runner({
         command: "claude",
         args: [
@@ -531,7 +533,7 @@ export class ModelExecution {
           "--output-format",
           "json",
           "--json-schema",
-          JSON.stringify(jsonSchema),
+          JSON.stringify(claudeJsonSchema),
           "--no-session-persistence",
           "--tools",
           "",

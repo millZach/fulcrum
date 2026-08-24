@@ -1,5 +1,64 @@
 # Fulcrum
 
+## 2026-08-24: Subscription ImageGen was charging a fictional penny
+
+I traced every $0.01 subscription image charge to a fixed bookkeeping reserve, not provider usage: the runner returned $0.00, but the durable image path reserved one cent and copied that reserve into every cost record. I removed subscription routes from budget mechanics, kept the API and ElevenLabs caps intact, and added typed 429/quota warnings as the honest usage brake.
+
+## 2026-08-24: A guard read "keep the palette" as "change the palette"
+
+I traced a 32-second focused-change refusal to a guard that classified words in the user's note, then rejected any category whose name matched a pin without checking the returned document. The fix compares the actual pinned field, tolerates casing, whitespace, and list order, and tells the model the exact field/value pairs to echo; an 8,000 ms replay run proved the wait banner stays visible and a real pinned-lighting change refuses with the note intact and a working Dismiss button.
+
+## 2026-08-24: Reload erased a model wait that could last three minutes
+
+I reproduced the continuity gap with a 20,000 ms replay delay: the server kept working after reload, but the tab lost its only `working` flag and never fetched the completed snapshot. The fix is an in-memory per-project action marker plus a shared promise for exact duplicates; the studio seeds its clock from the server timestamp and polls every 2.5 seconds when no local POST owns the wait. A two-tab Playwright run proved the stale tab advanced from round 2 to round 3 on its own, and both reload clocks matched server elapsed time.
+
+## 2026-08-24 — A 24-second fallback outran a throttled 11-second animation queue
+
+I reproduced the tower snap by pausing `requestAnimationFrame`: the fixed watchdog changed 5 active cubes to 11 while Rusty was still on `Wave`, because the renderer discarded all but 60 ms of elapsed time. The fix gives each pending tower level its own 24-second window and keeps the render clock's full delta; an eight-second mid-placement stall now catches up 135 ms after frames resume. The caption overlap was a second concrete bug: `parseFloat("clamp(...)")` killed the capture dock, so I now measure a laid-out tile's resolved pixel width and Rusty's canvas stays 16 px above the caption.
+
+## 2026-08-23 — Rusty's walk was pure theater: the tower rendered before he placed it
+
+Two bugs, one root: the world render took raw decision counts, so a 3-answer round popped three levels of blocks instantly and Rusty's pick-up-walk-place animation was replaying what already happened — and the capture dock's fixed scene offset clipped the tower's top out of frame. The fix was a pure choreography reducer (one trip per world level, instant sync on page reload, collapse past the 6-level cap) plus sizing the dock with CSS container queries from the actual isometric math: the build is 6.24 units tall, so the unit now clamps to what the frame can hold. A Playwright harness proves the order — blocks land at +9.3s, +11.0s, +10.9s after a round, never at 0s.
+
+## 2026-08-23 — The mascot's gutter assumed a layout cap the stage doesn't use
+
+An adversarial review pass caught Rusty's crate poking out of his world panel, but only between 1640–1800px wide and on 1080-tall windows — three viewports I'd screenshotted were all clean. The mascot's `--vx-gutter` assumed the 1640px content cap at every width, but the stage actually caps at 1450px in that band, so every anchored box sat ~95px too far right; tall windows hid no margin to absorb it. Fix was three CSS lines restating the gutter per breakpoint. Lesson: test the widths between your breakpoints, not just at them.
+
+## 2026-08-23 — One position:fixed silently killed every mascot dock
+
+Filmed Rusty floating over the wrong panel when the studio scrolled and assumed a scroll-sync bug. The real damage was bigger: `position: fixed` nulls `offsetParent`, so the dock measurer bailed on its first check and every dock studio-wide — capture, panel, finale — had been silently dead, leaving all screens on viewport-fixed free parking. Fix was structural, not a scroll listener: mount the mascot inside the `.vx-stage` scroller so free parking and docks resolve in scrolled-content coordinates and he rides the compositor with his scene. Verified at three viewports with a Playwright suite asserting his offset to each anchor stays within 2px under scroll, even wheeling during the first two seconds of load.
+
+## 2026-08-22: Mastra wrapped the useful Error twice
+
+I traced the M0 `"[object Object]"` blocked message to Mastra returning a wrapper with a useless serialized `message` and the real Error nested under `error`. The fix unwraps that Error, preserves strings, and caps JSON output for other objects at 2,000 characters so a failed phase leaves a reason a human can act on.
+
+## 2026-08-22 — ElevenLabs output_format is a query param, not JSON
+
+The sound-generation docs put `output_format` on the URL (`?output_format=mp3_44100_128`), not in the JSON body with `text` / `duration_seconds` / `loop`. Easy to drop into the body next to `model_id` and get a 400. Replay never calls it; the `none` adapter writes a 22.05 kHz 16-bit mono WAV from sha256(prompt) so M1 can finish without a key.
+
+## 2026-08-22 — 91 green tests, and the first real API call was a 400
+
+Wired M1's creative text to a live model. Every test injects a fake
+executor, so nothing ever ran the Zod-to-JSON-Schema conversion the
+real route uses — 91 tests green, then the first real call rejected the
+spec schema outright: strict mode demands every object's `required`
+list every property, and one nested field was `.optional()`. One smoke
+call against the actual API caught what the whole suite couldn't. Fix
+was strict-compatible output schemas plus a walker test that asserts
+the invariant deterministically. Fakes validate your logic; only the
+real thing validates your contract.
+
+## 2026-08-22 — Cache key was missing the one thing that varies
+
+While making concept prompts user-editable I found the ImageGen
+idempotency key never included the prompt: same slot, same attempt,
+different regeneration note would have served the cached image instead
+of calling the API. Invisible until now because prompts were derived
+from the keyed inputs; the moment users can edit them, the key lies.
+Fix was hashing the prompt into the key. Lesson: a cache key must
+contain everything that changes the output, not everything you happened
+to have on hand.
+
 ## 2026-08-22 — Invented mascot frames made Rusty a giant
 
 Task G wrapped the studio home/signoff/game-design dioramas in

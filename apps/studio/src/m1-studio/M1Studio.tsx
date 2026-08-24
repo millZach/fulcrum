@@ -1,12 +1,28 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
-import type {
-  ConfigurationStatus,
-  CreateProjectInput,
-  M1ApprovalInput,
-  ProjectSnapshot,
-  ProviderMode,
-  VisualDirection,
+import {
+  SOUND_PROMPT_MAX,
+  isMeteredImageProvider,
+  isMeteredSoundProvider,
+  type ConceptPlanPromptOverride,
+  type ConfigurationStatus,
+  type ConfirmConceptPlanInput,
+  type ConfirmSoundPlanInput,
+  type CreateProjectInput,
+  type ExecutionProvider,
+  type ImageProvider,
+  type M1ApprovalInput,
+  type ProjectSnapshot,
+  type ProviderMode,
+  type SoundPlanPromptOverride,
+  type SoundProvider,
+  type VisualDirection,
 } from "@fulcrum/domain";
 
 import * as m1 from "../m1-api.js";
@@ -18,41 +34,111 @@ import {
 } from "../m1-prototype/M1Prototype.js";
 import "../m1-prototype/m1-prototype.css";
 import {
-  IMAGE_RESERVE_USD,
   PINNED_ASPECT_OPTIONS,
   SAMPLE_M1_BRIEF,
+  SOUND_RESERVE_USD,
   allSlotsSelected,
   budgetRaisePrompt,
+  choreographySafetyDelay,
+  choreographyStep,
   currentRound,
   describeStudioError,
   directionSha256,
   firstOpenSlotId,
+  formatElapsed,
   formatUsd,
   hotbarForSnapshot,
   liveGeneratingCopy,
+  liveSoundGeneratingCopy,
   mascotForSnapshot,
+  modelWaitForSnapshot,
+  modelWaitForWorking,
   projectTitle,
   recordedAnswers,
+  routingCostNote,
   screenForSnapshot,
   selectedDirection,
+  showsMeteredBudget,
   slotRevisionViews,
+  soundRouteLabel,
   suggestedNextBudgetUsd,
   voxelPaletteFromTokens,
   voxelWorldView,
   type BudgetRaisePrompt,
   type M1StudioScreen,
+  type ModelWaitView,
+  type StudioErrorView,
 } from "./snapshot-view.js";
 
 type PendingStudioAction =
-  | { kind: "generate"; conceptPlanRevisionId: string }
+  | {
+      kind: "generate";
+      conceptPlanRevisionId: string;
+      promptOverrides?: ConfirmConceptPlanInput["promptOverrides"];
+    }
   | {
       kind: "regenerate";
       conceptSetRevisionId: string;
       slotId: string;
       notes?: string;
+    }
+  | {
+      kind: "generate-sounds";
+      soundPlanRevisionId: string;
+      promptOverrides?: ConfirmSoundPlanInput["promptOverrides"];
+    }
+  | {
+      kind: "regenerate-sound";
+      soundSetRevisionId: string;
+      slotId: string;
+      notes?: string;
     };
 
+const SLOT_PROMPT_MAX_HEIGHT_PX = 192;
+
+function SlotPromptEditor({
+  value,
+  onChange,
+  maxLength = 4000,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  maxLength?: number;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    node.style.height = "auto";
+    node.style.height = `${Math.min(node.scrollHeight, SLOT_PROMPT_MAX_HEIGHT_PX)}px`;
+  }, [value]);
+  return (
+    <textarea
+      maxLength={maxLength}
+      onChange={(event) => onChange(event.target.value)}
+      ref={ref}
+      spellCheck={false}
+      value={value}
+    />
+  );
+}
+
 const PROJECT_PARAM = "project";
+
+const executionProviderLabels: Record<ExecutionProvider, string> = {
+  claude: "Claude Subscription",
+  openai: "OpenAI Subscription",
+  "openai-api": "OpenAI API",
+  grok: "Grok Subscription",
+  opencode: "OpenCode Subscription",
+};
+
+const imageProviderLabels: Record<ImageProvider, string> = {
+  "openai-subscription": "OpenAI Sub · Image",
+  "openai-gpt-image-2": "OpenAI API · GPT Image 2",
+  "custom-api": "Custom image API",
+  none: "No image model",
+};
 
 const readProjectId = (): string | null =>
   new URLSearchParams(window.location.search).get(PROJECT_PARAM);
@@ -76,8 +162,7 @@ function Swatches({ colors }: { colors: string[] }) {
 }
 
 function StudioError({
-  message,
-  budgetRefused,
+  view,
   busy,
   prompt,
   raiseBudgetUsd,
@@ -85,8 +170,7 @@ function StudioError({
   onRaiseBudgetUsd,
   onRetry,
 }: {
-  message: string;
-  budgetRefused: boolean;
+  view: StudioErrorView;
   busy: boolean;
   prompt: BudgetRaisePrompt | undefined;
   raiseBudgetUsd: number;
@@ -94,7 +178,7 @@ function StudioError({
   onRaiseBudgetUsd: (value: number) => void;
   onRetry: () => void;
 }) {
-  if (budgetRefused && prompt) {
+  if (view.budgetRefused && prompt) {
     return (
       <div className="vx-error vx-error-budget" role="alert">
         <strong>Budget cap reached</strong>
@@ -139,24 +223,36 @@ function StudioError({
       </div>
     );
   }
+  const notice = view.kind === "in-flight";
+  const quota = view.kind === "quota";
   return (
-    <div className="vx-error" role="alert">
-      <strong>The forge refused this step</strong>
-      <p>{message}</p>
+    <div
+      className={`vx-error vx-error-recoverable${notice ? " vx-error-notice" : ""}${quota ? " vx-error-warning" : ""}`}
+      role={notice ? "status" : "alert"}
+    >
+      <div className="vx-error-copy">
+        <strong>{view.title}</strong>
+        <p>{view.message}</p>
+        {view.guidance && <small>{view.guidance}</small>}
+      </div>
+      <button
+        className="vx-secondary vx-error-dismiss"
+        disabled={busy}
+        onClick={onDismiss}
+        type="button"
+      >
+        Dismiss
+      </button>
     </div>
   );
 }
 
-function BudgetChip({
-  spentUsd,
-  budgetUsd,
-}: {
-  spentUsd: number;
-  budgetUsd: number;
-}) {
+function BudgetChip({ project }: { project: ProjectSnapshot }) {
+  if (!showsMeteredBudget(project.state)) return null;
   return (
     <span className="vx-budget">
-      Spent {formatUsd(spentUsd)} / {formatUsd(budgetUsd)}
+      Spent {formatUsd(project.state.spentUsd)} /{" "}
+      {formatUsd(project.state.budgetUsd)}
     </span>
   );
 }
@@ -165,17 +261,79 @@ function padIndex(index: number): string {
   return String(index + 1).padStart(2, "0");
 }
 
+/** Live m:ss since the local request or coordinator-reported start time. */
+function WaitClock({ startedAt }: { startedAt?: string | undefined }) {
+  const localStartedAt = useRef(Date.now());
+  const parsedStartedAt = startedAt ? Date.parse(startedAt) : Number.NaN;
+  const origin = Number.isFinite(parsedStartedAt)
+    ? parsedStartedAt
+    : localStartedAt.current;
+  const elapsed = () => Math.max(0, Math.floor((Date.now() - origin) / 1000));
+  const [seconds, setSeconds] = useState(elapsed);
+  useEffect(() => {
+    setSeconds(elapsed());
+    const timer = window.setInterval(() => setSeconds(elapsed()), 500);
+    return () => window.clearInterval(timer);
+  }, [origin]);
+  return <>{formatElapsed(seconds)}</>;
+}
+
+/** "The forge is thinking" — pinned to the top of the stage while a live
+ *  model call is in flight. It reveals itself only after ~0.35 s (replay
+ *  transitions are near-instant and must not flash it) and pulls the stage
+ *  scroller to itself exactly once per wait, when it becomes visible. */
+function ModelWaitBanner({
+  startedAt,
+  view,
+}: {
+  startedAt?: string | undefined;
+  view: ModelWaitView;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      ref.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 380);
+    return () => window.clearTimeout(timer);
+  }, []);
+  return (
+    <div className="vx-thinking" ref={ref} role="status" aria-live="polite">
+      <span className="vx-thinking-blocks" aria-hidden="true">
+        <VoxelCube tone="wood" />
+        <VoxelCube tone="accent" />
+        <VoxelCube tone="glow" />
+        <VoxelCube tone="stone" />
+      </span>
+      <span className="vx-thinking-copy">
+        <strong>{view.title}</strong>
+        <small>{view.hint}</small>
+      </span>
+      <span className="vx-thinking-clock">
+        <WaitClock startedAt={startedAt} />
+      </span>
+    </div>
+  );
+}
+
 export function M1Studio() {
   const [configuration, setConfiguration] =
     useState<ConfigurationStatus | null>(null);
   const [projects, setProjects] = useState<ProjectSnapshot[]>([]);
   const [project, setProject] = useState<ProjectSnapshot | null>(null);
   const [bootError, setBootError] = useState("");
-  const [error, setError] = useState("");
-  const [budgetRefused, setBudgetRefused] = useState(false);
+  const [error, setError] = useState<StudioErrorView>();
   const [working, setWorking] = useState("");
   const [brief, setBrief] = useState(SAMPLE_M1_BRIEF);
   const [mode, setMode] = useState<ProviderMode>("replay");
+  const [orchestratorProvider, setOrchestratorProvider] =
+    useState<ExecutionProvider>("openai");
+  const [implementationProvider, setImplementationProvider] =
+    useState<ExecutionProvider>("openai");
+  const [imageProvider, setImageProvider] = useState<ImageProvider>("none");
+  const [soundProvider, setSoundProvider] = useState<SoundProvider>("none");
+  const [soundRegenNotes, setSoundRegenNotes] = useState<
+    Record<string, string>
+  >({});
   const [budgetUsd, setBudgetUsd] = useState(1);
   const [rightsConfirmed, setRightsConfirmed] = useState(true);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -199,6 +357,15 @@ export function M1Studio() {
   const [forged, setForged] = useState(0);
   const [flagPlaced, setFlagPlaced] = useState(false);
   const built = useRef(0);
+  /** Monotonic performance counter for Rusty: one unit = one fetch trip. */
+  const [trips, setTrips] = useState(0);
+  /** true while queued trips advance the shown world one level per placement
+   *  (interrogation); false snaps to the full truth on placement. */
+  const strideOne = useRef(false);
+  const choreo = useRef<{ projectId: string | undefined; decisions: number }>({
+    projectId: undefined,
+    decisions: 0,
+  });
 
   const screen: M1StudioScreen = project ? screenForSnapshot(project) : "home";
 
@@ -219,8 +386,7 @@ export function M1Studio() {
     retry?: PendingStudioAction,
   ): Promise<ProjectSnapshot | undefined> => {
     setWorking(label);
-    setError("");
-    setBudgetRefused(false);
+    setError(undefined);
     try {
       const posted = await run();
       const fresh = await m1.getProject(posted.state.projectId);
@@ -229,10 +395,33 @@ export function M1Studio() {
       return fresh;
     } catch (cause) {
       const view = describeStudioError(cause);
-      setError(view.message);
-      setBudgetRefused(view.budgetRefused);
+      setError(view);
       if (view.budgetRefused && retry) {
-        setPendingAction(retry);
+        if (retry.kind === "generate" && project) {
+          try {
+            const latest = await m1.getProject(project.state.projectId);
+            applySnapshot(latest);
+            setPendingAction({
+              ...retry,
+              conceptPlanRevisionId: latest.state.conceptPlan!.revisionId,
+            });
+          } catch {
+            setPendingAction(retry);
+          }
+        } else if (retry.kind === "generate-sounds" && project) {
+          try {
+            const latest = await m1.getProject(project.state.projectId);
+            applySnapshot(latest);
+            setPendingAction({
+              ...retry,
+              soundPlanRevisionId: latest.state.soundPlan!.revisionId,
+            });
+          } catch {
+            setPendingAction(retry);
+          }
+        } else {
+          setPendingAction(retry);
+        }
         setRaiseDraft(
           suggestedNextBudgetUsd(project?.state.budgetUsd ?? budgetUsd),
         );
@@ -272,6 +461,27 @@ export function M1Studio() {
   }, []);
 
   useEffect(() => {
+    const projectId = project?.state.projectId;
+    if (!projectId || working) return;
+    let active = true;
+    const refresh = () => {
+      void m1
+        .getProject(projectId)
+        .then((snapshot) => {
+          if (active) applySnapshot(snapshot);
+        })
+        .catch(() => {
+          // Keep the current snapshot during a transient polling failure.
+        });
+    };
+    const timer = window.setInterval(refresh, 2_500);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [project?.state.projectId, working]);
+
+  useEffect(() => {
     const frontier = project?.interrogation?.frontier ?? [];
     const revision = project?.state.interrogation?.revisionId;
     if (!revision) return;
@@ -298,8 +508,23 @@ export function M1Studio() {
     setRegenNotes("");
   }, [project?.state.conceptSet?.revisionId]);
 
-  const busy = working.length > 0;
-  const generating = working === "generate" || working === "regenerate";
+  useEffect(() => {
+    setSoundRegenNotes({});
+  }, [project?.state.soundSet?.revisionId]);
+
+  const snapshotWait = project ? modelWaitForSnapshot(project) : undefined;
+  const effectiveWorking = working || snapshotWait?.action || "";
+  const busy = effectiveWorking.length > 0;
+  const waitView = working
+    ? modelWaitForWorking(working, project?.state.mode ?? mode)
+    : snapshotWait?.banner;
+  const waitStartedAt = working ? undefined : snapshotWait?.startedAt;
+  const generatingImages =
+    effectiveWorking === "generate" || effectiveWorking === "regenerate";
+  const generatingSounds =
+    effectiveWorking === "generate-sounds" ||
+    effectiveWorking === "regenerate-sound";
+  const generating = generatingImages || generatingSounds;
   const direction = project
     ? selectedDirection(project, viewedDirectionId)
     : undefined;
@@ -330,14 +555,39 @@ export function M1Studio() {
   const level = Math.min(shown, decisions);
   const hotbar = project ? hotbarForSnapshot(project) : [];
   const raisePrompt =
-    budgetRefused && project ? budgetRaisePrompt(project) : undefined;
+    error?.budgetRefused && pendingAction && project
+      ? budgetRaisePrompt(project)
+      : undefined;
 
+  /* The diorama earns its blocks through Rusty: a fresh snapshot only queues
+     trips, and the shown level advances when he places. A reload or project
+     switch instead syncs instantly — blocks already recorded on the
+     coordinator render immediately, with no replayed choreography. */
   useEffect(() => {
-    setShown((current) => (current > decisions ? decisions : current));
-  }, [decisions]);
+    const projectId = project?.state.projectId;
+    const prev = choreo.current;
+    choreo.current = { projectId, decisions };
+    const step = choreographyStep(
+      prev,
+      { projectId, decisions, screen },
+      voxelMaxLevel,
+    );
+    if (step.kind === "sync") {
+      setShown(decisions);
+      return;
+    }
+    if (step.kind === "trips") {
+      strideOne.current = step.stride === "level";
+      setTrips((count) => count + step.count);
+    }
+  }, [project?.state.projectId, decisions, screen]);
+  /* Safety net: if the choreography ever dies (no WebGL, hidden tab), the
+     world still reaches the truth. Re-arms on every placement, so a healthy
+     queue of ~11 s trips never triggers it. */
   useEffect(() => {
-    if (shown >= decisions) return;
-    const timer = window.setTimeout(() => setShown(decisions), 24_000);
+    const delay = choreographySafetyDelay(shown, decisions, voxelMaxLevel);
+    if (delay === undefined) return;
+    const timer = window.setTimeout(() => setShown(decisions), delay);
     return () => window.clearTimeout(timer);
   }, [decisions, shown]);
   useEffect(() => {
@@ -354,22 +604,39 @@ export function M1Studio() {
     return () => window.clearTimeout(timer);
   }, [screen]);
   const place = useCallback(() => {
-    setShown(built.current);
+    setShown((current) =>
+      strideOne.current ? Math.min(current + 1, built.current) : built.current,
+    );
     setForged((count) => count + 1);
   }, []);
   const plantFlag = useCallback(() => setFlagPlaced(true), []);
-  const imageReady = configuration?.imageProviders.find(
-    ({ provider }) => provider === "openai-subscription",
+  const elevenLabsReady = configuration?.soundProviders.find(
+    ({ provider }) => provider === "elevenlabs",
   );
+
+  const chooseMode = (nextMode: ProviderMode) => {
+    setMode(nextMode);
+    setOrchestratorProvider("openai");
+    setImplementationProvider("openai");
+    setImageProvider(nextMode === "live" ? "openai-subscription" : "none");
+  };
 
   const createProject = async () => {
     if (!rightsConfirmed || brief.trim().length < 40) return;
+    const routing = {
+      mode,
+      orchestratorProvider:
+        mode === "replay" ? ("openai" as const) : orchestratorProvider,
+      implementationProvider:
+        mode === "replay" ? ("openai" as const) : implementationProvider,
+      imageProvider: mode === "live" ? imageProvider : ("none" as const),
+      soundProvider: mode === "live" ? soundProvider : ("none" as const),
+    };
     const input: CreateProjectInput = {
       milestone: "m1",
       brief: brief.trim(),
-      mode,
-      imageProvider: mode === "live" ? "openai-subscription" : "none",
-      budgetUsd,
+      ...routing,
+      ...(showsMeteredBudget(routing) ? { budgetUsd } : {}),
       rightsConfirmed: true,
     };
     await mutate("create", () => m1.createM1Project(input));
@@ -381,8 +648,11 @@ export function M1Studio() {
       (question) => !drafts[question.questionId]?.trim(),
     );
     if (unanswered.length > 0) {
-      setError("Every question in this round needs an answer.");
-      setBudgetRefused(false);
+      setError(
+        describeStudioError(
+          new Error("Every question in this round needs an answer."),
+        ),
+      );
       return;
     }
     await mutate("answers", () =>
@@ -412,7 +682,9 @@ export function M1Studio() {
     notes?: string,
   ) => {
     if (!project?.state.gameDesignSpec) return;
-    await mutate("approve-gds", () =>
+    /* Only approval triggers a model call (visual directions). The label is
+       what keys the wait banner, so the fast decline paths use their own. */
+    await mutate(decision === "approved" ? "approve-gds" : "gds-decision", () =>
       m1.approveGameDesign(project.state.projectId, {
         targetType: "game-design",
         targetRevisionId: project.state.gameDesignSpec!.revisionId,
@@ -439,7 +711,11 @@ export function M1Studio() {
     const sha256 = directionSha256(project, direction.revisionId);
     if (!sha256) {
       setError(
-        "This direction is missing its revision hash. Reload the project before approving.",
+        describeStudioError(
+          new Error(
+            "This direction is missing its revision hash. Reload the project before approving.",
+          ),
+        ),
       );
       return;
     }
@@ -487,11 +763,18 @@ export function M1Studio() {
     );
   };
 
-  const submitConceptPlan = async () => {
+  const submitConceptPlan = async (
+    promptOverrides?: ConfirmConceptPlanInput["promptOverrides"],
+  ) => {
     if (!project?.state.conceptPlan) return;
+    const overrides =
+      promptOverrides && promptOverrides.length > 0
+        ? promptOverrides
+        : undefined;
     const retry: PendingStudioAction = {
       kind: "generate",
       conceptPlanRevisionId: project.state.conceptPlan.revisionId,
+      ...(overrides ? { promptOverrides: overrides } : {}),
     };
     await mutate(
       "generate",
@@ -499,6 +782,7 @@ export function M1Studio() {
         m1.confirmConceptPlan(project.state.projectId, {
           conceptPlanRevisionId: project.state.conceptPlan!.revisionId,
           confirmed: true,
+          ...(overrides ? { promptOverrides: overrides } : {}),
         }),
       retry,
     );
@@ -555,17 +839,79 @@ export function M1Studio() {
     );
   };
 
+  const submitSoundPlan = async (
+    promptOverrides?: ConfirmSoundPlanInput["promptOverrides"],
+  ) => {
+    if (!project?.state.soundPlan) return;
+    const overrides =
+      promptOverrides && promptOverrides.length > 0
+        ? promptOverrides
+        : undefined;
+    const retry: PendingStudioAction = {
+      kind: "generate-sounds",
+      soundPlanRevisionId: project.state.soundPlan.revisionId,
+      ...(overrides ? { promptOverrides: overrides } : {}),
+    };
+    await mutate(
+      "generate-sounds",
+      () =>
+        m1.confirmSoundPlan(project.state.projectId, {
+          soundPlanRevisionId: project.state.soundPlan!.revisionId,
+          confirmed: true,
+          ...(overrides ? { promptOverrides: overrides } : {}),
+        }),
+      retry,
+    );
+  };
+
+  const submitSoundRegenerate = async (slotId: string) => {
+    if (!project?.state.soundSet) return;
+    const notes = soundRegenNotes[slotId]?.trim();
+    const retry: PendingStudioAction = {
+      kind: "regenerate-sound",
+      soundSetRevisionId: project.state.soundSet.revisionId,
+      slotId,
+      ...(notes ? { notes } : {}),
+    };
+    const next = await mutate(
+      "regenerate-sound",
+      () =>
+        m1.regenerateSound(project.state.projectId, {
+          soundSetRevisionId: project.state.soundSet!.revisionId,
+          slotId,
+          ...(notes ? { notes } : {}),
+        }),
+      retry,
+    );
+    if (next)
+      setSoundRegenNotes((current) => {
+        const updated = { ...current };
+        delete updated[slotId];
+        return updated;
+      });
+  };
+
+  const decideSoundSet = async (decision: M1ApprovalInput["decision"]) => {
+    if (!project?.state.soundSet) return;
+    await mutate("approve-sounds", () =>
+      m1.approveSoundSet(project.state.projectId, {
+        targetType: "sound-set",
+        targetRevisionId: project.state.soundSet!.revisionId,
+        targetSha256: project.state.soundSet!.artifact.sha256,
+        decision,
+      }),
+    );
+  };
+
   const goHome = () => {
     setProject(null);
     writeProjectId(null);
-    setError("");
-    setBudgetRefused(false);
+    setError(undefined);
     setPendingAction(undefined);
   };
 
   const dismissError = () => {
-    setError("");
-    setBudgetRefused(false);
+    setError(undefined);
     setPendingAction(undefined);
   };
 
@@ -585,9 +931,46 @@ export function M1Studio() {
           m1.confirmConceptPlan(raised.state.projectId, {
             conceptPlanRevisionId: retry.conceptPlanRevisionId,
             confirmed: true,
+            ...(retry.promptOverrides && retry.promptOverrides.length > 0
+              ? { promptOverrides: retry.promptOverrides }
+              : {}),
           }),
         retry,
       );
+      return;
+    }
+    if (retry.kind === "generate-sounds") {
+      await mutate(
+        "generate-sounds",
+        () =>
+          m1.confirmSoundPlan(raised.state.projectId, {
+            soundPlanRevisionId: retry.soundPlanRevisionId,
+            confirmed: true,
+            ...(retry.promptOverrides && retry.promptOverrides.length > 0
+              ? { promptOverrides: retry.promptOverrides }
+              : {}),
+          }),
+        retry,
+      );
+      return;
+    }
+    if (retry.kind === "regenerate-sound") {
+      const next = await mutate(
+        "regenerate-sound",
+        () =>
+          m1.regenerateSound(raised.state.projectId, {
+            soundSetRevisionId: retry.soundSetRevisionId,
+            slotId: retry.slotId,
+            ...(retry.notes ? { notes: retry.notes } : {}),
+          }),
+        retry,
+      );
+      if (next)
+        setSoundRegenNotes((current) => {
+          const updated = { ...current };
+          delete updated[retry.slotId];
+          return updated;
+        });
       return;
     }
     const next = await mutate(
@@ -623,14 +1006,25 @@ export function M1Studio() {
         <section className="vx-generating">
           <span className="vx-kicker">
             <i />
-            ImageGen
+            {generatingSounds ? "Sound palette" : "ImageGen"}
           </span>
-          <h1>{liveGeneratingCopy(project.state.mode)}</h1>
+          <h1>
+            {generatingSounds
+              ? liveSoundGeneratingCopy(project.state.mode)
+              : liveGeneratingCopy(project.state.mode)}
+          </h1>
           <p>This can take a few minutes. Keep this page open.</p>
-          <BudgetChip
-            budgetUsd={project.state.budgetUsd}
-            spentUsd={project.state.spentUsd}
-          />
+          <span className="vx-thinking-clock">
+            <WaitClock startedAt={waitStartedAt} /> elapsed
+          </span>
+          {((generatingImages &&
+            project.state.mode === "live" &&
+            isMeteredImageProvider(project.state.imageProvider)) ||
+            (generatingSounds &&
+              project.state.mode === "live" &&
+              isMeteredSoundProvider(project.state.soundProvider))) && (
+            <BudgetChip project={project} />
+          )}
         </section>
       );
     if (screen === "home")
@@ -640,19 +1034,27 @@ export function M1Studio() {
           budgetUsd={budgetUsd}
           busy={busy}
           configuration={configuration}
-          imageReady={imageReady?.detail}
+          elevenLabsReady={elevenLabsReady}
+          imageProvider={imageProvider}
+          implementationProvider={implementationProvider}
           level={level}
           mode={mode}
+          orchestratorProvider={orchestratorProvider}
           projects={projects}
           rightsConfirmed={rightsConfirmed}
+          soundProvider={soundProvider}
           onBrief={setBrief}
           onBudget={setBudgetUsd}
           onCreate={() => void createProject()}
-          onMode={setMode}
+          onImageProvider={setImageProvider}
+          onImplementationProvider={setImplementationProvider}
+          onMode={chooseMode}
           onOpen={(next) => {
             applySnapshot(next);
           }}
+          onOrchestratorProvider={setOrchestratorProvider}
           onRights={setRightsConfirmed}
+          onSoundProvider={setSoundProvider}
         />
       );
     if (!project) return null;
@@ -688,12 +1090,9 @@ export function M1Studio() {
       return (
         <GameDesignScreen
           busy={busy}
-          level={level}
           needsRevise={needsGameDesignRevise}
-          palette={world.palette}
           project={project}
           reviseText={reviseText}
-          styled={world.styled}
           onApprove={() => void decideGameDesign("approved")}
           onReject={() => void decideGameDesign("rejected")}
           onRequestChanges={() =>
@@ -738,7 +1137,9 @@ export function M1Studio() {
         <ConceptPlanScreen
           busy={busy}
           project={project}
-          onConfirm={() => void submitConceptPlan()}
+          onConfirm={(promptOverrides) =>
+            void submitConceptPlan(promptOverrides)
+          }
         />
       );
     if (screen === "concept-review" && showPackage)
@@ -774,6 +1175,28 @@ export function M1Studio() {
           }}
         />
       );
+    if (screen === "sound-plan")
+      return (
+        <SoundPlanScreen
+          busy={busy}
+          project={project}
+          onConfirm={(promptOverrides) => void submitSoundPlan(promptOverrides)}
+        />
+      );
+    if (screen === "sound-review")
+      return (
+        <SoundPlaybackScreen
+          busy={busy}
+          notes={soundRegenNotes}
+          project={project}
+          onApprove={() => void decideSoundSet("approved")}
+          onNotes={(slotId, value) =>
+            setSoundRegenNotes((current) => ({ ...current, [slotId]: value }))
+          }
+          onRegenerate={(slotId) => void submitSoundRegenerate(slotId)}
+          onReject={() => void decideSoundSet("rejected")}
+        />
+      );
     if (screen === "complete") return <CompleteScreen project={project} />;
     if (screen === "blocked") return <BlockedScreen project={project} />;
     return null;
@@ -793,6 +1216,8 @@ export function M1Studio() {
   const conceptHost =
     screen === "concept-plan" ||
     screen === "concept-review" ||
+    screen === "sound-plan" ||
+    screen === "sound-review" ||
     screen === "complete" ||
     screen === "blocked";
 
@@ -815,7 +1240,7 @@ export function M1Studio() {
         <div className="vx-plaque">
           <small>
             {project
-              ? `${project.state.mode.toUpperCase()} · ${project.state.stage}`
+              ? `${project.state.mode.toUpperCase()} · ${project.state.stage} · ORCH ${executionProviderLabels[project.state.orchestratorProvider]} · IMPL ${executionProviderLabels[project.state.implementationProvider]} · IMAGE ${imageProviderLabels[project.state.imageProvider]}`
               : "WORLD SLOT 01"}
           </small>
           <strong>
@@ -823,25 +1248,26 @@ export function M1Studio() {
           </strong>
         </div>
         <div className="vx-session">
-          {project && (
-            <BudgetChip
-              budgetUsd={project.state.budgetUsd}
-              spentUsd={project.state.spentUsd}
-            />
-          )}
+          {project && <BudgetChip project={project} />}
           <button className="vx-session-link" onClick={goHome} type="button">
             Worlds
           </button>
         </div>
       </header>
       <div className={conceptHost ? "vx-stage vx-stage-concepts" : "vx-stage"}>
+        {waitView && (
+          <ModelWaitBanner
+            key={`${effectiveWorking}:${waitStartedAt ?? "local"}`}
+            startedAt={waitStartedAt}
+            view={waitView}
+          />
+        )}
         {error && (
           <StudioError
-            budgetRefused={budgetRefused && pendingAction !== undefined}
             busy={busy}
-            message={error}
             prompt={raisePrompt}
             raiseBudgetUsd={raiseDraft}
+            view={error}
             onDismiss={dismissError}
             onRaiseBudgetUsd={setRaiseDraft}
             onRetry={() => void raiseBudgetAndRetry()}
@@ -870,13 +1296,24 @@ export function M1Studio() {
             </span>
           </div>
         )}
+        {/* Mounted inside the stage scroller on purpose: his containing block
+            is the scrolled content, so free parking and measured docks both
+            move with the scene he is composed into — scrolling can never
+            separate him from his perch. (A viewport-fixed mascot also nulls
+            offsetParent, which silently disables every measured dock.) */}
+        {/* decisions is his trip counter (one unit = one walk), not the raw
+            snapshot count: reloads sync the world without queueing walks, a
+            multi-answer round queues one walk per world level, and each
+            carried block is aimed at the level about to appear (shown + 1). */}
+        <MascotStage
+          decisions={trips}
+          onFlagPlaced={plantFlag}
+          onPlace={place}
+          placeLevel={shown + 1}
+          queue
+          screen={mascot.screen}
+        />
       </div>
-      <MascotStage
-        decisions={decisions}
-        onFlagPlaced={plantFlag}
-        onPlace={place}
-        screen={mascot.screen}
-      />
       <footer className="vx-hotbar" aria-label="Workflow hotbar">
         {(project
           ? hotbar
@@ -917,6 +1354,15 @@ export function M1Studio() {
                 active: false,
                 status: "Needs style",
               },
+              {
+                key: "sounds",
+                label: "SOUNDS",
+                tone: "wood",
+                filled: false,
+                locked: true,
+                active: false,
+                status: "Needs images",
+              },
             ]
         ).map((slot, index) => (
           <button
@@ -952,34 +1398,70 @@ function HomeScreen({
   budgetUsd,
   busy,
   configuration,
-  imageReady,
+  elevenLabsReady,
+  imageProvider,
+  implementationProvider,
   level,
   mode,
+  orchestratorProvider,
   projects,
   rightsConfirmed,
+  soundProvider,
   onBrief,
   onBudget,
   onCreate,
+  onImageProvider,
+  onImplementationProvider,
   onMode,
   onOpen,
+  onOrchestratorProvider,
   onRights,
+  onSoundProvider,
 }: {
   brief: string;
   budgetUsd: number;
   busy: boolean;
   configuration: ConfigurationStatus | null;
-  imageReady: string | undefined;
+  elevenLabsReady: ConfigurationStatus["soundProviders"][number] | undefined;
+  imageProvider: ImageProvider;
+  implementationProvider: ExecutionProvider;
   level: number;
   mode: ProviderMode;
+  orchestratorProvider: ExecutionProvider;
   projects: ProjectSnapshot[];
   rightsConfirmed: boolean;
+  soundProvider: SoundProvider;
   onBrief: (value: string) => void;
   onBudget: (value: number) => void;
   onCreate: () => void;
+  onImageProvider: (provider: ImageProvider) => void;
+  onImplementationProvider: (provider: ExecutionProvider) => void;
   onMode: (mode: ProviderMode) => void;
   onOpen: (project: ProjectSnapshot) => void;
+  onOrchestratorProvider: (provider: ExecutionProvider) => void;
   onRights: (value: boolean) => void;
+  onSoundProvider: (provider: SoundProvider) => void;
 }) {
+  const orchestratorReadiness = configuration?.executionProviders.find(
+    ({ provider }) => provider === orchestratorProvider,
+  );
+  const implementationReadiness = configuration?.executionProviders.find(
+    ({ provider }) => provider === implementationProvider,
+  );
+  const imageReadiness = configuration?.imageProviders.find(
+    ({ provider }) => provider === imageProvider,
+  );
+  const routing = {
+    mode,
+    orchestratorProvider:
+      mode === "replay" ? ("openai" as const) : orchestratorProvider,
+    implementationProvider:
+      mode === "replay" ? ("openai" as const) : implementationProvider,
+    imageProvider: mode === "live" ? imageProvider : ("none" as const),
+    soundProvider: mode === "live" ? soundProvider : ("none" as const),
+  };
+  const showBudget = showsMeteredBudget(routing);
+
   return (
     <section className="vx-start">
       <div className="vx-start-copy">
@@ -1028,23 +1510,126 @@ function HomeScreen({
               <small>OpenAI subscription ImageGen</small>
             </button>
           </div>
-          <label className="vx-budget-field">
-            <span>Budget USD</span>
-            <input
-              aria-label="Budget in USD"
-              min={0.01}
-              onChange={(event) => onBudget(Number(event.target.value))}
-              step={0.01}
-              type="number"
-              value={budgetUsd}
-            />
-            <small>
-              {mode === "live"
-                ? (imageReady ??
-                  "Live create is refused unless FULCRUM_M1_LIVE_AUTHORIZED=true.")
-                : "Replay does not call ImageGen."}
-            </small>
-          </label>
+          {mode === "live" && (
+            <div className="vx-mode-row vx-sound-provider-row">
+              <button
+                className={soundProvider === "elevenlabs" ? "selected" : ""}
+                onClick={() => onSoundProvider("elevenlabs")}
+                type="button"
+              >
+                <strong>ElevenLabs</strong>
+                <small>
+                  {elevenLabsReady?.ready
+                    ? (elevenLabsReady.detail ?? "Sound effects")
+                    : (elevenLabsReady?.detail ?? "Needs ELEVENLABS_API_KEY")}
+                </small>
+              </button>
+              <button
+                className={soundProvider === "none" ? "selected" : ""}
+                onClick={() => onSoundProvider("none")}
+                type="button"
+              >
+                <strong>None</strong>
+                <small>Deterministic WAV · no spend</small>
+              </button>
+            </div>
+          )}
+          <div className="vx-model-routing">
+            <span className="vx-routing-heading">
+              <strong>MODEL ROUTING</strong>
+              <small>
+                {mode === "replay"
+                  ? "Replay is offline · routing stays deterministic"
+                  : "Local provider readiness"}
+              </small>
+            </span>
+            <label>
+              <span>Orchestrator</span>
+              <select
+                aria-label="Orchestrator model provider"
+                disabled={mode === "replay"}
+                onChange={(event) =>
+                  onOrchestratorProvider(
+                    event.target.value as ExecutionProvider,
+                  )
+                }
+                value={orchestratorProvider}
+              >
+                {configuration?.executionProviders.map((entry) => (
+                  <option key={entry.provider} value={entry.provider}>
+                    {executionProviderLabels[entry.provider]}
+                  </option>
+                ))}
+              </select>
+              <small className={orchestratorReadiness?.ready ? "ready" : ""}>
+                {mode === "replay"
+                  ? "Replay is offline · fixture text is deterministic"
+                  : (orchestratorReadiness?.detail ?? "Checking provider")}
+              </small>
+            </label>
+            <label>
+              <span>Implementation</span>
+              <select
+                aria-label="Implementation model provider"
+                disabled={mode === "replay"}
+                onChange={(event) =>
+                  onImplementationProvider(
+                    event.target.value as ExecutionProvider,
+                  )
+                }
+                value={implementationProvider}
+              >
+                {configuration?.executionProviders.map((entry) => (
+                  <option key={entry.provider} value={entry.provider}>
+                    {executionProviderLabels[entry.provider]}
+                  </option>
+                ))}
+              </select>
+              <small className={implementationReadiness?.ready ? "ready" : ""}>
+                {mode === "replay"
+                  ? "Replay is offline · saved for later milestones"
+                  : `${implementationReadiness?.detail ?? "Checking provider"} · M1 saves this for later milestones`}
+              </small>
+            </label>
+            <label>
+              <span>Image</span>
+              <select
+                aria-label="Image model provider"
+                disabled={mode === "replay"}
+                onChange={(event) =>
+                  onImageProvider(event.target.value as ImageProvider)
+                }
+                value={imageProvider}
+              >
+                {configuration?.imageProviders.map((entry) => (
+                  <option key={entry.provider} value={entry.provider}>
+                    {imageProviderLabels[entry.provider]}
+                  </option>
+                ))}
+              </select>
+              <small className={imageReadiness?.ready ? "ready" : ""}>
+                {mode === "replay"
+                  ? "Replay is offline · no image model is called"
+                  : (imageReadiness?.detail ?? "Checking provider")}
+              </small>
+            </label>
+          </div>
+          {showBudget ? (
+            <label className="vx-budget-field">
+              <span>Budget USD</span>
+              <input
+                aria-label="Budget in USD"
+                min={0.01}
+                onChange={(event) => onBudget(Number(event.target.value))}
+                step={0.01}
+                type="number"
+                value={budgetUsd}
+              />
+              <small>Caps calls made through metered provider routes.</small>
+            </label>
+          ) : (
+            <p className="vx-routing-cost-note">{routingCostNote(routing)}</p>
+          )}
           <label className="vx-rights">
             <input
               checked={rightsConfirmed}
@@ -1056,7 +1641,11 @@ function HomeScreen({
           <span className="vx-composer-foot">
             <small>
               {mode === "live"
-                ? "Live ImageGen uses your signed-in OpenAI subscription"
+                ? imageProvider === "openai-subscription"
+                  ? "Live ImageGen uses your signed-in OpenAI subscription"
+                  : showBudget
+                    ? "Metered calls stop at the project budget"
+                    : "No image provider is called"
                 : configuration?.fixtureBrief
                   ? "Replay fixtures stay on this machine"
                   : "Replay mode"}
@@ -1067,8 +1656,7 @@ function HomeScreen({
                 busy ||
                 brief.trim().length < 40 ||
                 !rightsConfirmed ||
-                !Number.isFinite(budgetUsd) ||
-                budgetUsd <= 0
+                (showBudget && (!Number.isFinite(budgetUsd) || budgetUsd <= 0))
               }
               onClick={onCreate}
               type="button"
@@ -1107,8 +1695,9 @@ function HomeScreen({
                     </small>
                     <strong>{projectTitle(item)}</strong>
                     <i>
-                      {formatUsd(item.state.spentUsd)} /{" "}
-                      {formatUsd(item.state.budgetUsd)}
+                      {showsMeteredBudget(item.state)
+                        ? `${formatUsd(item.state.spentUsd)} / ${formatUsd(item.state.budgetUsd)}`
+                        : "No metered spend"}
                     </i>
                   </button>
                 </li>
@@ -1308,12 +1897,9 @@ function SignoffScreen({
 
 function GameDesignScreen({
   busy,
-  level,
   needsRevise,
-  palette,
   project,
   reviseText,
-  styled,
   onApprove,
   onReject,
   onRequestChanges,
@@ -1321,11 +1907,8 @@ function GameDesignScreen({
   onReviseText,
 }: {
   busy: boolean;
-  level: number;
   needsRevise: boolean;
-  palette: string[];
   project: ProjectSnapshot;
-  styled: boolean;
   reviseText: string;
   onApprove: () => void;
   onReject: () => void;
@@ -1335,16 +1918,12 @@ function GameDesignScreen({
 }) {
   const spec = project.gameDesignSpec;
   if (!spec) return null;
+  /* A full-screen reading layout: no world panel, no Rusty (the stage hides
+     him via data-mascot="off"). One centered reading column; the decision
+     row stays pinned inside the card so approving never needs a hunt to the
+     bottom of a long spec. */
   return (
     <section className="vx-gds-layout">
-      <div className="vx-signoff-world">
-        <VoxelWorld
-          direction={{ palette }}
-          level={level}
-          size="md"
-          styled={styled}
-        />
-      </div>
       <div className="vx-gds">
         <header>
           <span className="vx-kicker">
@@ -1356,71 +1935,74 @@ function GameDesignScreen({
             {spec.genre} · {spec.camera}
           </p>
         </header>
-        <dl>
-          <div>
-            <dt>Core fantasy</dt>
-            <dd>{spec.coreFantasy}</dd>
+        <div className="vx-gds-body">
+          <dl>
+            <div>
+              <dt>Core fantasy</dt>
+              <dd>{spec.coreFantasy}</dd>
+            </div>
+            <div>
+              <dt>Objective</dt>
+              <dd>{spec.objective}</dd>
+            </div>
+            <div>
+              <dt>Session</dt>
+              <dd>{spec.sessionMinutes} minutes</dd>
+            </div>
+            <div>
+              <dt>Loop</dt>
+              <dd>{spec.coreLoop.join(" → ")}</dd>
+            </div>
+            <div>
+              <dt>Verbs</dt>
+              <dd>{spec.playerVerbs.join(" · ")}</dd>
+            </div>
+            <div>
+              <dt>Constraints</dt>
+              <dd>{spec.gameplayConstraints.join(" · ") || "None recorded"}</dd>
+            </div>
+          </dl>
+          <div className="vx-gds-lists">
+            <div>
+              <small>Facts</small>
+              {spec.facts.map((fact) => (
+                <p key={fact.statementId}>{fact.text}</p>
+              ))}
+            </div>
+            <div>
+              <small>Assumptions</small>
+              {spec.assumptions.map((item) => (
+                <p key={item.statementId}>
+                  {item.text}{" "}
+                  <i>
+                    ({item.origin.source}
+                    {item.origin.reference ? ` · ${item.origin.reference}` : ""}
+                    )
+                  </i>
+                </p>
+              ))}
+            </div>
           </div>
-          <div>
-            <dt>Objective</dt>
-            <dd>{spec.objective}</dd>
-          </div>
-          <div>
-            <dt>Session</dt>
-            <dd>{spec.sessionMinutes} minutes</dd>
-          </div>
-          <div>
-            <dt>Loop</dt>
-            <dd>{spec.coreLoop.join(" → ")}</dd>
-          </div>
-          <div>
-            <dt>Verbs</dt>
-            <dd>{spec.playerVerbs.join(" · ")}</dd>
-          </div>
-          <div>
-            <dt>Constraints</dt>
-            <dd>{spec.gameplayConstraints.join(" · ") || "None recorded"}</dd>
-          </div>
-        </dl>
-        <div className="vx-gds-lists">
-          <div>
-            <small>Facts</small>
-            {spec.facts.map((fact) => (
-              <p key={fact.statementId}>{fact.text}</p>
-            ))}
-          </div>
-          <div>
-            <small>Assumptions</small>
-            {spec.assumptions.map((item) => (
-              <p key={item.statementId}>
-                {item.text}{" "}
-                <i>
-                  ({item.origin.source}
-                  {item.origin.reference ? ` · ${item.origin.reference}` : ""})
-                </i>
-              </p>
-            ))}
-          </div>
+          {needsRevise && (
+            <label className="vx-answer">
+              <span>Revise the spec before it can be approved</span>
+              <textarea
+                aria-label="Game design revision"
+                onChange={(event) => onReviseText(event.target.value)}
+                placeholder="The proof boundary is…"
+                value={reviseText}
+              />
+              <button
+                className="vx-primary"
+                disabled={busy || !reviseText.trim()}
+                onClick={onRevise}
+                type="button"
+              >
+                Record revision <i>▸</i>
+              </button>
+            </label>
+          )}
         </div>
-        {needsRevise && (
-          <label className="vx-answer">
-            <span>Revise the spec before it can be approved</span>
-            <textarea
-              aria-label="Game design revision"
-              onChange={(event) => onReviseText(event.target.value)}
-              placeholder="The proof boundary is…"
-              value={reviseText}
-            />
-            <button
-              className="vx-primary"
-              disabled={busy || !reviseText.trim()}
-              onClick={onRevise}
-              type="button"
-            >
-              Record revision <i>▸</i>
-            </button>
-          </label>
-        )}
         <footer className="vx-gds-actions">
           <button
             className="vx-secondary"
@@ -1682,48 +2264,113 @@ function ConceptPlanScreen({
 }: {
   busy: boolean;
   project: ProjectSnapshot;
-  onConfirm: () => void;
+  onConfirm: (
+    promptOverrides?: ConfirmConceptPlanInput["promptOverrides"],
+  ) => void;
 }) {
   const slots = project.conceptPlan?.slots ?? [];
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const textFor = (slot: (typeof slots)[number]): string =>
+    drafts[slot.slotId] ?? slot.prompt ?? "";
+  const dirtyOverrides = (): ConceptPlanPromptOverride[] =>
+    slots.flatMap((slot) => {
+      if (slot.prompt === undefined) return [];
+      const next = textFor(slot);
+      if (next === slot.prompt) return [];
+      return [{ slotId: slot.slotId, prompt: next }];
+    });
+  const invalidDraft = slots.some((slot) => {
+    if (slot.prompt === undefined) return false;
+    return textFor(slot).trim().length === 0;
+  });
+  const meteredImage =
+    project.state.mode === "live" &&
+    isMeteredImageProvider(project.state.imageProvider);
   return (
     <section className="concept-plan-review">
       <header>
         <span className="m1-kicker">Before ImageGen runs</span>
         <h1>Fulcrum proposes creating these images.</h1>
         <p>
-          This list comes from the Game Design Spec you approved. Confirming it
-          authorizes generation. The proposed list is not editable here.
+          This list comes from the Game Design Spec you approved. Each prompt is
+          sent to ImageGen exactly as written. Edit a slot before you confirm.
         </p>
+        <div
+          aria-hidden="true"
+          className="vx-mascot-perch"
+          data-mascot-frame="perch"
+        />
       </header>
       <div className="concept-plan-list">
-        {slots.map((slot, index) => (
-          <article key={slot.slotId}>
-            <i>{padIndex(index)}</i>
-            <span>
-              <small>{slot.purpose}</small>
-              <strong>{slot.name}</strong>
-              <p>{slot.tokenCategories.join(" · ")}</p>
-            </span>
-          </article>
-        ))}
+        {slots.map((slot, index) => {
+          const proposed = slot.prompt;
+          const draft = textFor(slot);
+          const dirty = proposed !== undefined && draft !== proposed;
+          return (
+            <article key={slot.slotId}>
+              <i>{padIndex(index)}</i>
+              <span>
+                <small>{slot.purpose}</small>
+                <strong>{slot.name}</strong>
+                <p>{slot.tokenCategories.join(" · ")}</p>
+                {proposed !== undefined && (
+                  <label className="slot-prompt">
+                    <span>Prompt sent to ImageGen</span>
+                    <SlotPromptEditor
+                      onChange={(value) =>
+                        setDrafts((current) => ({
+                          ...current,
+                          [slot.slotId]: value,
+                        }))
+                      }
+                      value={draft}
+                    />
+                    {dirty && (
+                      <button
+                        className="slot-prompt-reset"
+                        onClick={() =>
+                          setDrafts((current) => {
+                            const next = { ...current };
+                            delete next[slot.slotId];
+                            return next;
+                          })
+                        }
+                        type="button"
+                      >
+                        Reset to proposed
+                      </button>
+                    )}
+                  </label>
+                )}
+              </span>
+            </article>
+          );
+        })}
       </div>
       <footer>
         <div>
           <strong>
-            {project.state.mode === "live"
-              ? "OpenAI subscription · ImageGen"
-              : "Replay · local fixtures"}
+            {meteredImage
+              ? imageProviderLabels[project.state.imageProvider]
+              : project.state.mode === "live"
+                ? "OpenAI subscription · ImageGen"
+                : "Replay · local fixtures"}
           </strong>
           <small>
-            Spent {formatUsd(project.state.spentUsd)} of{" "}
-            {formatUsd(project.state.budgetUsd)}. Confirming the plan generates
-            every listed image.
+            {meteredImage
+              ? `Spent ${formatUsd(project.state.spentUsd)} of ${formatUsd(project.state.budgetUsd)}. Confirming the plan generates every listed image.`
+              : project.state.mode === "live"
+                ? "Uses your OpenAI subscription. Confirming the plan generates every listed image."
+                : "Replay stays local. Confirming the plan generates every listed image."}
           </small>
         </div>
         <button
           className="m1-primary"
-          disabled={busy}
-          onClick={onConfirm}
+          disabled={busy || invalidDraft}
+          onClick={() => {
+            const overrides = dirtyOverrides();
+            onConfirm(overrides.length > 0 ? overrides : undefined);
+          }}
           type="button"
         >
           Confirm list and generate <span>→</span>
@@ -1817,10 +2464,12 @@ function ConceptReviewScreen({
               {viewed?.document?.ancestors.length ?? 0} ancestor hashes
             </small>
           </section>
-          <BudgetChip
-            budgetUsd={project.state.budgetUsd}
-            spentUsd={project.state.spentUsd}
-          />
+          {viewed?.document?.prompt && (
+            <details className="exact-prompt-sent">
+              <summary>Exact prompt sent</summary>
+              <pre>{viewed.document.prompt}</pre>
+            </details>
+          )}
           <section className="full-revision-history">
             <span className="control-label">Revision history</span>
             {revisions.map((revision) => (
@@ -1857,8 +2506,12 @@ function ConceptReviewScreen({
               value={notes}
             />
             <small>
-              Each regeneration is a new revision. Live mode reserves the
-              per-image cost from the project budget.
+              Each regeneration is a new revision.{" "}
+              {project.state.mode === "live"
+                ? isMeteredImageProvider(project.state.imageProvider)
+                  ? "The metered image route uses the project budget."
+                  : "The image uses your OpenAI subscription with no metered spend."
+                : "Replay stays local."}
             </small>
           </label>
           <button
@@ -1873,8 +2526,9 @@ function ConceptReviewScreen({
           </button>
           {project.state.mode === "live" && (
             <p className="image-gen-paid-note">
-              Uses your signed-in OpenAI subscription ·{" "}
-              {formatUsd(IMAGE_RESERVE_USD)} per image
+              {isMeteredImageProvider(project.state.imageProvider)
+                ? "Uses the selected metered image route"
+                : "Uses your signed-in OpenAI subscription · no metered spend"}
             </p>
           )}
           <button
@@ -1920,12 +2574,17 @@ function PackageScreen({
   return (
     <section className="concept-package-review">
       <header>
-        <span className="m1-kicker">Final approval</span>
+        <span className="m1-kicker">Concept package</span>
         <h1>Review the concept package.</h1>
         <p>
           Detailed image review is complete. This page only confirms which kept
           revisions will become project truth.
         </p>
+        <div
+          aria-hidden="true"
+          className="vx-mascot-perch"
+          data-mascot-frame="perch"
+        />
       </header>
       <div className="package-summary-grid">
         {slots.map((slot) => {
@@ -1981,20 +2640,247 @@ function CompleteScreen({ project }: { project: ProjectSnapshot }) {
   return (
     <section className="concept-complete">
       <span className="complete-mark">✓</span>
-      <span className="m1-kicker">Concept package approved</span>
+      <span className="m1-kicker">Sound palette approved</span>
       <h1>M1 is complete.</h1>
       <p>
-        The kept image revisions are now the approved creative package. Nothing
-        else was generated or selected.
+        The kept image revisions and the sound palette are now the approved
+        creative package. Nothing else was generated or selected.
       </p>
       <div className="complete-lineage">
         Game Design Spec → {directionName} Visual Bible → approved concept
-        package
+        package → sound palette
       </div>
-      <BudgetChip
-        budgetUsd={project.state.budgetUsd}
-        spentUsd={project.state.spentUsd}
-      />
+      <BudgetChip project={project} />
+    </section>
+  );
+}
+
+function SoundPlanScreen({
+  busy,
+  project,
+  onConfirm,
+}: {
+  busy: boolean;
+  project: ProjectSnapshot;
+  onConfirm: (
+    promptOverrides?: ConfirmSoundPlanInput["promptOverrides"],
+  ) => void;
+}) {
+  const slots = project.soundPlan?.slots ?? [];
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const textFor = (slot: (typeof slots)[number]): string =>
+    drafts[slot.slotId] ?? slot.prompt;
+  const dirtyOverrides = (): SoundPlanPromptOverride[] =>
+    slots.flatMap((slot) => {
+      const next = textFor(slot);
+      if (next === slot.prompt) return [];
+      return [{ slotId: slot.slotId, prompt: next }];
+    });
+  const invalidDraft = slots.some((slot) => textFor(slot).trim().length === 0);
+  const liveElevenLabs =
+    project.state.mode === "live" &&
+    isMeteredSoundProvider(project.state.soundProvider);
+  const clipCost = liveElevenLabs ? SOUND_RESERVE_USD * slots.length : 0;
+  return (
+    <section className="concept-plan-review sound-plan-review">
+      <header>
+        <span className="m1-kicker">Before sound generation runs</span>
+        <h1>Fulcrum proposes this sound palette.</h1>
+        <p>
+          These clips come from the Game Design Spec and visual direction you
+          approved. Each prompt is sent exactly as written. Edit a slot before
+          you confirm.
+        </p>
+        <div
+          aria-hidden="true"
+          className="vx-mascot-perch"
+          data-mascot-frame="perch"
+        />
+      </header>
+      <div className="concept-plan-list">
+        {slots.map((slot, index) => {
+          const proposed = slot.prompt;
+          const draft = textFor(slot);
+          const dirty = draft !== proposed;
+          return (
+            <article key={slot.slotId}>
+              <i>{padIndex(index)}</i>
+              <span>
+                <small>{slot.purpose}</small>
+                <strong>{slot.title}</strong>
+                <p>
+                  {slot.durationSeconds.toFixed(1)}s{slot.loop ? " · loop" : ""}
+                </p>
+                <label className="slot-prompt">
+                  <span>Prompt sent to sound generation</span>
+                  <SlotPromptEditor
+                    maxLength={SOUND_PROMPT_MAX}
+                    onChange={(value) =>
+                      setDrafts((current) => ({
+                        ...current,
+                        [slot.slotId]: value,
+                      }))
+                    }
+                    value={draft}
+                  />
+                  {dirty && (
+                    <button
+                      className="slot-prompt-reset"
+                      onClick={() =>
+                        setDrafts((current) => {
+                          const next = { ...current };
+                          delete next[slot.slotId];
+                          return next;
+                        })
+                      }
+                      type="button"
+                    >
+                      Reset to proposed
+                    </button>
+                  )}
+                </label>
+              </span>
+            </article>
+          );
+        })}
+      </div>
+      <footer>
+        <div>
+          <strong>{soundRouteLabel(project.state)}</strong>
+          <small>
+            {liveElevenLabs
+              ? `Spent ${formatUsd(project.state.spentUsd)} of ${formatUsd(project.state.budgetUsd)}. Confirming the palette generates every listed clip and reserves ${formatUsd(clipCost)}.`
+              : "Confirming the palette generates every listed clip with no metered sound spend."}
+          </small>
+        </div>
+        <button
+          className="m1-primary"
+          disabled={busy || invalidDraft}
+          onClick={() => {
+            const overrides = dirtyOverrides();
+            onConfirm(overrides.length > 0 ? overrides : undefined);
+          }}
+          type="button"
+        >
+          Confirm palette and generate <span>→</span>
+        </button>
+      </footer>
+    </section>
+  );
+}
+
+function SoundPlaybackScreen({
+  busy,
+  notes,
+  project,
+  onApprove,
+  onNotes,
+  onRegenerate,
+  onReject,
+}: {
+  busy: boolean;
+  notes: Record<string, string>;
+  project: ProjectSnapshot;
+  onApprove: () => void;
+  onNotes: (slotId: string, value: string) => void;
+  onRegenerate: (slotId: string) => void;
+  onReject: () => void;
+}) {
+  const slots = project.soundSet?.slots ?? [];
+  return (
+    <section className="sound-playback-review">
+      <header>
+        <span className="m1-kicker">Sound palette</span>
+        <h1>Listen to the generated clips.</h1>
+        <p>
+          Each clip is the prompt that was sent. Regenerate a slot with a
+          focused note, then approve the palette to complete M1.
+        </p>
+        <div
+          aria-hidden="true"
+          className="vx-mascot-perch"
+          data-mascot-frame="perch"
+        />
+      </header>
+      <div className="sound-playback-list">
+        {slots.map((slot, index) => {
+          const documents = project.soundDocuments?.[slot.slotId] ?? [];
+          const selectedIndex = slot.revisions.findIndex(
+            (entry) => entry.revision.revisionId === slot.selectedRevisionId,
+          );
+          const selected =
+            (selectedIndex >= 0 ? documents[selectedIndex] : undefined) ??
+            documents.at(-1);
+          const regenCount =
+            project.state.soundRegenerationCounts?.[slot.slotId] ?? 0;
+          return (
+            <article key={slot.slotId}>
+              <i>{padIndex(index)}</i>
+              <span>
+                <small>{slot.purpose}</small>
+                <strong>{slot.title}</strong>
+                {selected?.audio.uri ? (
+                  <audio controls preload="metadata" src={selected.audio.uri} />
+                ) : (
+                  <p>No audio artifact on this revision.</p>
+                )}
+                {selected?.prompt && (
+                  <details className="exact-prompt-sent">
+                    <summary>Exact prompt sent</summary>
+                    <pre>{selected.prompt}</pre>
+                  </details>
+                )}
+                <label className="slot-prompt">
+                  <span>Regenerate this slot</span>
+                  <textarea
+                    maxLength={1000}
+                    onChange={(event) =>
+                      onNotes(slot.slotId, event.target.value)
+                    }
+                    placeholder="Describe the focused change for the next clip."
+                    rows={2}
+                    value={notes[slot.slotId] ?? ""}
+                  />
+                </label>
+                <button
+                  className="m1-secondary"
+                  disabled={busy}
+                  onClick={() => onRegenerate(slot.slotId)}
+                  type="button"
+                >
+                  {project.state.mode === "live" &&
+                  project.state.soundProvider === "elevenlabs"
+                    ? `Generate a new clip · ${formatUsd(SOUND_RESERVE_USD)}`
+                    : "Regenerate this slot"}
+                </button>
+                {regenCount > 0 && (
+                  <small>
+                    {regenCount} regeneration{regenCount === 1 ? "" : "s"}
+                  </small>
+                )}
+              </span>
+            </article>
+          );
+        })}
+      </div>
+      <footer>
+        <button
+          className="m1-secondary"
+          disabled={busy}
+          onClick={onReject}
+          type="button"
+        >
+          Reject palette
+        </button>
+        <button
+          className="m1-primary"
+          disabled={busy}
+          onClick={onApprove}
+          type="button"
+        >
+          Approve sound palette <span>→</span>
+        </button>
+      </footer>
     </section>
   );
 }

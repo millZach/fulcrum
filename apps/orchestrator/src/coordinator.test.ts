@@ -26,6 +26,37 @@ afterEach(() => {
 });
 
 describe("M0Coordinator replay path", () => {
+  it("preserves a useful message when a workflow phase rejects with an object", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const coordinator = new M0Coordinator(repository);
+    const coordinatorInternals = coordinator as unknown as {
+      creative: {
+        develop: () => Promise<never>;
+      };
+    };
+    coordinatorInternals.creative.develop = vi.fn().mockRejectedValue({
+      error: new Error("The response schema uses an unsupported draft."),
+    });
+
+    const blocked = await coordinator.create({
+      brief: M0_FIXTURE_BRIEF,
+      mode: "replay",
+      assetProvider: "meshy",
+      orchestratorProvider: "claude",
+      implementationProvider: "grok",
+      imageProvider: "none",
+      soundProvider: "none",
+      budgetUsd: 1,
+      rightsConfirmed: true,
+    });
+
+    expect(blocked.state.blockedReason).toMatchObject({
+      code: "workflow-phase-failed",
+      message: "The response schema uses an unsupported draft.",
+    });
+    repository.close();
+  });
+
   it("persists an immutable lineage across restart and reaches visual review", async () => {
     const root = temporaryRoot();
     const firstRepository = new ProjectRepository(root);
