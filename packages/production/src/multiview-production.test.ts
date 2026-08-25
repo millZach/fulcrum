@@ -360,7 +360,7 @@ describe("AssetProduction M2 durability", () => {
     ],
   ])(
     "replay_%s_capability_and_fingerprint_ignore_live_model_env",
-    async (assetProvider, envName, unsupportedModel, pinnedModel) => {
+    async (assetProvider, envName, liveModelOverride, pinnedModel) => {
       const context = fixture({ mode: "replay", assetProvider });
       const production = new AssetProduction(context.repository);
       const pinnedAdapter =
@@ -377,7 +377,7 @@ describe("AssetProduction M2 durability", () => {
       });
 
       const withoutOverride = await production.ensure(context.request);
-      vi.stubEnv(envName, unsupportedModel);
+      vi.stubEnv(envName, liveModelOverride);
       const withOverride = await production.ensure(context.request);
 
       expect(withoutOverride.status).toBe("ready");
@@ -553,7 +553,7 @@ describe("AssetProduction M2 durability", () => {
   it("incapable_adapter_ignores_valid_views_and_uses_anchor", async () => {
     const context = fixture({ mode: "live" });
     process.env.MESHY_API_KEY = "test-key";
-    process.env.FULCRUM_MESHY_MODEL = "meshy-6";
+    process.env.FULCRUM_MESHY_MODEL = "meshy-5";
     process.env.FULCRUM_MESHY_RESERVE_USD = "0.20";
     const fetchMock = vi.fn(async (request: string | URL | Request) => {
       expect(String(request)).toContain("/image-to-3d");

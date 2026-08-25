@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resolveAssetGenerationProfile } from "./asset-generation-profile.js";
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe("resolveAssetGenerationProfile", () => {
   it.each([
@@ -16,4 +20,18 @@ describe("resolveAssetGenerationProfile", () => {
       );
     },
   );
+
+  it("live_meshy_profile_supports_meshy_6_multiview_but_not_meshy_5", () => {
+    vi.stubEnv("FULCRUM_MESHY_MODEL", "meshy-6");
+    expect(
+      resolveAssetGenerationProfile("meshy", "live").multiviewImageInput
+        .supported,
+    ).toBe(true);
+
+    vi.stubEnv("FULCRUM_MESHY_MODEL", "meshy-5");
+    expect(
+      resolveAssetGenerationProfile("meshy", "live").multiviewImageInput
+        .supported,
+    ).toBe(false);
+  });
 });

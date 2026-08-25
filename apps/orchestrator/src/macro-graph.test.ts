@@ -1131,7 +1131,7 @@ describe("M2 macro slot contracts", () => {
       mode: "live",
       assetProvider: "meshy",
     });
-    vi.stubEnv("FULCRUM_MESHY_MODEL", "meshy-6");
+    vi.stubEnv("FULCRUM_MESHY_MODEL", "meshy-5");
 
     const outcome = await slots.regeneration.ensure(evaluated.value);
 

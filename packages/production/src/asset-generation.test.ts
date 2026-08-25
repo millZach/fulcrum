@@ -179,27 +179,30 @@ describe("asset request fingerprint", () => {
 
 describe("Meshy adapter contract", () => {
   it("meshy_capability_supports_known_multiview_models_with_max_four", () => {
-    expect(meshyMultiviewCapability("meshy-7")).toEqual(
-      expect.objectContaining({
-        supported: true,
-        maxViews: 4,
-        primaryRole: "front",
-        payloadShape: "ordered-images",
-      }),
-    );
-    expect(meshyMultiviewCapability("future-unknown")).toEqual({
+    for (const model of ["meshy-6", "meshy-7"]) {
+      expect(meshyMultiviewCapability(model)).toEqual(
+        expect.objectContaining({
+          supported: true,
+          maxViews: 4,
+          primaryRole: "front",
+          payloadShape: "ordered-images",
+        }),
+      );
+    }
+    expect(meshyMultiviewCapability("meshy-5")).toEqual({
       supported: false,
-      reason: "Meshy model future-unknown has no declared multiview profile.",
+      reason: "Meshy model meshy-5 has no declared multiview profile.",
     });
   });
 
-  it("meshy_multi_payload_uses_front_first_image_urls", () => {
-    const request = buildMeshyRequest(multiviewJob(), "meshy-7", (image) =>
+  it("meshy_6_multi_payload_uses_front_first_images_and_removes_lighting", () => {
+    const request = buildMeshyRequest(multiviewJob(), "meshy-6", (image) =>
       new TextEncoder().encode(image.artifactId),
     );
 
     expect(request.endpointKind).toBe("multi-image-to-3d");
     expect(request.body.image_urls).toHaveLength(4);
+    expect(request.body.remove_lighting).toBe(true);
     const imageUrls = request.body.image_urls as string[];
     expect(
       Buffer.from(String(imageUrls[0]).split(",")[1]!, "base64").toString(),

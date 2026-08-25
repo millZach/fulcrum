@@ -11,6 +11,8 @@ import {
   type MultiviewImageInputCapability,
 } from "./asset-generation.js";
 
+const MESHY_MULTIVIEW_MODELS = new Set(["meshy-6", "meshy-7"]);
+
 const MESHY_GENERATION_OPTIONS = {
   model_type: "standard",
   should_texture: true,
@@ -25,7 +27,7 @@ const MESHY_GENERATION_OPTIONS = {
 export const meshyMultiviewCapability = (
   model: string,
 ): MultiviewImageInputCapability =>
-  model === "meshy-7"
+  MESHY_MULTIVIEW_MODELS.has(model)
     ? {
         supported: true,
         minViews: 2,
@@ -122,6 +124,7 @@ export const buildMeshyRequest = (
       texture_resolution: MESHY_GENERATION_OPTIONS.texture_resolution,
       should_remesh: MESHY_GENERATION_OPTIONS.should_remesh,
       image_enhancement: MESHY_GENERATION_OPTIONS.image_enhancement,
+      ...(model === "meshy-6" ? { remove_lighting: true } : {}),
       moderation: MESHY_GENERATION_OPTIONS.moderation,
       target_formats: MESHY_GENERATION_OPTIONS.target_formats,
     },

@@ -644,7 +644,7 @@ describe("AssetQuality regeneration capability", () => {
       createdAt,
       updatedAt: createdAt,
     });
-    vi.stubEnv("FULCRUM_MESHY_MODEL", "meshy-6");
+    vi.stubEnv("FULCRUM_MESHY_MODEL", "meshy-5");
 
     const selected = await new AssetQuality(repository).selectRegeneration({
       projectId,
