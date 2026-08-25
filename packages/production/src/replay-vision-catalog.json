@@ -1,0 +1,52 @@
+{
+  "schema": "fulcrum.replay-vision-catalog",
+  "version": 1,
+  "fixtures": [
+    {
+      "requestDigest": "a513b9b40e9eac10023c72b69d0f966cf44fdf3a32ad1c13c08e783d93ae0022",
+      "description": "baseline replay reliquary",
+      "response": {
+        "verdict": "revise",
+        "dimensionScores": {
+          "silhouette-readability": 0.42,
+          "view-consistency": 0.76,
+          "concept-fidelity": 0.81,
+          "material-separation": 0.84,
+          "classification-fit": 0.9
+        },
+        "findings": [
+          {
+            "criterionId": "silhouette-readability",
+            "summary": "The rear silhouette loses the crystal housing and side guards.",
+            "severity": "major",
+            "confidence": 0.94,
+            "evidence": [
+              { "frameIndex": 3 },
+              {
+                "frameIndex": 4,
+                "crop": { "x": 0.28, "y": 0.2, "width": 0.44, "height": 0.62 }
+              },
+              { "frameIndex": 5 }
+            ],
+            "suggestedAction": "Add rear and side references that define the crystal housing depth."
+          }
+        ]
+      }
+    },
+    {
+      "requestDigest": "3dc1801f3b1f301a020e53dab363240b33a59abeeb384e7595183e91aa6e82cc",
+      "description": "rear-defined replay reliquary",
+      "response": {
+        "verdict": "pass",
+        "dimensionScores": {
+          "silhouette-readability": 0.93,
+          "view-consistency": 0.92,
+          "concept-fidelity": 0.91,
+          "material-separation": 0.88,
+          "classification-fit": 0.95
+        },
+        "findings": []
+      }
+    }
+  ]
+}

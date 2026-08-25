@@ -1,18 +1,28 @@
 import {
   AssetPathBaseSchema,
   AssetPlanSchema,
+  AssetPolicySchema,
   AssetPlanningInputSchema,
   AssetPlanningNodeInputSchema,
   AssetPlanningNodeOutputSchema,
   AssetProductionNodeOutputSchema,
+  ConceptDocumentSchema,
+  DeterministicAssetReportSchema,
   DeterministicQaNodeOutputSchema,
   MacroGraphSuspendSchema,
   MultiviewNodeOutputSchema,
+  RegenerationAttemptSchema,
   RegenerationNodeOutputSchema,
+  SemanticAssetReportSchema,
   TurntableEvaluationNodeOutputSchema,
+  handlingForPlannedAsset,
+  type AssetClassification,
+  type AssetPolicy,
   type MacroGraphSuspend,
   type MacroPhase,
   type ProjectState,
+  type RegenerationAttempt,
+  type RevisionRef,
   type WorkflowFailure,
 } from "@fulcrum/domain";
 import type { z } from "zod";
@@ -20,6 +30,8 @@ import {
   AssetPlanner,
   AssetProduction,
   AssetQuality,
+  AssetQualityFailure,
+  DEFAULT_ASSET_POLICIES,
   type AssetPlanning,
 } from "@fulcrum/production";
 import { ProjectRepository } from "@fulcrum/project";
@@ -87,86 +99,594 @@ export const unavailableM2MacroGraphSlots = (): M2MacroGraphSlots => ({
   regeneration: unavailable("regeneration"),
 });
 
+export type M2MacroGraphSlotOptions = {
+  assetProduction?: Pick<AssetProduction, "ensure">;
+  assetQuality?: Pick<
+    AssetQuality,
+    "inspect" | "ensureSemantic" | "selectRegeneration"
+  >;
+};
+
+const slotFailure = (
+  code: string,
+  message: string,
+  kind: WorkflowFailure["kind"],
+  evidenceRevisionIds: string[],
+): { status: "failed"; error: WorkflowFailure } => ({
+  status: "failed",
+  error: { code, message, kind, evidenceRevisionIds },
+});
+
+const qualityFailure = (
+  error: unknown,
+  evidenceRevisionIds: string[],
+): { status: "failed"; error: WorkflowFailure } =>
+  error instanceof AssetQualityFailure
+    ? slotFailure(
+        error.code,
+        error.message,
+        error.failureKind,
+        evidenceRevisionIds,
+      )
+    : slotFailure(
+        "asset-quality-failed",
+        error instanceof Error ? error.message : String(error),
+        "terminal",
+        evidenceRevisionIds,
+      );
+
+const productionFailure = (
+  error: {
+    code: string;
+    message: string;
+    recoverable: boolean;
+    failureKind?: WorkflowFailure["kind"] | undefined;
+  },
+  evidenceRevisionIds: string[],
+): { status: "failed"; error: WorkflowFailure } =>
+  slotFailure(
+    error.code,
+    error.message,
+    error.failureKind ?? (error.recoverable ? "retryable" : "terminal"),
+    evidenceRevisionIds,
+  );
+
 export const createM2MacroGraphSlots = (
   repository: ProjectRepository,
   planner: AssetPlanning = new AssetPlanner(repository),
-): M2MacroGraphSlots => ({
-  ...unavailableM2MacroGraphSlots(),
-  assetPlanning: {
-    ensure: async ({ projectId }) => {
-      const state = repository.getProject(projectId);
-      const parsed = AssetPlanningInputSchema.safeParse({
-        projectId,
-        runId: state.runId,
-        mode: state.mode,
-        orchestratorProvider: state.orchestratorProvider,
-        gameDesignSpec:
-          state.gameDesignSpec && state.gameDesignApproval
-            ? {
-                revision: state.gameDesignSpec,
-                approval: state.gameDesignApproval,
-              }
-            : undefined,
-        conceptSet:
-          state.conceptSet && state.conceptSetApproval
-            ? {
-                revision: state.conceptSet,
-                approval: state.conceptSetApproval,
-              }
-            : undefined,
-        ...(state.assetPlan &&
-        state.assetPlanApproval?.decision === "changes-requested"
-          ? {
-              replan: {
-                previousPlan: state.assetPlan,
-                decision: state.assetPlanApproval,
-              },
-            }
-          : {}),
-      });
-      if (!parsed.success)
-        return {
-          status: "failed" as const,
-          error: {
-            code: "asset-plan-invalid-input",
-            message:
-              "Asset planning requires exact approved Game Design Spec and concept-set revisions.",
-            kind: "user-action-required" as const,
-            evidenceRevisionIds: [
-              state.gameDesignSpec?.revisionId,
-              state.conceptSet?.revisionId,
-            ].filter((value): value is string => Boolean(value)),
-          },
-        };
-      const outcome = await planner.plan(parsed.data);
-      if (outcome.status === "failed")
-        return {
-          status: "failed" as const,
-          error: {
-            code: outcome.error.code,
-            message: outcome.error.message,
-            kind: outcome.error.kind,
-            evidenceRevisionIds: [
-              state.gameDesignSpec?.revisionId,
-              state.conceptSet?.revisionId,
-              state.assetPlan?.revisionId,
-            ].filter((value): value is string => Boolean(value)),
-          },
-        };
-      const plan = AssetPlanSchema.parse(
-        repository.resolveRevision(outcome.value),
+  options: M2MacroGraphSlotOptions = {},
+): M2MacroGraphSlots => {
+  const assets = options.assetProduction ?? new AssetProduction(repository);
+  const quality = options.assetQuality ?? new AssetQuality(repository);
+
+  const planned = (input: { assetPlan: RevisionRef; assetId: string }) => {
+    const plan = AssetPlanSchema.parse(
+      repository.resolveRevision(input.assetPlan),
+    );
+    return { plan, ...handlingForPlannedAsset(plan, input.assetId) };
+  };
+
+  const sourceConcept = (input: {
+    assetPlan: RevisionRef;
+    assetId: string;
+  }): RevisionRef => {
+    const { asset } = planned(input);
+    const source = asset.sourceRefs.conceptSlots[0]?.concept;
+    if (!source)
+      throw new Error(`Planned asset ${asset.assetId} has no source concept.`);
+    const revision = repository.getRevision(source.revisionId);
+    if (
+      revision.artifact.sha256 !== source.sha256 ||
+      revision.kind !== source.kind
+    )
+      throw new Error(
+        `Planned asset ${asset.assetId} has stale concept lineage.`,
       );
-      return {
-        status: "ready" as const,
-        value: {
+    return revision;
+  };
+
+  const ensurePolicy = (
+    projectId: string,
+    runId: string,
+    classification: AssetClassification,
+  ): { revision: RevisionRef; value: AssetPolicy } => {
+    const ensured = repository.ensureRevision({
+      projectId,
+      operationKey: `m2.asset-policy:${classification}:v1`,
+      entityId: `${projectId}:asset-policy:${classification}`,
+      kind: "asset-policy",
+      runId,
+      createValue: () => DEFAULT_ASSET_POLICIES[classification],
+    });
+    return {
+      revision: ensured.revision,
+      value: AssetPolicySchema.parse(ensured.value),
+    };
+  };
+
+  const evaluationContext = (input: {
+    assetPlan: RevisionRef;
+    assetId: string;
+  }) => {
+    const { asset } = planned(input);
+    const concept = ConceptDocumentSchema.parse(
+      repository.resolveRevision(sourceConcept(input)),
+    );
+    return {
+      intendedUse: asset.rationale,
+      requiredFeatures: asset.acceptanceCriteria,
+      prohibitedFeatures: concept.negativePrompt.trim()
+        ? [concept.negativePrompt.trim()]
+        : [],
+      referenceArtifacts: [],
+    };
+  };
+
+  const attemptFrom = (
+    attemptNumber: number,
+    asset: RevisionRef,
+    deterministicReport: RevisionRef,
+    turntable: RevisionRef | undefined,
+    semanticReport: RevisionRef | undefined,
+    semanticRequired: boolean,
+    appliedStrategy?: RevisionRef,
+  ): RegenerationAttempt => {
+    const deterministic = DeterministicAssetReportSchema.parse(
+      repository.resolveRevision(deterministicReport),
+    );
+    const semantic = semanticReport
+      ? SemanticAssetReportSchema.parse(
+          repository.resolveRevision(semanticReport),
+        )
+      : undefined;
+    const qualityVector = semantic?.qualityVector ?? {
+      ...deterministic.qualityVector,
+      semanticVerdict:
+        !semanticRequired && deterministic.qualityVector.hardGateFailures === 0
+          ? ("pass" as const)
+          : deterministic.qualityVector.semanticVerdict,
+    };
+    return RegenerationAttemptSchema.parse({
+      attemptNumber,
+      asset,
+      deterministicReport,
+      ...(turntable ? { turntable } : {}),
+      ...(semanticReport ? { semanticReport } : {}),
+      ...(appliedStrategy ? { appliedStrategy } : {}),
+      qualityVector,
+    });
+  };
+
+  const fakeConceptViews = (
+    projectId: string,
+    runId: string,
+    assetId: string,
+    strategyRevision: RevisionRef,
+    operation: "add" | "replace",
+    roles: Array<"front" | "left" | "back" | "right">,
+  ): { set: RevisionRef; views: RevisionRef[] } => {
+    const views = roles.map(
+      (role) =>
+        repository.ensureRevision({
           projectId,
-          assetPlan: outcome.value,
-          orderedAssetIds: plan.assets.map((asset) => asset.assetId),
-        },
-      };
+          operationKey: `m2.replay-concept-view:${strategyRevision.revisionId}:${role}`,
+          entityId: `${assetId}:concept-view:${role}`,
+          kind: "replay-concept-view",
+          runId,
+          createValue: () => ({
+            schema: "fulcrum.replay-concept-view",
+            version: 1,
+            assetId,
+            role,
+            strategyRevisionId: strategyRevision.revisionId,
+          }),
+        }).revision,
+    );
+    const set = repository.ensureRevision({
+      projectId,
+      operationKey: `m2.replay-multiview-set:${strategyRevision.revisionId}:${operation}:${roles.join(",")}`,
+      entityId: `${assetId}:multiview-concept-set`,
+      kind: "replay-multiview-concept-set",
+      runId,
+      createValue: () => ({
+        schema: "fulcrum.replay-multiview-concept-set",
+        version: 1,
+        assetId,
+        operation,
+        requestedRoles: roles,
+        views,
+        strategyRevisionId: strategyRevision.revisionId,
+      }),
+    }).revision;
+    return { set, views };
+  };
+
+  return {
+    assetPlanning: {
+      ensure: async ({ projectId }) => {
+        const state = repository.getProject(projectId);
+        const parsed = AssetPlanningInputSchema.safeParse({
+          projectId,
+          runId: state.runId,
+          mode: state.mode,
+          orchestratorProvider: state.orchestratorProvider,
+          gameDesignSpec:
+            state.gameDesignSpec && state.gameDesignApproval
+              ? {
+                  revision: state.gameDesignSpec,
+                  approval: state.gameDesignApproval,
+                }
+              : undefined,
+          conceptSet:
+            state.conceptSet && state.conceptSetApproval
+              ? {
+                  revision: state.conceptSet,
+                  approval: state.conceptSetApproval,
+                }
+              : undefined,
+          ...(state.assetPlan &&
+          state.assetPlanApproval?.decision === "changes-requested"
+            ? {
+                replan: {
+                  previousPlan: state.assetPlan,
+                  decision: state.assetPlanApproval,
+                },
+              }
+            : {}),
+        });
+        if (!parsed.success)
+          return {
+            status: "failed" as const,
+            error: {
+              code: "asset-plan-invalid-input",
+              message:
+                "Asset planning requires exact approved Game Design Spec and concept-set revisions.",
+              kind: "user-action-required" as const,
+              evidenceRevisionIds: [
+                state.gameDesignSpec?.revisionId,
+                state.conceptSet?.revisionId,
+              ].filter((value): value is string => Boolean(value)),
+            },
+          };
+        const outcome = await planner.plan(parsed.data);
+        if (outcome.status === "failed")
+          return {
+            status: "failed" as const,
+            error: {
+              code: outcome.error.code,
+              message: outcome.error.message,
+              kind: outcome.error.kind,
+              evidenceRevisionIds: [
+                state.gameDesignSpec?.revisionId,
+                state.conceptSet?.revisionId,
+                state.assetPlan?.revisionId,
+              ].filter((value): value is string => Boolean(value)),
+            },
+          };
+        const plan = AssetPlanSchema.parse(
+          repository.resolveRevision(outcome.value),
+        );
+        return {
+          status: "ready" as const,
+          value: {
+            projectId,
+            assetPlan: outcome.value,
+            orderedAssetIds: plan.assets.map((asset) => asset.assetId),
+          },
+        };
+      },
     },
-  },
-});
+    multiviewConcepts: {
+      ensure: async (input) => {
+        try {
+          const { asset } = planned(input);
+          return {
+            status: "ready" as const,
+            value: {
+              ...input,
+              classification: asset.classification,
+              multiviewDecision: "not-required" as const,
+            },
+          };
+        } catch (error) {
+          return slotFailure(
+            "asset-plan-route-invalid",
+            error instanceof Error ? error.message : String(error),
+            "terminal",
+            [input.assetPlan.revisionId],
+          );
+        }
+      },
+    },
+    assetProduction: {
+      ensure: async (input) => {
+        const state = repository.getProject(input.projectId);
+        let concept: RevisionRef;
+        try {
+          concept = sourceConcept(input);
+        } catch (error) {
+          return slotFailure(
+            "asset-source-concept-missing",
+            error instanceof Error ? error.message : String(error),
+            "user-action-required",
+            [input.assetPlan.revisionId],
+          );
+        }
+        const outcome = await assets.ensure({
+          projectId: input.projectId,
+          runId: state.runId,
+          mode: state.mode,
+          assetProvider: state.assetProvider,
+          concept,
+        });
+        if (outcome.status === "pending") return outcome;
+        if (outcome.status === "failed")
+          return productionFailure(outcome.error, [concept.revisionId]);
+        return {
+          status: "ready" as const,
+          value: { ...input, candidateAsset: outcome.value },
+        };
+      },
+    },
+    deterministicQa: {
+      ensure: async (input) => {
+        const state = repository.getProject(input.projectId);
+        const classification = input.classification;
+        if (!classification)
+          return slotFailure(
+            "asset-classification-missing",
+            `Asset ${input.assetId} has no classification.`,
+            "terminal",
+            [input.candidateAsset.revisionId],
+          );
+        const policy = ensurePolicy(
+          input.projectId,
+          state.runId,
+          classification,
+        );
+        try {
+          const inspected = await quality.inspect({
+            projectId: input.projectId,
+            runId: state.runId,
+            asset: input.candidateAsset,
+            policy,
+          });
+          return {
+            status: "ready" as const,
+            value: {
+              ...input,
+              deterministicReport: inspected.deterministicReport,
+              ...(inspected.turntable
+                ? { turntable: inspected.turntable }
+                : {}),
+            },
+          };
+        } catch (error) {
+          return qualityFailure(error, [input.candidateAsset.revisionId]);
+        }
+      },
+    },
+    turntableEvaluation: {
+      ensure: async (input) => {
+        const state = repository.getProject(input.projectId);
+        const { policy: handling } = planned(input);
+        const deterministic = DeterministicAssetReportSchema.parse(
+          repository.resolveRevision(input.deterministicReport),
+        );
+        if (!deterministic.passed)
+          return {
+            status: "ready" as const,
+            value: { ...input, disposition: "regenerate" as const },
+          };
+        if (handling.semanticQa === "none")
+          return {
+            status: "ready" as const,
+            value: { ...input, disposition: "accept" as const },
+          };
+        if (!input.turntable)
+          return slotFailure(
+            "asset-turntable-missing",
+            "Semantic QA requires the deterministic turntable revision.",
+            "terminal",
+            [input.deterministicReport.revisionId],
+          );
+        const classification = input.classification!;
+        const policy = ensurePolicy(
+          input.projectId,
+          state.runId,
+          classification,
+        );
+        const outcome = await quality.ensureSemantic({
+          projectId: input.projectId,
+          runId: state.runId,
+          mode: state.mode,
+          asset: input.candidateAsset,
+          deterministicReport: input.deterministicReport,
+          turntable: input.turntable,
+          policy,
+          context: evaluationContext(input),
+        });
+        if (outcome.status === "pending") return outcome;
+        if (outcome.status === "failed")
+          return productionFailure(outcome.error, [input.turntable.revisionId]);
+        return {
+          status: "ready" as const,
+          value: {
+            ...input,
+            semanticReport: outcome.value.revision,
+            disposition:
+              outcome.value.report.verdict === "pass"
+                ? ("accept" as const)
+                : ("regenerate" as const),
+          },
+        };
+      },
+    },
+    regeneration: {
+      ensure: async (input) => {
+        const state = repository.getProject(input.projectId);
+        const { policy: handling } = planned(input);
+        let classification = input.classification!;
+        let policy = ensurePolicy(input.projectId, state.runId, classification);
+        const semanticRequired = handling.semanticQa !== "none";
+        const history: RegenerationAttempt[] = [];
+        let current = attemptFrom(
+          0,
+          input.candidateAsset,
+          input.deterministicReport,
+          input.turntable,
+          input.semanticReport,
+          semanticRequired,
+        );
+        let multiviewConceptSet = input.multiviewConceptSet;
+
+        for (;;) {
+          const selected = await quality.selectRegeneration({
+            projectId: input.projectId,
+            runId: state.runId,
+            assetId: input.assetId,
+            currentAttempt: current,
+            attemptHistory: history,
+            policy: policy.value,
+          });
+          const strategy = selected.decision.strategy;
+          if (
+            strategy.kind === "accept-best" ||
+            strategy.kind === "give-up-user"
+          ) {
+            const bestRevisionId =
+              strategy.kind === "accept-best"
+                ? strategy.assetRevisionId
+                : (strategy.bestAssetRevisionId ??
+                  selected.decision.bestKnownAssetRevisionId);
+            const attempts = [...history, current];
+            const best =
+              attempts.find(
+                (attempt) => attempt.asset.revisionId === bestRevisionId,
+              ) ?? current;
+            const validated =
+              strategy.kind === "accept-best" &&
+              best.qualityVector.hardGateFailures === 0 &&
+              best.qualityVector.criticalFindings === 0;
+            return {
+              status: "ready" as const,
+              value: {
+                ...input,
+                classification,
+                candidateAsset: current.asset,
+                deterministicReport: current.deterministicReport,
+                ...(current.semanticReport
+                  ? { semanticReport: current.semanticReport }
+                  : { semanticReport: undefined }),
+                ...(best.turntable
+                  ? { turntable: best.turntable }
+                  : { turntable: undefined }),
+                disposition: validated
+                  ? ("accept" as const)
+                  : ("user-action-required" as const),
+                bestAsset: best.asset,
+                finalDeterministicReport: best.deterministicReport,
+                ...(best.semanticReport
+                  ? { finalSemanticReport: best.semanticReport }
+                  : {}),
+                decision: selected.revision,
+                attemptCount: attempts.length,
+                validated,
+                ...(multiviewConceptSet ? { multiviewConceptSet } : {}),
+              },
+            };
+          }
+
+          let additionalConceptViews: RevisionRef[] | undefined;
+          if (strategy.kind === "change-views") {
+            const views = fakeConceptViews(
+              input.projectId,
+              state.runId,
+              input.assetId,
+              selected.revision,
+              strategy.operation,
+              strategy.roles,
+            );
+            multiviewConceptSet = views.set;
+            additionalConceptViews = views.views;
+          } else if (strategy.kind === "reclassify") {
+            classification = strategy.to;
+            policy = ensurePolicy(input.projectId, state.runId, classification);
+          }
+
+          const concept = sourceConcept(input);
+          const produced = await assets.ensure({
+            projectId: input.projectId,
+            runId: state.runId,
+            mode: state.mode,
+            assetProvider: state.assetProvider,
+            concept,
+            regeneration: {
+              attemptNumber: current.attemptNumber + 1,
+              strategyRevision: selected.revision,
+              parentAssetRevision: current.asset,
+              ...(additionalConceptViews ? { additionalConceptViews } : {}),
+            },
+          });
+          if (produced.status === "pending") return produced;
+          if (produced.status === "failed")
+            return productionFailure(produced.error, [
+              selected.revision.revisionId,
+            ]);
+
+          let inspected;
+          try {
+            inspected = await quality.inspect({
+              projectId: input.projectId,
+              runId: state.runId,
+              asset: produced.value,
+              policy,
+            });
+          } catch (error) {
+            return qualityFailure(error, [produced.value.revisionId]);
+          }
+          let semanticReport: RevisionRef | undefined;
+          if (inspected.report.passed && semanticRequired) {
+            if (!inspected.turntable)
+              return slotFailure(
+                "asset-turntable-missing",
+                "A regenerated deterministic pass has no turntable.",
+                "terminal",
+                [inspected.deterministicReport.revisionId],
+              );
+            const semantic = await quality.ensureSemantic({
+              projectId: input.projectId,
+              runId: state.runId,
+              mode: state.mode,
+              asset: produced.value,
+              deterministicReport: inspected.deterministicReport,
+              turntable: inspected.turntable,
+              policy,
+              context: evaluationContext(input),
+            });
+            if (semantic.status === "pending") return semantic;
+            if (semantic.status === "failed")
+              return productionFailure(semantic.error, [
+                inspected.turntable.revisionId,
+              ]);
+            semanticReport = semantic.value.revision;
+          }
+
+          history.push(current);
+          current = attemptFrom(
+            current.attemptNumber + 1,
+            produced.value,
+            inspected.deterministicReport,
+            inspected.turntable,
+            semanticReport,
+            semanticRequired,
+            selected.revision,
+          );
+        }
+      },
+    },
+  };
+};
 
 const laterThanProduction = new Set<ProjectState["stage"]>([
   "asset-quality",

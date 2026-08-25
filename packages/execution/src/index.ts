@@ -51,7 +51,32 @@ export type OpenAIApiRunner = (input: {
   systemPrompt: string;
   prompt: string;
   jsonSchema: Record<string, unknown>;
+  frames?: VisionFrameInput[];
+  idempotencyKey?: string;
 }) => Promise<string>;
+
+export type VisionFrameInput = {
+  label: string;
+  mediaType: "image/png";
+  bytes: Uint8Array;
+};
+
+export interface StructuredVisionExecution {
+  generateStructuredVision<T>(input: {
+    provider: "openai" | "openai-api";
+    model?: string;
+    cwd: string;
+    systemPrompt: string;
+    prompt: string;
+    frames: VisionFrameInput[];
+    schema: z.ZodType<T>;
+    idempotencyKey: string;
+  }): Promise<{
+    value: T;
+    provider: "openai" | "openai-api";
+    model: string;
+  }>;
+}
 
 export type SubscriptionImageResult = {
   bytes: Uint8Array;
@@ -241,6 +266,16 @@ export const preferredOpenAIImageProvider = (
     : "openai-gpt-image-2";
 };
 
+export const preferredVisionProvider = (
+  providers: ExecutionProviderStatus[],
+): "openai" | "openai-api" | undefined => {
+  if (providers.find(({ provider }) => provider === "openai")?.ready)
+    return "openai";
+  if (providers.find(({ provider }) => provider === "openai-api")?.ready)
+    return "openai-api";
+  return undefined;
+};
+
 export const runCommand: CommandRunner = async (spec) => {
   const resolved = resolveCommand(spec.command);
   if (!resolved) throw new Error(`${spec.command} is not installed.`);
@@ -396,21 +431,36 @@ export const runCodexSubscriptionImage = createCodexSubscriptionImageRunner();
 
 export const runOpenAIApi: OpenAIApiRunner = async (input) => {
   const client = new OpenAI({ apiKey: input.apiKey });
-  const response = await client.responses.create({
-    model: input.model,
-    input: [
-      { role: "system", content: input.systemPrompt },
-      { role: "user", content: input.prompt },
-    ],
-    text: {
-      format: {
-        type: "json_schema",
-        name: "fulcrum_structured_output",
-        schema: input.jsonSchema,
-        strict: true,
+  const userContent = input.frames?.length
+    ? [
+        { type: "input_text" as const, text: input.prompt },
+        ...input.frames.map((frame) => ({
+          type: "input_image" as const,
+          image_url: `data:${frame.mediaType};base64,${Buffer.from(frame.bytes).toString("base64")}`,
+          detail: "high" as const,
+        })),
+      ]
+    : input.prompt;
+  const response = await client.responses.create(
+    {
+      model: input.model,
+      input: [
+        { role: "system", content: input.systemPrompt },
+        { role: "user", content: userContent },
+      ],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "fulcrum_structured_output",
+          schema: input.jsonSchema,
+          strict: true,
+        },
       },
     },
-  });
+    input.idempotencyKey
+      ? { headers: { "Idempotency-Key": input.idempotencyKey } }
+      : undefined,
+  );
   if (!response.output_text)
     throw new Error("OpenAI API returned no structured output.");
   return response.output_text;
@@ -476,7 +526,7 @@ const parseStructured = <T>(raw: string, schema: z.ZodType<T>): T => {
   );
 };
 
-export class ModelExecution {
+export class ModelExecution implements StructuredVisionExecution {
   constructor(
     private readonly runner: CommandRunner = runCommand,
     private readonly openAIApi: OpenAIApiRunner = runOpenAIApi,
@@ -621,5 +671,109 @@ export class ModelExecution {
       provider,
       model: input.model ?? "subscription-default",
     };
+  }
+
+  async generateStructuredVision<T>(input: {
+    provider: "openai" | "openai-api";
+    model?: string;
+    cwd: string;
+    systemPrompt: string;
+    prompt: string;
+    frames: VisionFrameInput[];
+    schema: z.ZodType<T>;
+    idempotencyKey: string;
+  }): Promise<{
+    value: T;
+    provider: "openai" | "openai-api";
+    model: string;
+  }> {
+    if (input.model && !/^[a-zA-Z0-9._:/#-]+$/.test(input.model))
+      throw new Error(
+        "Execution model identifiers contain invalid characters.",
+      );
+    if (input.frames.length === 0)
+      throw new Error(
+        "Structured vision execution requires at least one frame.",
+      );
+    const jsonSchema = z.toJSONSchema(input.schema);
+    if (input.provider === "openai-api") {
+      const apiKey = process.env.OPENAI_API_KEY;
+      const model =
+        input.model ??
+        process.env.FULCRUM_OPENAI_API_MODEL ??
+        DEFAULT_OPENAI_API_MODEL;
+      if (!apiKey)
+        throw new Error("OpenAI API execution requires OPENAI_API_KEY.");
+      const raw = await this.openAIApi({
+        apiKey,
+        model,
+        systemPrompt: input.systemPrompt,
+        prompt: input.prompt,
+        jsonSchema,
+        frames: input.frames,
+        idempotencyKey: input.idempotencyKey,
+      });
+      return {
+        value: parseStructured(raw, input.schema),
+        provider: "openai-api",
+        model,
+      };
+    }
+
+    const temporary = mkdtempSync(path.join(tmpdir(), "fulcrum-vision-"));
+    const schemaPath = path.join(temporary, "schema.json");
+    const outputPath = path.join(temporary, "result.json");
+    try {
+      writeFileSync(schemaPath, JSON.stringify(jsonSchema));
+      const framePaths = input.frames.map((frame, index) => {
+        const framePath = path.join(
+          temporary,
+          `frame-${String(index + 1).padStart(2, "0")}.png`,
+        );
+        writeFileSync(framePath, frame.bytes);
+        return framePath;
+      });
+      const prompt = [
+        input.systemPrompt,
+        input.prompt,
+        ...input.frames.map(
+          (frame, index) =>
+            `Attached frame ${index + 1} is labeled "${frame.label}".`,
+        ),
+        "Judge only the attached frames and return one JSON value matching the supplied schema.",
+      ].join("\n\n");
+      const result = await this.runner({
+        command: "codex",
+        args: [
+          "exec",
+          "--ephemeral",
+          "--skip-git-repo-check",
+          "--sandbox",
+          "read-only",
+          ...framePaths.flatMap((framePath) => ["--image", framePath]),
+          "--output-schema",
+          schemaPath,
+          "--output-last-message",
+          outputPath,
+          "--color",
+          "never",
+          ...(input.model ? ["--model", input.model] : []),
+          "-",
+        ],
+        cwd: input.cwd,
+        stdin: prompt,
+      });
+      if (result.status !== 0)
+        throw new Error(
+          result.stderr.trim() || "Codex vision execution failed.",
+        );
+      return {
+        value: parseStructured(readFileSync(outputPath, "utf8"), input.schema),
+        provider: "openai",
+        model: input.model ?? "subscription-default",
+      };
+    } finally {
+      rmSync(temporary, { recursive: true, force: true });
+    }
   }
 }

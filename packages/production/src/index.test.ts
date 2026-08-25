@@ -359,6 +359,148 @@ describe("AssetProduction live preflight", () => {
   });
 });
 
+describe("AssetProduction regeneration lineage", () => {
+  it("extends_idempotency_with_strategy_parent_attempt_and_ordered_views", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const projectId = "regeneration-project";
+    const runId = "regeneration-run";
+    const createdAt = "2026-08-24T12:00:00.000Z";
+    repository.reserveProject(projectId, createdAt);
+    const brief = repository.writeRevision({
+      projectId,
+      entityId: `${projectId}:brief`,
+      kind: "game-brief",
+      value: { text: "A regeneration fixture.", rightsConfirmed: true },
+      runId,
+    });
+    const image = repository.putArtifact(projectId, PNG_1x1, "image/png");
+    const writeConcept = (conceptId: string) =>
+      repository.writeRevision({
+        projectId,
+        entityId: conceptId,
+        kind: "concept-document",
+        value: ConceptDocumentSchema.parse({
+          conceptId,
+          name: conceptId,
+          prompt: "A readable stone reliquary",
+          negativePrompt: "photorealism",
+          image,
+          provider: "fulcrum-replay",
+          model: "fixture",
+          sourceRevisionIds: [brief.revisionId, brief.revisionId],
+          costUsd: 0,
+        }),
+        runId,
+      });
+    const concept = writeConcept(`${projectId}:concept:front`);
+    const back = writeConcept(`${projectId}:concept:back`);
+    const left = writeConcept(`${projectId}:concept:left`);
+    repository.createProject({
+      schemaVersion: 1,
+      milestone: "m2",
+      projectId,
+      name: "Regeneration fixture",
+      mode: "replay",
+      status: "active",
+      stage: "asset-batch",
+      runId,
+      spentUsd: 0,
+      brief,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    const production = new AssetProduction(repository);
+    const initial = await production.ensure({
+      projectId,
+      runId,
+      mode: "replay",
+      assetProvider: "meshy",
+      concept,
+    });
+    if (initial.status !== "ready")
+      throw new Error("Initial asset was not ready.");
+    const strategyRevision = repository.writeRevision({
+      projectId,
+      entityId: `${projectId}:decision`,
+      kind: "asset-regeneration-decision",
+      value: {
+        schema: "fulcrum.asset-regeneration-decision",
+        version: 1,
+        decisionId: "decision-1",
+        assetId: `${projectId}:reliquary-asset`,
+        sourceReportRevisionIds: ["semantic-1"],
+        bestKnownAssetRevisionId: initial.value.revisionId,
+        strategy: {
+          kind: "change-views",
+          rationale: "The rear silhouette needs direct references.",
+          reasonFindingIds: ["finding-1"],
+          operation: "add",
+          roles: ["back", "left", "right"],
+          brief: "Define the rear structure.",
+        },
+      },
+      runId,
+    });
+    const regeneration = {
+      attemptNumber: 1,
+      strategyRevision,
+      parentAssetRevision: initial.value,
+      additionalConceptViews: [back, left],
+    };
+
+    const first = await production.ensure({
+      projectId,
+      runId,
+      mode: "replay",
+      assetProvider: "meshy",
+      concept,
+      regeneration,
+    });
+    const repeated = await production.ensure({
+      projectId,
+      runId,
+      mode: "replay",
+      assetProvider: "meshy",
+      concept,
+      regeneration,
+    });
+    const reordered = await production.ensure({
+      projectId,
+      runId,
+      mode: "replay",
+      assetProvider: "meshy",
+      concept,
+      regeneration: {
+        ...regeneration,
+        additionalConceptViews: [left, back],
+      },
+    });
+
+    expect(first.status).toBe("ready");
+    expect(repeated.status).toBe("ready");
+    expect(reordered.status).toBe("ready");
+    if (
+      first.status === "ready" &&
+      repeated.status === "ready" &&
+      reordered.status === "ready"
+    ) {
+      expect(repeated.value).toEqual(first.value);
+      expect(reordered.value.revisionId).not.toBe(first.value.revisionId);
+      expect(repository.resolveRevision(first.value)).toMatchObject({
+        parentAssetRevisionId: initial.value.revisionId,
+        regenerationStrategyRevisionId: strategyRevision.revisionId,
+        sourceConceptRevisionIds: [
+          concept.revisionId,
+          back.revisionId,
+          left.revisionId,
+        ],
+        generationClaims: { textured: false, textureChannels: [] },
+      });
+    }
+    repository.close();
+  });
+});
+
 describe("AssetQuality replay idempotency", () => {
   it("asset_quality_replay_returns_the_original_evaluation_revision", async () => {
     const root = temporaryRoot();

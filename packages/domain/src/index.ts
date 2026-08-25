@@ -411,14 +411,44 @@ export const SoundSetSchema = z.object({
 });
 export type SoundSet = z.infer<typeof SoundSetSchema>;
 
+export const AssetClassificationSchema = z.enum([
+  "hero",
+  "kit",
+  "procedural",
+  "functional",
+]);
+export type AssetClassification = z.infer<typeof AssetClassificationSchema>;
+
+export const ConceptViewRoleSchema = z.enum(["front", "left", "back", "right"]);
+export type ConceptViewRole = z.infer<typeof ConceptViewRoleSchema>;
+
+export const TextureChannelSchema = z.enum([
+  "base-color",
+  "metallic-roughness",
+  "normal",
+  "occlusion",
+  "emissive",
+]);
+export type TextureChannel = z.infer<typeof TextureChannelSchema>;
+
+export const AssetGenerationClaimsSchema = z.object({
+  textured: z.boolean(),
+  textureChannels: z.array(TextureChannelSchema),
+});
+export type AssetGenerationClaims = z.infer<typeof AssetGenerationClaimsSchema>;
+
 export const AssetDocumentSchema = z.object({
   assetId: z.string().min(1),
   name: z.string().min(1),
-  classification: z.literal("hero"),
+  classification: AssetClassificationSchema,
   glb: ArtifactRefSchema,
   provider: z.string().min(1),
   model: z.string().min(1),
   sourceConceptRevisionId: z.string().min(1),
+  sourceConceptRevisionIds: z.array(z.string().min(1)).optional(),
+  parentAssetRevisionId: z.string().min(1).optional(),
+  regenerationStrategyRevisionId: z.string().min(1).optional(),
+  generationClaims: AssetGenerationClaimsSchema.optional(),
   externalJobId: z.string().min(1),
   costUsd: z.number().nonnegative(),
 });
@@ -571,6 +601,359 @@ export const BlockedReasonSchema = z.object({
 });
 export type BlockedReason = z.infer<typeof BlockedReasonSchema>;
 
+export const AssetPolicySchema = z.object({
+  schema: z.literal("fulcrum.asset-policy"),
+  version: z.literal(1),
+  classification: AssetClassificationSchema,
+  mesh: z.object({
+    maxMeshes: z.number().int().positive(),
+    maxPrimitives: z.number().int().positive(),
+    maxVertices: z.number().int().positive(),
+    maxTriangles: z.number().int().positive(),
+    minLargestExtentMeters: z.number().positive(),
+    maxLargestExtentMeters: z.number().positive(),
+    warnAspectRatioAbove: z.number().gte(1),
+  }),
+  material: z.object({
+    requireAssignedMaterial: z.boolean(),
+    requireNormals: z.boolean(),
+    warnUnusedAbove: z.number().int().nonnegative(),
+    warnDuplicateGroupsAbove: z.number().int().nonnegative(),
+    requiredClaimedTextureChannels: z.array(TextureChannelSchema),
+  }),
+  texture: z.object({
+    minDimensionPx: z.number().int().positive(),
+    maxDimensionPx: z.number().int().positive(),
+    warnUnusedAbove: z.number().int().nonnegative(),
+  }),
+  topology: z.object({
+    maxDegenerateTriangleRatio: z.number().min(0).max(1),
+    maxNonManifoldEdges: z.number().int().nonnegative(),
+    maxUnreferencedVertexRatio: z.number().min(0).max(1),
+    maxInconsistentWindingRatio: z.number().min(0).max(1),
+    maxNormalMismatchRatio: z.number().min(0).max(1),
+    warnBoundaryEdgeRatioAbove: z.number().min(0).max(1),
+    weldToleranceRatio: z.number().positive().max(0.001),
+  }),
+  turntable: z.object({
+    frameCount: z.number().int().min(4).max(12),
+    width: z.number().int().min(128).max(512),
+    height: z.number().int().min(128).max(512),
+    elevationDegrees: z.number().min(0).max(45),
+    paddingRatio: z.number().min(0.05).max(0.5),
+  }),
+  regeneration: z.object({
+    maxAttempts: z.number().int().min(1).max(5),
+    maxSameStrategyRetries: z.number().int().min(0).max(2),
+    allowedStrategies: z.array(
+      z.enum(["retry-same", "change-prompt", "change-views", "reclassify"]),
+    ),
+  }),
+});
+export type AssetPolicy = z.infer<typeof AssetPolicySchema>;
+
+export const NormalizedCropSchema = z
+  .object({
+    x: z.number().min(0).max(1),
+    y: z.number().min(0).max(1),
+    width: z.number().positive().max(1),
+    height: z.number().positive().max(1),
+  })
+  .superRefine((crop, context) => {
+    if (crop.x + crop.width > 1) {
+      context.addIssue({
+        code: "custom",
+        path: ["width"],
+        message: "Crop exceeds the right frame bound.",
+      });
+    }
+    if (crop.y + crop.height > 1) {
+      context.addIssue({
+        code: "custom",
+        path: ["height"],
+        message: "Crop exceeds the bottom frame bound.",
+      });
+    }
+  });
+export type NormalizedCrop = z.infer<typeof NormalizedCropSchema>;
+
+export const EvaluationEvidenceSchema = z.object({
+  artifactId: z.string().min(1),
+  kind: z.enum(["source-asset", "turntable-frame"]),
+  frameIndex: z.number().int().nonnegative().optional(),
+  crop: NormalizedCropSchema.optional(),
+});
+export type EvaluationEvidence = z.infer<typeof EvaluationEvidenceSchema>;
+
+export const EvaluationFindingSchema = z
+  .object({
+    findingId: z.string().min(1),
+    findingCode: z.string().regex(/^[a-z0-9]+(?:[.-][a-z0-9]+)+$/),
+    rubricVersion: z.string().min(1),
+    category: z.enum([
+      "asset",
+      "geometry",
+      "materials",
+      "lighting",
+      "camera",
+      "composition",
+      "environment",
+      "density",
+      "vfx",
+      "style",
+      "gameplay",
+      "technical",
+    ]),
+    summary: z.string().min(1).max(1_000),
+    evidenceArtifactIds: z.array(z.string().min(1)).min(1),
+    evidence: z.array(EvaluationEvidenceSchema).min(1),
+    severity: z.enum(["info", "minor", "major", "critical"]),
+    confidence: z.number().min(0).max(1),
+    ownerModule: z.string().min(1),
+    suggestedAction: z.string().min(1).max(1_000).optional(),
+  })
+  .superRefine((finding, context) => {
+    const canonicalArtifactIds = [
+      ...new Set(finding.evidence.map((item) => item.artifactId)),
+    ].sort();
+    if (
+      canonicalArtifactIds.length !== finding.evidenceArtifactIds.length ||
+      canonicalArtifactIds.some(
+        (artifactId, index) =>
+          finding.evidenceArtifactIds[index] !== artifactId,
+      )
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["evidenceArtifactIds"],
+        message:
+          "Evidence artifact IDs must be the sorted unique IDs from evidence.",
+      });
+    }
+
+    finding.evidence.forEach((item, index) => {
+      if (
+        (item.crop !== undefined || item.frameIndex !== undefined) &&
+        item.kind !== "turntable-frame"
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["evidence", index],
+          message: "Only turntable evidence can carry frame coordinates.",
+        });
+      }
+      if (item.crop !== undefined && item.frameIndex === undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["evidence", index, "frameIndex"],
+          message: "Cropped turntable evidence requires a frame index.",
+        });
+      }
+    });
+  });
+export type EvaluationFinding = z.infer<typeof EvaluationFindingSchema>;
+
+export const QualityGateSchema = z.object({
+  id: z.string().min(1),
+  category: z.enum(["mesh", "material", "texture", "topology"]),
+  label: z.string().min(1),
+  passed: z.boolean(),
+  actual: z.union([z.number(), z.string(), z.boolean()]),
+  threshold: z.string().min(1),
+  evidenceArtifactIds: z.array(z.string().min(1)).min(1),
+});
+export type QualityGate = z.infer<typeof QualityGateSchema>;
+
+export const AssetQualityMeasurementsSchema = z.object({
+  mesh: z.object({
+    meshCount: z.number().int().nonnegative(),
+    primitiveCount: z.number().int().nonnegative(),
+    vertexCount: z.number().int().nonnegative(),
+    triangleCount: z.number().int().nonnegative(),
+    boundsMeters: z.object({
+      x: z.number().nonnegative(),
+      y: z.number().nonnegative(),
+      z: z.number().nonnegative(),
+    }),
+  }),
+  material: z.object({
+    materialCount: z.number().int().nonnegative(),
+    unassignedPrimitiveCount: z.number().int().nonnegative(),
+    unusedMaterialCount: z.number().int().nonnegative(),
+    duplicateMaterialGroupCount: z.number().int().nonnegative(),
+  }),
+  texture: z.object({
+    textureCount: z.number().int().nonnegative(),
+    embeddedCount: z.number().int().nonnegative(),
+    referencedCount: z.number().int().nonnegative(),
+    unusedCount: z.number().int().nonnegative(),
+    smallestDimensionPx: z.number().int().nonnegative(),
+    largestDimensionPx: z.number().int().nonnegative(),
+  }),
+  topology: z.object({
+    degenerateTriangles: z.number().int().nonnegative(),
+    nonManifoldEdges: z.number().int().nonnegative(),
+    boundaryEdges: z.number().int().nonnegative(),
+    unreferencedVertices: z.number().int().nonnegative(),
+    inconsistentWindingEdges: z.number().int().nonnegative(),
+    normalMismatchTriangles: z.number().int().nonnegative(),
+  }),
+});
+export type AssetQualityMeasurements = z.infer<
+  typeof AssetQualityMeasurementsSchema
+>;
+
+export const AssetQualityVectorSchema = z.object({
+  hardGateFailures: z.number().int().nonnegative(),
+  criticalFindings: z.number().int().nonnegative(),
+  majorFindings: z.number().int().nonnegative(),
+  minorFindings: z.number().int().nonnegative(),
+  semanticVerdict: z.enum(["pass", "revise", "not-run"]),
+});
+export type AssetQualityVector = z.infer<typeof AssetQualityVectorSchema>;
+
+const AssetPolicyRefSchema = z.object({
+  revisionId: z.string().min(1),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+});
+
+export const DeterministicAssetReportSchema = z.object({
+  schema: z.literal("fulcrum.asset-deterministic-report"),
+  version: z.literal(1),
+  reportId: z.string().min(1),
+  assetId: z.string().min(1),
+  assetRevisionId: z.string().min(1),
+  assetArtifactSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  policy: AssetPolicyRefSchema,
+  classification: AssetClassificationSchema,
+  passed: z.boolean(),
+  measurements: AssetQualityMeasurementsSchema,
+  gates: z.array(QualityGateSchema),
+  findings: z.array(EvaluationFindingSchema),
+  qualityVector: AssetQualityVectorSchema,
+});
+export type DeterministicAssetReport = z.infer<
+  typeof DeterministicAssetReportSchema
+>;
+
+export const TurntableManifestSchema = z.object({
+  schema: z.literal("fulcrum.turntable"),
+  version: z.literal(1),
+  turntableId: z.string().min(1),
+  assetId: z.string().min(1),
+  assetRevisionId: z.string().min(1),
+  sourceArtifactHashes: z.array(z.string().regex(/^[a-f0-9]{64}$/)).min(1),
+  rendererVersion: z.literal("software-rasterizer-v1"),
+  config: AssetPolicySchema.shape.turntable,
+  frames: z
+    .array(
+      z.object({
+        frameIndex: z.number().int().nonnegative(),
+        yawDegrees: z.number().min(0).lt(360),
+        artifact: ArtifactRefSchema,
+      }),
+    )
+    .min(4)
+    .max(12),
+});
+export type TurntableManifest = z.infer<typeof TurntableManifestSchema>;
+
+export const SemanticAssetReportSchema = z.object({
+  schema: z.literal("fulcrum.asset-semantic-report"),
+  version: z.literal(1),
+  reportId: z.string().min(1),
+  assetId: z.string().min(1),
+  assetRevisionId: z.string().min(1),
+  turntableRevisionId: z.string().min(1),
+  rubricVersion: z.string().min(1),
+  requestDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  provider: z.string().min(1),
+  model: z.string().min(1),
+  costUsd: z.number().nonnegative(),
+  verdict: z.enum(["pass", "revise"]),
+  dimensionScores: z.record(z.string().min(1), z.number().min(0).max(1)),
+  findings: z.array(EvaluationFindingSchema),
+  qualityVector: AssetQualityVectorSchema,
+});
+export type SemanticAssetReport = z.infer<typeof SemanticAssetReportSchema>;
+
+const StrategyBaseSchema = z.object({
+  rationale: z.string().min(1).max(1_000),
+  reasonFindingIds: z.array(z.string().min(1)),
+});
+
+export const RegenerationStrategySchema = z.discriminatedUnion("kind", [
+  StrategyBaseSchema.extend({ kind: z.literal("retry-same") }),
+  StrategyBaseSchema.extend({
+    kind: z.literal("change-prompt"),
+    changes: z
+      .array(
+        z.object({
+          findingId: z.string().min(1),
+          addToPrompt: z.string().min(1).max(500),
+          avoid: z.string().min(1).max(500).optional(),
+        }),
+      )
+      .min(1)
+      .max(3),
+  }),
+  StrategyBaseSchema.extend({
+    kind: z.literal("change-views"),
+    operation: z.enum(["add", "replace"]),
+    roles: z.array(ConceptViewRoleSchema).min(1).max(4),
+    brief: z.string().min(1).max(1_000),
+  }),
+  StrategyBaseSchema.extend({
+    kind: z.literal("reclassify"),
+    from: AssetClassificationSchema,
+    to: AssetClassificationSchema,
+  }),
+  StrategyBaseSchema.extend({
+    kind: z.literal("accept-best"),
+    assetRevisionId: z.string().min(1),
+  }),
+  StrategyBaseSchema.extend({
+    kind: z.literal("give-up-user"),
+    bestAssetRevisionId: z.string().min(1).optional(),
+    message: z.string().min(1).max(1_000),
+  }),
+]);
+export type RegenerationStrategy = z.infer<typeof RegenerationStrategySchema>;
+
+export const RegenerationAttemptSchema = z.object({
+  attemptNumber: z.number().int().nonnegative(),
+  asset: RevisionRefSchema,
+  deterministicReport: RevisionRefSchema,
+  turntable: RevisionRefSchema.optional(),
+  semanticReport: RevisionRefSchema.optional(),
+  appliedStrategy: RevisionRefSchema.optional(),
+  qualityVector: AssetQualityVectorSchema,
+});
+export type RegenerationAttempt = z.infer<typeof RegenerationAttemptSchema>;
+
+export const RegenerationDecisionReportSchema = z.object({
+  schema: z.literal("fulcrum.asset-regeneration-decision"),
+  version: z.literal(1),
+  decisionId: z.string().min(1),
+  assetId: z.string().min(1),
+  sourceReportRevisionIds: z.array(z.string().min(1)).min(1),
+  bestKnownAssetRevisionId: z.string().min(1),
+  strategy: RegenerationStrategySchema,
+});
+export type RegenerationDecisionReport = z.infer<
+  typeof RegenerationDecisionReportSchema
+>;
+
+export const AssetQualitySelectionSchema = z.object({
+  attemptNumber: z.number().int().nonnegative(),
+  assetRevisionId: z.string().min(1),
+  deterministicReport: RevisionRefSchema,
+  turntable: RevisionRefSchema.optional(),
+  semanticReport: RevisionRefSchema.optional(),
+  decision: RevisionRefSchema.optional(),
+});
+export type AssetQualitySelection = z.infer<typeof AssetQualitySelectionSchema>;
+
 export const ProvenanceSchema = z.object({
   revisionId: z.string().min(1),
   parentRevisionIds: z.array(z.string().min(1)),
@@ -593,14 +976,6 @@ export const ProvenanceSchema = z.object({
   createdAt: z.string().datetime(),
 });
 export type Provenance = z.infer<typeof ProvenanceSchema>;
-
-export const AssetClassificationSchema = z.enum([
-  "hero",
-  "kit",
-  "procedural",
-  "functional",
-]);
-export type AssetClassification = z.infer<typeof AssetClassificationSchema>;
 
 export const AssetClassHandlingPoliciesV1Schema = z.object({
   policyVersion: z.literal(1),
@@ -1331,18 +1706,18 @@ export const AssetProductionNodeOutputSchema = MultiviewNodeOutputSchema.extend(
 export const DeterministicQaNodeOutputSchema =
   AssetProductionNodeOutputSchema.extend({
     deterministicReport: RevisionRefSchema,
+    turntable: RevisionRefSchema.optional(),
   });
 export const TurntableEvaluationNodeOutputSchema =
   DeterministicQaNodeOutputSchema.extend({
-    turntable: RevisionRefSchema.optional(),
-    semanticReport: RevisionRefSchema,
+    semanticReport: RevisionRefSchema.optional(),
     disposition: z.enum(["accept", "regenerate", "user-action-required"]),
   });
 export const RegenerationNodeOutputSchema =
   TurntableEvaluationNodeOutputSchema.extend({
     bestAsset: RevisionRefSchema,
     finalDeterministicReport: RevisionRefSchema,
-    finalSemanticReport: RevisionRefSchema,
+    finalSemanticReport: RevisionRefSchema.optional(),
     decision: RevisionRefSchema.optional(),
     attemptCount: z.number().int().nonnegative(),
     validated: z.boolean(),

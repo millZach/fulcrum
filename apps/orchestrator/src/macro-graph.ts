@@ -463,7 +463,9 @@ const createM2Batch = (
               validated: asset.validated,
               deterministicReport: asset.finalDeterministicReport,
               ...(asset.turntable ? { turntable: asset.turntable } : {}),
-              semanticReport: asset.finalSemanticReport,
+              ...(asset.finalSemanticReport
+                ? { semanticReport: asset.finalSemanticReport }
+                : {}),
               ...(asset.decision ? { decision: asset.decision } : {}),
               ...(asset.multiviewConceptSet
                 ? { multiviewConceptSet: asset.multiviewConceptSet }

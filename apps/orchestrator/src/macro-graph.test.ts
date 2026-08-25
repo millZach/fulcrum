@@ -23,6 +23,7 @@ import {
   createPostConceptWorkflow,
 } from "./macro-graph.js";
 import {
+  createM2MacroGraphSlots,
   PostConceptOperations,
   type M2MacroGraphSlots,
 } from "./macro-operations.js";
@@ -173,6 +174,31 @@ const m2Fixture = (repository: ProjectRepository) => {
   const conceptSet = revision("concept-set", "concept-set");
   const gameDesignSpec = revision("game-design", "game-design-spec");
   const visualDirectionSet = revision("directions", "visual-direction-set");
+  const conceptImage = repository.putArtifact(
+    projectId,
+    Uint8Array.from([137, 80, 78, 71]),
+    "image/png",
+  );
+  const concept = repository.writeRevision({
+    projectId,
+    entityId: `${projectId}:concept:hero`,
+    kind: "concept-document",
+    value: {
+      conceptId: `${projectId}:concept:hero`,
+      name: "Reliquary hero",
+      prompt: "An ancient reliquary with a cyan crystal core and bronze rings.",
+      negativePrompt: "photorealism",
+      image: conceptImage,
+      provider: "fulcrum-replay",
+      model: "fixture-concept-v1",
+      sourceRevisionIds: [
+        gameDesignSpec.revisionId,
+        visualDirectionSet.revisionId,
+      ],
+      costUsd: 0,
+    },
+    runId,
+  });
   const assetPlanRevisionId = "m2-fixture-asset-plan-revision";
   const assetPlan = repository.writeRevision({
     projectId,
@@ -187,7 +213,7 @@ const m2Fixture = (repository: ProjectRepository) => {
           assetId: "hero",
           name: "Fixture hero",
           classification: "hero",
-          rationale: "Exercises the S1 M2 graph contract.",
+          rationale: "Readable hero prop at the center of the arena.",
           sourceRefs: {
             gameDesignSpec: {
               revisionId: gameDesignSpec.revisionId,
@@ -199,10 +225,19 @@ const m2Fixture = (repository: ProjectRepository) => {
               sha256: conceptSet.artifact.sha256,
               kind: conceptSet.kind,
             },
-            conceptSlots: [],
+            conceptSlots: [
+              {
+                slotId: "hero",
+                concept: {
+                  revisionId: concept.revisionId,
+                  sha256: concept.artifact.sha256,
+                  kind: concept.kind,
+                },
+              },
+            ],
           },
           dependsOnAssetIds: [],
-          acceptanceCriteria: ["The fixture remains readable."],
+          acceptanceCriteria: ["cyan crystal core", "bronze binding rings"],
         },
       ],
       handling: ASSET_CLASS_HANDLING_POLICIES_V1,
@@ -233,13 +268,33 @@ const m2Fixture = (repository: ProjectRepository) => {
     spentUsd: 0,
     brief,
     conceptSet,
+    conceptSetApproval: {
+      approvalId: "concept-set-approval",
+      projectId,
+      targetType: "concept-set",
+      targetRevisionId: conceptSet.revisionId,
+      targetSha256: conceptSet.artifact.sha256,
+      decision: "approved",
+      decidedBy: "test",
+      decidedAt: createdAt,
+    },
     gameDesignSpec,
+    gameDesignApproval: {
+      approvalId: "game-design-approval",
+      projectId,
+      targetType: "game-design",
+      targetRevisionId: gameDesignSpec.revisionId,
+      targetSha256: gameDesignSpec.artifact.sha256,
+      decision: "approved",
+      decidedBy: "test",
+      decidedAt: createdAt,
+    },
     visualDirectionSet,
     selectedVisualDirectionRevisionId: "direction-1",
     createdAt,
     updatedAt: createdAt,
   });
-  return { projectId, runId, assetPlan, revision };
+  return { projectId, runId, assetPlan, concept, revision };
 };
 
 const readyM2Slots = (
@@ -947,7 +1002,7 @@ describe("M2 macro slot contracts", () => {
         ensure: async (input) => {
           received = {
             deterministicReport: input.deterministicReport,
-            semanticReport: input.semanticReport,
+            semanticReport: input.semanticReport!,
           };
           return {
             status: "ready",
@@ -995,6 +1050,252 @@ describe("M2 macro slot contracts", () => {
         failureKind: "policy-blocked",
       },
     });
+    repository.close();
+  });
+
+  it("replay_hero_runs_change_views_then_validates_attempt_two", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const fixture = m2Fixture(repository);
+    const slots = createM2MacroGraphSlots(repository, {
+      plan: async () => ({
+        status: "ready",
+        requestId: "fixture-plan",
+        value: fixture.assetPlan,
+      }),
+    });
+    const driver = new PostConceptGraphDriver(repository, { slots });
+
+    const awaitingApproval = await driver.advance(fixture.projectId);
+    expect(awaitingApproval.state.stage).toBe("asset-plan-approval");
+    approveFixturePlan(repository, fixture);
+
+    const completed = await driver.advance(
+      fixture.projectId,
+      "approval-recorded",
+    );
+
+    const selection = completed.state.assetBatch?.hero;
+    expect(completed.state.stage).toBe("complete");
+    expect(selection).toMatchObject({
+      classification: "hero",
+      attemptCount: 2,
+      validated: true,
+    });
+    expect(selection?.current.revisionId).toBe(selection?.best.revisionId);
+    expect(
+      repository.resolveRevision<{ model: string }>(selection!.best).model,
+    ).toBe("parametric-reliquary-rear-defined-v2");
+
+    const events = repository.listEvents(fixture.projectId);
+    expect(
+      events
+        .filter(({ type }) => type === "asset.regeneration-strategy-selected")
+        .map(({ payload }) => payload.strategyKind),
+    ).toEqual(["change-views", "accept-best"]);
+    expect(
+      events.filter(
+        ({ type }) => type === "asset.regeneration-attempt-started",
+      ),
+    ).toHaveLength(1);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "asset.best-revision-considered",
+          payload: expect.objectContaining({ result: "updated" }),
+        }),
+      ]),
+    );
+
+    const changeViewsEvent = events.find(
+      ({ type, payload }) =>
+        type === "asset.regeneration-strategy-selected" &&
+        payload.strategyKind === "change-views",
+    );
+    const decision = repository.resolveRevision<{
+      strategy: { kind: string; roles: string[]; operation: string };
+    }>(
+      repository.getRevision(
+        changeViewsEvent!.payload.decisionRevisionId as string,
+      ),
+    );
+    expect(decision.strategy).toMatchObject({
+      kind: "change-views",
+      roles: ["back", "left", "right"],
+      operation: "add",
+    });
+
+    const semanticReports = events.filter(
+      ({ type }) => type === "asset.semantic-evaluation-completed",
+    );
+    expect(semanticReports).toHaveLength(2);
+    const firstReport = repository.resolveRevision<{
+      findings: Array<{
+        evidence: Array<{ frameIndex?: number; crop?: unknown }>;
+      }>;
+    }>(
+      repository.getRevision(
+        semanticReports[0]!.payload.semanticReportRevisionId as string,
+      ),
+    );
+    expect(firstReport.findings[0]?.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ frameIndex: 3 }),
+        expect.objectContaining({ frameIndex: 4, crop: expect.any(Object) }),
+        expect.objectContaining({ frameIndex: 5 }),
+      ]),
+    );
+    repository.close();
+  });
+
+  it("restart_between_submission_and_semantic_resume_spends_once", async () => {
+    const root = temporaryRoot();
+    const repository = new ProjectRepository(root);
+    const fixture = m2Fixture(repository);
+    const planner = {
+      plan: async () => ({
+        status: "ready" as const,
+        requestId: "fixture-plan",
+        value: fixture.assetPlan,
+      }),
+    };
+    const base = createM2MacroGraphSlots(repository, planner);
+    let interrupted = false;
+    const slots: M2MacroGraphSlots = {
+      ...base,
+      regeneration: {
+        ensure: async (input) => {
+          const outcome = await base.regeneration.ensure(input);
+          if (!interrupted && outcome.status === "ready") {
+            interrupted = true;
+            return {
+              status: "pending",
+              requestId: "semantic-resume-checkpoint-interruption",
+              resumeAfter: "2026-01-01T00:00:05.000Z",
+            };
+          }
+          return outcome;
+        },
+      },
+    };
+    const driver = new PostConceptGraphDriver(repository, { slots });
+    await driver.advance(fixture.projectId);
+    approveFixturePlan(repository, fixture);
+
+    const suspended = await driver.advance(
+      fixture.projectId,
+      "approval-recorded",
+    );
+    expect(suspended.state.stage).toBe("asset-batch");
+    const baselineSubmission = repository
+      .listEvents(fixture.projectId)
+      .find(({ type }) => type === "asset.semantic-evaluation-submitted");
+    expect(baselineSubmission).toBeDefined();
+    repository.close();
+
+    const reconstructed = new ProjectRepository(root);
+    const restarted = new PostConceptGraphDriver(reconstructed, {
+      slots: createM2MacroGraphSlots(reconstructed, planner),
+    });
+    const completed = await restarted.advance(
+      fixture.projectId,
+      "reconstructed",
+    );
+    const semanticSubmissions = reconstructed
+      .listEvents(fixture.projectId)
+      .filter(({ type }) => type === "asset.semantic-evaluation-submitted");
+
+    expect(completed.state.stage).toBe("complete");
+    expect(
+      semanticSubmissions.filter(
+        ({ payload }) =>
+          payload.requestDigest === baselineSubmission!.payload.requestDigest,
+      ),
+    ).toHaveLength(1);
+    expect(
+      new Set(semanticSubmissions.map(({ payload }) => payload.requestDigest))
+        .size,
+    ).toBe(2);
+    reconstructed.close();
+  });
+
+  it("regressed_attempt_remains_current_but_not_best", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const fixture = m2Fixture(repository);
+    const replayVisionCatalog = {
+      schema: "fulcrum.replay-vision-catalog" as const,
+      version: 1 as const,
+      fixtures: [
+        {
+          requestDigest:
+            "a513b9b40e9eac10023c72b69d0f966cf44fdf3a32ad1c13c08e783d93ae0022",
+          description: "baseline remains the Pareto incumbent",
+          response: {
+            verdict: "revise" as const,
+            dimensionScores: { "silhouette-readability": 0.42 },
+            findings: [
+              {
+                criterionId: "silhouette-readability" as const,
+                summary: "The rear silhouette needs direct concept evidence.",
+                severity: "major" as const,
+                confidence: 0.94,
+                evidence: [{ frameIndex: 4 }],
+                suggestedAction: "Add rear and side concept views.",
+              },
+            ],
+          },
+        },
+        {
+          requestDigest:
+            "3dc1801f3b1f301a020e53dab363240b33a59abeeb384e7595183e91aa6e82cc",
+          description: "rear-defined attempt regresses concept fidelity",
+          response: {
+            verdict: "revise" as const,
+            dimensionScores: { "concept-fidelity": 0.18 },
+            findings: [
+              {
+                criterionId: "concept-fidelity" as const,
+                summary: "The correction changes the approved identity.",
+                severity: "critical" as const,
+                confidence: 0.96,
+                evidence: [{ frameIndex: 0 }],
+                suggestedAction: "Restore the approved front identity.",
+              },
+            ],
+          },
+        },
+      ],
+    };
+    const quality = new AssetQuality(repository, { replayVisionCatalog });
+    const slots = createM2MacroGraphSlots(
+      repository,
+      {
+        plan: async () => ({
+          status: "ready",
+          requestId: "fixture-plan",
+          value: fixture.assetPlan,
+        }),
+      },
+      { assetQuality: quality },
+    );
+    const driver = new PostConceptGraphDriver(repository, { slots });
+    await driver.advance(fixture.projectId);
+    approveFixturePlan(repository, fixture);
+
+    const completed = await driver.advance(
+      fixture.projectId,
+      "approval-recorded",
+    );
+    const selection = completed.state.assetBatch?.hero;
+
+    expect(completed.state.stage).toBe("complete");
+    expect(selection).toMatchObject({ attemptCount: 3, validated: true });
+    expect(selection?.current.revisionId).not.toBe(selection?.best.revisionId);
+    expect(
+      repository
+        .listEvents(fixture.projectId)
+        .filter(({ type }) => type === "asset.best-revision-considered")
+        .at(-1),
+    ).toMatchObject({ payload: { result: "retained" } });
     repository.close();
   });
 });

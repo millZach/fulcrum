@@ -1,20 +1,41 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import {
   AssetDocumentSchema,
   AssetEvaluationSchema,
+  AssetPolicySchema,
+  DeterministicAssetReportSchema,
+  RegenerationDecisionReportSchema,
+  RegenerationStrategySchema,
+  SemanticAssetReportSchema,
+  TurntableManifestSchema,
   decideDurableSubmission,
   isProviderPreflightError,
   ProviderPreflightError,
   type AssetProvider,
   type AssetDocument,
   type AssetEvaluation,
+  type AssetPolicy,
+  type DeterministicAssetReport,
+  type ArtifactRef,
   type ConceptDocument,
   type ProductionOutcome,
   type ProviderMode,
   type RevisionRef,
+  type RegenerationAttempt,
+  type RegenerationDecisionReport,
+  type RegenerationStrategy,
+  type SemanticAssetReport,
   type SubmissionRecord,
+  type TurntableManifest,
 } from "@fulcrum/domain";
+import {
+  inspectExecutionProviders,
+  ModelExecution,
+  preferredVisionProvider,
+  type ExecutionProviderStatus,
+  type StructuredVisionExecution,
+} from "@fulcrum/execution";
 import { ProjectRepository } from "@fulcrum/project";
 import { Document, getBounds, NodeIO, Primitive } from "@gltf-transform/core";
 import {
@@ -24,9 +45,120 @@ import {
   OctahedronGeometry,
   TorusGeometry,
 } from "three";
+import { z } from "zod";
+
+import { inspectParsedAsset } from "./deterministic-quality.js";
+import {
+  bestRegenerationAttempt,
+  compareQualityVectors,
+  decideRegeneration,
+} from "./regeneration.js";
+import { renderTurntable } from "./turntable.js";
+import {
+  ASSET_VISION_RUBRIC_V1,
+  LiveVisionEvaluationPort,
+  materializeVisionReport,
+  REPLAY_VISION_CATALOG,
+  ReplayVisionEvaluationPort,
+  ReplayVisionCatalogSchema,
+  VisionEvaluationError,
+  VisionRequestDescriptorSchema,
+  visionRequestDigest,
+  type ReplayVisionCatalog,
+  type VisionRequestDescriptor,
+} from "./vision-evaluation.js";
 
 export { AssetPlanner } from "./asset-planner.js";
 export type { AssetPlanning } from "./asset-planner.js";
+export { DEFAULT_ASSET_POLICIES } from "./deterministic-quality.js";
+export { ASSET_VISION_RUBRIC_V1 } from "./vision-evaluation.js";
+
+export type AssetQualityOptions = {
+  visionExecution?: StructuredVisionExecution;
+  replayVisionCatalog?: ReplayVisionCatalog;
+  visionProviderStatuses?: ExecutionProviderStatus[];
+};
+
+export type InspectAssetRequest = {
+  projectId: string;
+  runId: string;
+  asset: RevisionRef;
+  policy: { revision: RevisionRef; value: AssetPolicy };
+};
+
+export type InspectAssetResult = {
+  deterministicReport: RevisionRef;
+  turntable?: RevisionRef;
+  report: DeterministicAssetReport;
+  manifest?: TurntableManifest;
+};
+
+export type AssetEvaluationContext = {
+  intendedUse: string;
+  requiredFeatures: string[];
+  prohibitedFeatures: string[];
+  referenceArtifacts: ArtifactRef[];
+};
+
+export type SemanticAssetRequest = {
+  projectId: string;
+  runId: string;
+  mode: ProviderMode;
+  asset: RevisionRef;
+  deterministicReport: RevisionRef;
+  turntable: RevisionRef;
+  policy: { revision: RevisionRef; value: AssetPolicy };
+  context: AssetEvaluationContext;
+};
+
+export type SelectRegenerationRequest = {
+  projectId: string;
+  runId: string;
+  assetId: string;
+  currentAttempt: RegenerationAttempt;
+  attemptHistory: RegenerationAttempt[];
+  policy: AssetPolicy;
+};
+
+export type AssetRegenerationInput = {
+  attemptNumber: number;
+  strategyRevision: RevisionRef;
+  parentAssetRevision: RevisionRef;
+  additionalConceptViews?: RevisionRef[];
+};
+
+export class AssetQualityFailure extends Error {
+  readonly failureKind = "strategy-changing" as const;
+
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "AssetQualityFailure";
+  }
+}
+
+const QualityWorkflowEventSchema = z.object({
+  projectId: z.string().min(1),
+  runId: z.string().min(1),
+  type: z.enum([
+    "asset.deterministic-quality-completed",
+    "asset.turntable-rendered",
+    "asset.semantic-evaluation-submitted",
+    "asset.semantic-evaluation-completed",
+    "asset.semantic-evaluation-submission-unknown",
+    "asset.regeneration-strategy-selected",
+    "asset.regeneration-attempt-started",
+    "asset.best-revision-considered",
+  ]),
+  payload: z.record(z.string(), z.unknown()),
+});
+
+const appendQualityEvent = (
+  repository: ProjectRepository,
+  event: z.input<typeof QualityWorkflowEventSchema>,
+) => repository.appendEvent(QualityWorkflowEventSchema.parse(event));
 
 type GeneratedAsset = {
   bytes: Uint8Array;
@@ -86,7 +218,9 @@ const addGeometry = (
   geometry.dispose();
 };
 
-export const createReplayReliquary = async (): Promise<Uint8Array> => {
+export const createReplayReliquary = async (
+  variant: "baseline" | "rear-defined" = "baseline",
+): Promise<Uint8Array> => {
   const document = new Document();
   document.createScene("Fulcrum M0 Reliquary");
   const buffer = document.createBuffer("reliquary-buffer");
@@ -147,6 +281,21 @@ export const createReplayReliquary = async (): Promise<Uint8Array> => {
     .translate(0.65, 1.42, 0.74);
   addGeometry(document, buffer, "right core guard", coreFrameRight, bronze);
 
+  if (variant === "rear-defined") {
+    const rearCore = new OctahedronGeometry(0.48, 0)
+      .scale(0.76, 1.42, 0.76)
+      .translate(0, 1.43, -0.9);
+    addGeometry(document, buffer, "rear cyan core", rearCore, crystal);
+    const rearGuardLeft = new BoxGeometry(0.18, 1.28, 0.2)
+      .rotateZ(-0.2)
+      .translate(-0.62, 1.42, -0.76);
+    addGeometry(document, buffer, "rear left guard", rearGuardLeft, bronze);
+    const rearGuardRight = new BoxGeometry(0.18, 1.28, 0.2)
+      .rotateZ(0.2)
+      .translate(0.62, 1.42, -0.76);
+    addGeometry(document, buffer, "rear right guard", rearGuardRight, bronze);
+  }
+
   document.getRoot().getAsset().generator = "Fulcrum replay asset generator";
   return new NodeIO().writeBinary(document);
 };
@@ -160,8 +309,66 @@ export class AssetProduction {
     mode: ProviderMode;
     assetProvider: AssetProvider;
     concept: RevisionRef;
+    regeneration?: AssetRegenerationInput;
   }): Promise<ProductionOutcome<RevisionRef>> {
-    const idempotencyKey = `asset:${input.projectId}:${input.concept.artifact.sha256}:${input.mode}:${input.assetProvider}`;
+    if (
+      input.mode === "live" &&
+      (input.regeneration?.additionalConceptViews?.length ?? 0) > 0
+    )
+      return {
+        status: "failed",
+        requestId: `asset-capability-${createHash("sha256")
+          .update(
+            JSON.stringify([
+              input.projectId,
+              input.assetProvider,
+              input.regeneration?.additionalConceptViews?.map(
+                (view) => view.revisionId,
+              ),
+            ]),
+          )
+          .digest("hex")}`,
+        error: {
+          code: "provider-multiview-unsupported",
+          message:
+            "Live multi-image asset submission belongs to the S4 provider adapter.",
+          recoverable: true,
+          failureKind: "strategy-changing",
+        },
+      };
+    let regenerationStrategy: RegenerationStrategy | undefined;
+    if (input.regeneration) {
+      if (
+        !Number.isInteger(input.regeneration.attemptNumber) ||
+        input.regeneration.attemptNumber < 1
+      )
+        return {
+          status: "failed",
+          requestId: `asset-regeneration-invalid-${input.projectId}`,
+          error: {
+            code: "regeneration-attempt-invalid",
+            message: "Regeneration attempt numbers start at one.",
+            recoverable: true,
+            failureKind: "policy-blocked",
+          },
+        };
+      const strategyValue = this.repository.resolveRevision<unknown>(
+        input.regeneration.strategyRevision,
+      );
+      const decisionReport =
+        RegenerationDecisionReportSchema.safeParse(strategyValue);
+      regenerationStrategy = decisionReport.success
+        ? decisionReport.data.strategy
+        : RegenerationStrategySchema.parse(strategyValue);
+    }
+    const regenerationKey = input.regeneration
+      ? `:${input.regeneration.strategyRevision.artifact.sha256}:${input.regeneration.parentAssetRevision.artifact.sha256}:${input.regeneration.attemptNumber}:${(
+          input.regeneration.additionalConceptViews ?? []
+        )
+          .map((view) => view.artifact.sha256)
+          .join(":")}`
+      : "";
+    const idempotencyKey = `asset:${input.projectId}:${input.concept.artifact.sha256}:${input.mode}:${input.assetProvider}${regenerationKey}`;
     const prior = this.repository.getSubmissionByKey(idempotencyKey);
     const decision = decideDurableSubmission(prior, input.mode);
     if (decision.kind === "ready") {
@@ -232,16 +439,53 @@ export class AssetProduction {
             payload: {
               conceptRevisionId: input.concept.revisionId,
               imageArtifactId: concept.image.artifactId,
+              ...(input.regeneration
+                ? {
+                    attemptNumber: input.regeneration.attemptNumber,
+                    strategyRevisionId:
+                      input.regeneration.strategyRevision.revisionId,
+                    parentAssetRevisionId:
+                      input.regeneration.parentAssetRevision.revisionId,
+                    additionalConceptViewRevisionIds: (
+                      input.regeneration.additionalConceptViews ?? []
+                    ).map((view) => view.revisionId),
+                  }
+                : {}),
             },
           }));
+    if (
+      decision.kind !== "inspect" &&
+      !decision.submission &&
+      input.regeneration
+    )
+      appendQualityEvent(this.repository, {
+        projectId: input.projectId,
+        runId: input.runId,
+        type: "asset.regeneration-attempt-started",
+        payload: {
+          attemptNumber: input.regeneration.attemptNumber,
+          strategyRevisionId: input.regeneration.strategyRevision.revisionId,
+          parentAssetRevisionId:
+            input.regeneration.parentAssetRevision.revisionId,
+          additionalConceptViewRevisionIds: (
+            input.regeneration.additionalConceptViews ?? []
+          ).map((view) => view.revisionId),
+          requestId: submission.requestId,
+        },
+      });
     try {
       let generated: GeneratedAsset | undefined;
       if (input.mode === "replay") {
+        const rearDefined = regenerationStrategy?.kind === "change-views";
         generated = {
-          bytes: await createReplayReliquary(),
+          bytes: await createReplayReliquary(
+            rearDefined ? "rear-defined" : "baseline",
+          ),
           provider: "fulcrum-replay",
-          model: "parametric-reliquary-v1",
-          externalJobId: `replay-${input.concept.artifact.sha256.slice(0, 12)}`,
+          model: rearDefined
+            ? "parametric-reliquary-rear-defined-v2"
+            : "parametric-reliquary-v1",
+          externalJobId: `replay-${input.concept.artifact.sha256.slice(0, 12)}${input.regeneration ? `-attempt-${input.regeneration.attemptNumber}` : ""}`,
           costUsd: 0,
         };
       } else if (decision.kind === "inspect") {
@@ -354,11 +598,35 @@ export class AssetProduction {
       const asset: AssetDocument = AssetDocumentSchema.parse({
         assetId: `${input.projectId}:reliquary-asset`,
         name: "Ancient Reliquary",
-        classification: "hero",
+        classification:
+          regenerationStrategy?.kind === "reclassify"
+            ? regenerationStrategy.to
+            : "hero",
         glb,
         provider: generated.provider,
         model: generated.model,
         sourceConceptRevisionId: input.concept.revisionId,
+        sourceConceptRevisionIds: [
+          input.concept.revisionId,
+          ...(input.regeneration?.additionalConceptViews ?? []).map(
+            (view) => view.revisionId,
+          ),
+        ],
+        ...(input.regeneration
+          ? {
+              parentAssetRevisionId:
+                input.regeneration.parentAssetRevision.revisionId,
+              regenerationStrategyRevisionId:
+                input.regeneration.strategyRevision.revisionId,
+            }
+          : {}),
+        generationClaims:
+          generated.provider === "fulcrum-replay"
+            ? { textured: false, textureChannels: [] }
+            : {
+                textured: true,
+                textureChannels: ["base-color", "metallic-roughness"],
+              },
         externalJobId: generated.externalJobId,
         costUsd: generated.costUsd,
       });
@@ -737,7 +1005,670 @@ export class AssetProduction {
 }
 
 export class AssetQuality {
-  constructor(private readonly repository: ProjectRepository) {}
+  private readonly visionExecution: StructuredVisionExecution;
+  private readonly replayVisionCatalog: ReplayVisionCatalog;
+  private readonly visionProviderStatuses:
+    ExecutionProviderStatus[] | undefined;
+
+  constructor(
+    private readonly repository: ProjectRepository,
+    options: AssetQualityOptions = {},
+  ) {
+    this.visionExecution = options.visionExecution ?? new ModelExecution();
+    this.replayVisionCatalog = ReplayVisionCatalogSchema.parse(
+      options.replayVisionCatalog ?? REPLAY_VISION_CATALOG,
+    );
+    this.visionProviderStatuses = options.visionProviderStatuses;
+  }
+
+  async inspect(input: InspectAssetRequest): Promise<InspectAssetResult> {
+    const asset = AssetDocumentSchema.parse(
+      this.repository.resolveRevision<AssetDocument>(input.asset),
+    );
+    const policy = AssetPolicySchema.parse(input.policy.value);
+    if (asset.classification !== policy.classification)
+      throw new AssetQualityFailure(
+        "asset-policy-classification-mismatch",
+        `Asset class ${asset.classification} cannot use ${policy.classification} policy.`,
+      );
+    let document: Document;
+    try {
+      document = await new NodeIO().readBinary(
+        this.repository.readArtifact(asset.glb),
+      );
+    } catch (error) {
+      throw new AssetQualityFailure(
+        "asset-glb-unsupported",
+        `Asset GLB could not be parsed without unsupported compression: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const inspection = inspectParsedAsset(document, asset, policy);
+    const reportId = `deterministic-${createHash("sha256")
+      .update(
+        JSON.stringify([
+          input.asset.revisionId,
+          input.policy.revision.revisionId,
+          inspection,
+        ]),
+      )
+      .digest("hex")}`;
+    const report = DeterministicAssetReportSchema.parse({
+      schema: "fulcrum.asset-deterministic-report",
+      version: 1,
+      reportId,
+      assetId: asset.assetId,
+      assetRevisionId: input.asset.revisionId,
+      assetArtifactSha256: asset.glb.sha256,
+      policy: {
+        revisionId: input.policy.revision.revisionId,
+        sha256: input.policy.revision.artifact.sha256,
+      },
+      classification: asset.classification,
+      ...inspection,
+    });
+    const deterministic = this.repository.ensureRevision({
+      projectId: input.projectId,
+      operationKey: `m2.asset-deterministic-quality:${input.asset.revisionId}:${input.policy.revision.revisionId}`,
+      entityId: `${asset.assetId}:deterministic-quality`,
+      kind: "asset-deterministic-report",
+      runId: input.runId,
+      createValue: () => report,
+    });
+    if (deterministic.created)
+      appendQualityEvent(this.repository, {
+        projectId: input.projectId,
+        runId: input.runId,
+        type: "asset.deterministic-quality-completed",
+        payload: {
+          assetId: asset.assetId,
+          assetRevisionId: input.asset.revisionId,
+          reportRevisionId: deterministic.revision.revisionId,
+          passed: deterministic.value.passed,
+        },
+      });
+    if (!deterministic.value.passed)
+      return {
+        deterministicReport: deterministic.revision,
+        report: DeterministicAssetReportSchema.parse(deterministic.value),
+      };
+
+    let rendered;
+    try {
+      rendered = renderTurntable(document, policy.turntable);
+    } catch (error) {
+      throw new AssetQualityFailure(
+        "asset-turntable-render-failed",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    const frameArtifacts = rendered.map((frame) => ({
+      ...frame,
+      artifact: this.repository.putArtifact(
+        input.projectId,
+        frame.bytes,
+        "image/png",
+      ),
+    }));
+    const manifest = TurntableManifestSchema.parse({
+      schema: "fulcrum.turntable",
+      version: 1,
+      turntableId: `turntable-${createHash("sha256")
+        .update(
+          JSON.stringify([
+            input.asset.revisionId,
+            input.policy.revision.revisionId,
+            frameArtifacts.map(({ artifact }) => artifact.sha256),
+          ]),
+        )
+        .digest("hex")}`,
+      assetId: asset.assetId,
+      assetRevisionId: input.asset.revisionId,
+      sourceArtifactHashes: [asset.glb.sha256],
+      rendererVersion: "software-rasterizer-v1",
+      config: policy.turntable,
+      frames: frameArtifacts.map(
+        ({ frameIndex, yawDegrees, artifact: frameArtifact }) => ({
+          frameIndex,
+          yawDegrees,
+          artifact: frameArtifact,
+        }),
+      ),
+    });
+    const turntable = this.repository.ensureRevision({
+      projectId: input.projectId,
+      operationKey: `m2.asset-turntable:${input.asset.revisionId}:${input.policy.revision.revisionId}`,
+      entityId: `${asset.assetId}:turntable`,
+      kind: "turntable-manifest",
+      runId: input.runId,
+      createValue: () => manifest,
+    });
+    if (turntable.created)
+      appendQualityEvent(this.repository, {
+        projectId: input.projectId,
+        runId: input.runId,
+        type: "asset.turntable-rendered",
+        payload: {
+          assetId: asset.assetId,
+          assetRevisionId: input.asset.revisionId,
+          turntableRevisionId: turntable.revision.revisionId,
+          frameCount: turntable.value.frames.length,
+        },
+      });
+    return {
+      deterministicReport: deterministic.revision,
+      turntable: turntable.revision,
+      report: DeterministicAssetReportSchema.parse(deterministic.value),
+      manifest: TurntableManifestSchema.parse(turntable.value),
+    };
+  }
+
+  async ensureSemantic(
+    input: SemanticAssetRequest,
+  ): Promise<
+    ProductionOutcome<{ revision: RevisionRef; report: SemanticAssetReport }>
+  > {
+    const asset = AssetDocumentSchema.parse(
+      this.repository.resolveRevision<AssetDocument>(input.asset),
+    );
+    const policy = AssetPolicySchema.parse(input.policy.value);
+    const deterministic = DeterministicAssetReportSchema.parse(
+      this.repository.resolveRevision(input.deterministicReport),
+    );
+    const manifest = TurntableManifestSchema.parse(
+      this.repository.resolveRevision(input.turntable),
+    );
+    if (
+      deterministic.assetRevisionId !== input.asset.revisionId ||
+      manifest.assetRevisionId !== input.asset.revisionId ||
+      deterministic.policy.revisionId !== input.policy.revision.revisionId
+    )
+      throw new AssetQualityFailure(
+        "asset-quality-lineage-mismatch",
+        "Semantic evaluation inputs do not share exact asset and policy lineage.",
+      );
+    if (!deterministic.passed)
+      return {
+        status: "failed",
+        requestId: `semantic-blocked-${input.asset.revisionId}`,
+        error: {
+          code: "deterministic-quality-failed",
+          message: "Semantic evaluation requires a deterministic pass.",
+          recoverable: true,
+          failureKind: "strategy-changing",
+        },
+      };
+    const descriptor: VisionRequestDescriptor =
+      VisionRequestDescriptorSchema.parse({
+        assetRevisionId: input.asset.revisionId,
+        assetSha256: asset.glb.sha256,
+        policySha256: input.policy.revision.artifact.sha256,
+        classification: policy.classification,
+        intendedUse: input.context.intendedUse,
+        requiredFeatures: input.context.requiredFeatures,
+        prohibitedFeatures: input.context.prohibitedFeatures,
+        referenceArtifacts: input.context.referenceArtifacts,
+        frames: manifest.frames,
+        rubric: ASSET_VISION_RUBRIC_V1,
+      });
+    const requestDigest = visionRequestDigest(descriptor);
+    const idempotencyKey = `asset-semantic:${input.projectId}:${input.mode}:${requestDigest}`;
+    let submission = this.repository.getSubmissionByKey(idempotencyKey);
+    if (submission?.status === "ready") {
+      if (!submission.resultRevisionId)
+        return {
+          status: "failed",
+          requestId: submission.requestId,
+          error: {
+            code: "semantic-result-missing",
+            message: "Semantic submission is ready without a result revision.",
+            recoverable: true,
+            failureKind: "user-action-required",
+          },
+        };
+      const revision = this.repository.getRevision(submission.resultRevisionId);
+      return {
+        status: "ready",
+        requestId: submission.requestId,
+        value: {
+          revision,
+          report: SemanticAssetReportSchema.parse(
+            this.repository.resolveRevision(revision),
+          ),
+        },
+      };
+    }
+    if (
+      submission?.status === "failed" ||
+      submission?.status === "submission-unknown"
+    )
+      return {
+        status: "failed",
+        requestId: submission.requestId,
+        error: {
+          code:
+            submission.status === "submission-unknown"
+              ? "submission-unknown"
+              : "semantic-evaluation-failed",
+          message:
+            submission.status === "submission-unknown"
+              ? "The semantic provider may have accepted this request; Fulcrum will not risk duplicate spend."
+              : "Semantic evaluation failed and requires a new strategy.",
+          recoverable: true,
+          failureKind:
+            submission.status === "submission-unknown"
+              ? "user-action-required"
+              : "strategy-changing",
+        },
+      };
+    if (submission?.payload.providerCallStartedAt) {
+      submission = this.repository.updateSubmission(submission.requestId, {
+        status: "submission-unknown",
+        payload: submission.payload,
+      });
+      appendQualityEvent(this.repository, {
+        projectId: input.projectId,
+        runId: input.runId,
+        type: "asset.semantic-evaluation-submission-unknown",
+        payload: {
+          assetId: asset.assetId,
+          requestId: submission.requestId,
+          requestDigest,
+        },
+      });
+      return {
+        status: "failed",
+        requestId: submission.requestId,
+        error: {
+          code: "submission-unknown",
+          message:
+            "The semantic provider call started before interruption; Fulcrum will not submit it twice.",
+          recoverable: true,
+          failureKind: "user-action-required",
+        },
+      };
+    }
+
+    let provider: "fulcrum-replay" | "openai" | "openai-api";
+    if (submission) {
+      const parsed = z
+        .enum(["fulcrum-replay", "openai", "openai-api"])
+        .safeParse(submission.provider);
+      if (!parsed.success)
+        throw new AssetQualityFailure(
+          "semantic-provider-invalid",
+          `Recorded semantic provider ${submission.provider} is invalid.`,
+        );
+      provider = parsed.data;
+    } else if (input.mode === "replay") provider = "fulcrum-replay";
+    else {
+      const selected = preferredVisionProvider(
+        this.visionProviderStatuses ?? inspectExecutionProviders(),
+      );
+      if (!selected)
+        return {
+          status: "failed",
+          requestId: `semantic-unavailable-${requestDigest}`,
+          error: {
+            code: "vision-provider-unavailable",
+            message:
+              "Semantic evaluation requires signed-in Codex or a configured OpenAI API key.",
+            recoverable: true,
+            failureKind: "policy-blocked",
+          },
+        };
+      provider = selected;
+    }
+    if (!submission) {
+      submission = this.repository.recordSubmissionIntent({
+        projectId: input.projectId,
+        operation: "asset-semantic-evaluation",
+        provider,
+        idempotencyKey,
+        payload: {
+          assetRevisionId: input.asset.revisionId,
+          deterministicReportRevisionId: input.deterministicReport.revisionId,
+          turntableRevisionId: input.turntable.revisionId,
+          policyRevisionId: input.policy.revision.revisionId,
+          requestDigest,
+          budgetReserved: false,
+        },
+      });
+      appendQualityEvent(this.repository, {
+        projectId: input.projectId,
+        runId: input.runId,
+        type: "asset.semantic-evaluation-submitted",
+        payload: {
+          assetId: asset.assetId,
+          requestId: submission.requestId,
+          requestDigest,
+          provider,
+        },
+      });
+    }
+
+    let reservedCost = 0;
+    if (provider === "openai-api") {
+      reservedCost = Number(
+        process.env.FULCRUM_OPENAI_VISION_RESERVE_USD ?? "0.05",
+      );
+      if (!Number.isFinite(reservedCost) || reservedCost < 0)
+        return {
+          status: "failed",
+          requestId: submission.requestId,
+          error: {
+            code: "payload-invalid",
+            message:
+              "FULCRUM_OPENAI_VISION_RESERVE_USD must be a finite non-negative number.",
+            recoverable: true,
+            failureKind: "policy-blocked",
+          },
+        };
+      if (submission.payload.budgetReserved !== true) {
+        try {
+          this.repository.reserveBudget(
+            input.projectId,
+            reservedCost,
+            "OpenAI asset vision evaluation",
+          );
+        } catch (error) {
+          if (isProviderPreflightError(error))
+            return {
+              status: "failed",
+              requestId: submission.requestId,
+              error: {
+                code: error.code,
+                message: error.message,
+                recoverable: true,
+                failureKind: "policy-blocked",
+              },
+            };
+          throw error;
+        }
+        submission = this.repository.updateSubmission(submission.requestId, {
+          status: "intent-recorded",
+          payload: {
+            ...submission.payload,
+            budgetReserved: true,
+            reservedCostUsd: reservedCost,
+          },
+        });
+      } else if (typeof submission.payload.reservedCostUsd === "number")
+        reservedCost = submission.payload.reservedCostUsd;
+    }
+    submission = this.repository.updateSubmission(submission.requestId, {
+      status: "pending",
+      payload: {
+        ...submission.payload,
+        providerCallStartedAt: new Date().toISOString(),
+      },
+    });
+    const frameBytes = manifest.frames.map((frame) =>
+      this.repository.readArtifact(frame.artifact),
+    );
+    try {
+      const port =
+        provider === "fulcrum-replay"
+          ? new ReplayVisionEvaluationPort(this.replayVisionCatalog)
+          : new LiveVisionEvaluationPort(
+              this.visionExecution,
+              provider,
+              this.repository.workspaceRoot,
+            );
+      const evaluated = await port.evaluate(
+        { ...descriptor, frameBytes },
+        idempotencyKey,
+      );
+      const materialized = materializeVisionReport(
+        descriptor,
+        evaluated.findings,
+      );
+      const allFindings = [...deterministic.findings, ...materialized.findings];
+      const report = SemanticAssetReportSchema.parse({
+        schema: "fulcrum.asset-semantic-report",
+        version: 1,
+        reportId: `semantic-${requestDigest}`,
+        assetId: asset.assetId,
+        assetRevisionId: input.asset.revisionId,
+        turntableRevisionId: input.turntable.revisionId,
+        rubricVersion: ASSET_VISION_RUBRIC_V1.rubricVersion,
+        requestDigest,
+        provider: evaluated.provider,
+        model: evaluated.model,
+        costUsd: evaluated.costUsd || reservedCost,
+        verdict: materialized.verdict,
+        dimensionScores: materialized.dimensionScores,
+        findings: materialized.findings,
+        qualityVector: {
+          hardGateFailures: deterministic.qualityVector.hardGateFailures,
+          criticalFindings: allFindings.filter(
+            (finding) => finding.severity === "critical",
+          ).length,
+          majorFindings: allFindings.filter(
+            (finding) => finding.severity === "major",
+          ).length,
+          minorFindings: allFindings.filter(
+            (finding) => finding.severity === "minor",
+          ).length,
+          semanticVerdict: materialized.verdict,
+        },
+      });
+      const ensured = this.repository.ensureRevision({
+        projectId: input.projectId,
+        operationKey: `m2.asset-semantic:${requestDigest}`,
+        entityId: `${asset.assetId}:semantic-quality`,
+        kind: "asset-semantic-report",
+        runId: input.runId,
+        createValue: () => report,
+      });
+      submission = this.repository.updateSubmission(submission.requestId, {
+        status: "ready",
+        resultRevisionId: ensured.revision.revisionId,
+        payload: {
+          ...submission.payload,
+          provider: evaluated.provider,
+          model: evaluated.model,
+          completedAt: new Date().toISOString(),
+        },
+      });
+      if (ensured.created)
+        appendQualityEvent(this.repository, {
+          projectId: input.projectId,
+          runId: input.runId,
+          type: "asset.semantic-evaluation-completed",
+          payload: {
+            assetId: asset.assetId,
+            requestId: submission.requestId,
+            requestDigest,
+            semanticReportRevisionId: ensured.revision.revisionId,
+            verdict: ensured.value.verdict,
+            provider: ensured.value.provider,
+            model: ensured.value.model,
+          },
+        });
+      return {
+        status: "ready",
+        requestId: submission.requestId,
+        value: {
+          revision: ensured.revision,
+          report: SemanticAssetReportSchema.parse(ensured.value),
+        },
+      };
+    } catch (error) {
+      if (
+        provider === "fulcrum-replay" &&
+        error instanceof VisionEvaluationError
+      ) {
+        submission = this.repository.updateSubmission(submission.requestId, {
+          status: "failed",
+          payload: { ...submission.payload, error: error.message },
+        });
+        return {
+          status: "failed",
+          requestId: submission.requestId,
+          error: {
+            code: error.code,
+            message: error.message,
+            recoverable: true,
+            failureKind: error.failureKind,
+          },
+        };
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      submission = this.repository.updateSubmission(submission.requestId, {
+        status: "submission-unknown",
+        payload: { ...submission.payload, error: message },
+      });
+      appendQualityEvent(this.repository, {
+        projectId: input.projectId,
+        runId: input.runId,
+        type: "asset.semantic-evaluation-submission-unknown",
+        payload: {
+          assetId: asset.assetId,
+          requestId: submission.requestId,
+          requestDigest,
+          error: message,
+        },
+      });
+      return {
+        status: "failed",
+        requestId: submission.requestId,
+        error: {
+          code: "submission-unknown",
+          message,
+          recoverable: true,
+          failureKind: "user-action-required",
+        },
+      };
+    }
+  }
+
+  async selectRegeneration(input: SelectRegenerationRequest): Promise<{
+    revision: RevisionRef;
+    decision: RegenerationDecisionReport;
+  }> {
+    const policy = AssetPolicySchema.parse(input.policy);
+    const deterministic = DeterministicAssetReportSchema.parse(
+      this.repository.resolveRevision(input.currentAttempt.deterministicReport),
+    );
+    const semantic = input.currentAttempt.semanticReport
+      ? SemanticAssetReportSchema.parse(
+          this.repository.resolveRevision(input.currentAttempt.semanticReport),
+        )
+      : undefined;
+    const priorStrategies = [
+      ...input.attemptHistory,
+      input.currentAttempt,
+    ].flatMap((attempt) => {
+      if (!attempt.appliedStrategy) return [];
+      const value = this.repository.resolveRevision<unknown>(
+        attempt.appliedStrategy,
+      );
+      const decision = RegenerationDecisionReportSchema.safeParse(value);
+      if (decision.success) return [decision.data.strategy];
+      const strategy = RegenerationStrategySchema.safeParse(value);
+      return strategy.success ? [strategy.data] : [];
+    });
+    const history = input.attemptHistory.filter(
+      (attempt) =>
+        attempt.asset.revisionId !== input.currentAttempt.asset.revisionId,
+    );
+    const attempts = [...history, input.currentAttempt].sort(
+      (left, right) => left.attemptNumber - right.attemptNumber,
+    );
+    const best = bestRegenerationAttempt(attempts);
+    const strategy: RegenerationStrategy = decideRegeneration({
+      assetId: input.assetId,
+      currentAttempt: input.currentAttempt,
+      attemptHistory: history,
+      currentFindings: [
+        ...deterministic.findings,
+        ...(semantic?.findings ?? []),
+      ],
+      failedGateIds: deterministic.gates
+        .filter((gate) => !gate.passed)
+        .map((gate) => gate.id),
+      priorStrategies,
+      policy,
+      providerSupportsMultiview:
+        policy.regeneration.allowedStrategies.includes("change-views"),
+      permissibleClassifications: [policy.classification],
+    });
+    const sourceReportRevisionIds = [
+      input.currentAttempt.deterministicReport.revisionId,
+      ...(input.currentAttempt.semanticReport
+        ? [input.currentAttempt.semanticReport.revisionId]
+        : []),
+    ];
+    const decisionId = `decision-${createHash("sha256")
+      .update(
+        JSON.stringify([
+          input.assetId,
+          input.currentAttempt.attemptNumber,
+          sourceReportRevisionIds,
+          best.asset.revisionId,
+          strategy,
+        ]),
+      )
+      .digest("hex")}`;
+    const report = RegenerationDecisionReportSchema.parse({
+      schema: "fulcrum.asset-regeneration-decision",
+      version: 1,
+      decisionId,
+      assetId: input.assetId,
+      sourceReportRevisionIds,
+      bestKnownAssetRevisionId: best.asset.revisionId,
+      strategy,
+    });
+    const ensured = this.repository.ensureRevision({
+      projectId: input.projectId,
+      operationKey: `m2.asset-regeneration-decision:${decisionId}`,
+      entityId: `${input.assetId}:regeneration-decision`,
+      kind: "asset-regeneration-decision",
+      runId: input.runId,
+      createValue: () => report,
+    });
+    if (ensured.created) {
+      appendQualityEvent(this.repository, {
+        projectId: input.projectId,
+        runId: input.runId,
+        type: "asset.regeneration-strategy-selected",
+        payload: {
+          assetId: input.assetId,
+          attemptNumber: input.currentAttempt.attemptNumber,
+          decisionRevisionId: ensured.revision.revisionId,
+          strategyKind: ensured.value.strategy.kind,
+        },
+      });
+      const incumbent = history.length
+        ? bestRegenerationAttempt(history)
+        : input.currentAttempt;
+      const comparison = history.length
+        ? compareQualityVectors(
+            incumbent.qualityVector,
+            input.currentAttempt.qualityVector,
+          )
+        : "candidate-dominates";
+      const result =
+        comparison === "candidate-dominates" ? "updated" : "retained";
+      appendQualityEvent(this.repository, {
+        projectId: input.projectId,
+        runId: input.runId,
+        type: "asset.best-revision-considered",
+        payload: {
+          assetId: input.assetId,
+          result,
+          incumbentAssetRevisionId: incumbent.asset.revisionId,
+          candidateAssetRevisionId: input.currentAttempt.asset.revisionId,
+          bestAssetRevisionId: best.asset.revisionId,
+          decisionRevisionId: ensured.revision.revisionId,
+        },
+      });
+    }
+    return {
+      revision: ensured.revision,
+      decision: RegenerationDecisionReportSchema.parse(ensured.value),
+    };
+  }
 
   async evaluate(input: {
     projectId: string;

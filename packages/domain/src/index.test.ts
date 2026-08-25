@@ -2,13 +2,18 @@ import { describe, expect, it } from "vitest";
 
 import {
   ASSET_CLASS_HANDLING_POLICIES_V1,
+  AssetEvaluationSchema,
+  AssetPolicySchema,
   AssetPlanSchema,
   AssetBatchEntrySchema,
   CreateProjectInputSchema,
+  EvaluationFindingSchema,
   FailureKindSchema,
   MacroGraphSuspendSchema,
+  NormalizedCropSchema,
   PlannedAssetSchema,
   ProjectStateSchema,
+  RegenerationStrategySchema,
   WorkflowFailureSchema,
   assetPlanGraphIssues,
   handlingForPlannedAsset,
@@ -383,6 +388,185 @@ describe("M2 domain boundaries", () => {
       assetBatch: { hero: entry },
     });
     expect(state.assetBatch?.hero?.classification).toBe("hero");
+  });
+});
+
+describe("D3 quality schemas", () => {
+  it("parses_legacy_m0_asset_evaluation_without_d3_fields", () => {
+    expect(
+      AssetEvaluationSchema.parse({
+        evaluationId: "evaluation-1",
+        assetRevisionId: "asset-revision-1",
+        passed: true,
+        measurements: {
+          meshCount: 1,
+          primitiveCount: 1,
+          vertexCount: 24,
+          triangleCount: 12,
+          materialCount: 1,
+          textureCount: 0,
+          animationCount: 0,
+          boundsMeters: { x: 1, y: 2, z: 1 },
+        },
+        gates: [
+          {
+            id: "mesh-present",
+            label: "Mesh is present",
+            passed: true,
+            detail: "Found one mesh.",
+          },
+        ],
+        evaluatedAt: "2026-08-24T12:00:00.000Z",
+      }).evaluationId,
+    ).toBe("evaluation-1");
+  });
+
+  it("parses_m1_project_without_asset_quality_selection", () => {
+    const state = ProjectStateSchema.parse(
+      persistedState("m1", "interrogation"),
+    );
+
+    expect(state.assetBatch).toBeUndefined();
+  });
+
+  it("rejects_crop_outside_normalized_frame", () => {
+    expect(
+      NormalizedCropSchema.safeParse({ x: 0.8, y: 0, width: 0.3, height: 1 })
+        .success,
+    ).toBe(false);
+    expect(
+      NormalizedCropSchema.safeParse({ x: 0, y: 0.7, width: 1, height: 0.4 })
+        .success,
+    ).toBe(false);
+  });
+
+  it("rejects_finding_whose_evidence_ids_do_not_match_evidence", () => {
+    const finding = {
+      findingId: "finding-1",
+      findingCode: "geometry.rear-silhouette",
+      rubricVersion: "asset-turntable-v1",
+      category: "geometry",
+      summary: "The rear silhouette collapses into one flat mass.",
+      evidenceArtifactIds: ["frame-4", "frame-3"],
+      evidence: [
+        {
+          artifactId: "frame-3",
+          kind: "turntable-frame",
+          frameIndex: 3,
+        },
+        {
+          artifactId: "frame-4",
+          kind: "turntable-frame",
+          frameIndex: 4,
+        },
+      ],
+      severity: "major",
+      confidence: 0.92,
+      ownerModule: "asset-production",
+    };
+
+    expect(EvaluationFindingSchema.safeParse(finding).success).toBe(false);
+    expect(
+      EvaluationFindingSchema.safeParse({
+        ...finding,
+        evidenceArtifactIds: ["frame-3", "frame-4"],
+        evidence: [
+          {
+            artifactId: "frame-3",
+            kind: "source-asset",
+            frameIndex: 3,
+            crop: { x: 0, y: 0, width: 0.5, height: 0.5 },
+          },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects_policy_above_twelve_frames_or_five_attempts", () => {
+    const policy = {
+      schema: "fulcrum.asset-policy",
+      version: 1,
+      classification: "hero",
+      mesh: {
+        maxMeshes: 64,
+        maxPrimitives: 128,
+        maxVertices: 300_000,
+        maxTriangles: 250_000,
+        minLargestExtentMeters: 0.1,
+        maxLargestExtentMeters: 25,
+        warnAspectRatioAbove: 8,
+      },
+      material: {
+        requireAssignedMaterial: true,
+        requireNormals: true,
+        warnUnusedAbove: 0,
+        warnDuplicateGroupsAbove: 0,
+        requiredClaimedTextureChannels: ["base-color", "metallic-roughness"],
+      },
+      texture: {
+        minDimensionPx: 1024,
+        maxDimensionPx: 4096,
+        warnUnusedAbove: 0,
+      },
+      topology: {
+        maxDegenerateTriangleRatio: 0.001,
+        maxNonManifoldEdges: 0,
+        maxUnreferencedVertexRatio: 0.01,
+        maxInconsistentWindingRatio: 0.02,
+        maxNormalMismatchRatio: 0.05,
+        warnBoundaryEdgeRatioAbove: 0.5,
+        weldToleranceRatio: 0.00001,
+      },
+      turntable: {
+        frameCount: 8,
+        width: 256,
+        height: 256,
+        elevationDegrees: 15,
+        paddingRatio: 0.15,
+      },
+      regeneration: {
+        maxAttempts: 3,
+        maxSameStrategyRetries: 1,
+        allowedStrategies: ["retry-same", "change-prompt", "change-views"],
+      },
+    };
+
+    expect(AssetPolicySchema.safeParse(policy).success).toBe(true);
+    expect(
+      AssetPolicySchema.safeParse({
+        ...policy,
+        turntable: { ...policy.turntable, frameCount: 13 },
+      }).success,
+    ).toBe(false);
+    expect(
+      AssetPolicySchema.safeParse({
+        ...policy,
+        regeneration: { ...policy.regeneration, maxAttempts: 6 },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("uses_cardinal_roles_for_change_views", () => {
+    const parsed = RegenerationStrategySchema.parse({
+      kind: "change-views",
+      rationale: "The rear silhouette needs direct evidence.",
+      reasonFindingIds: ["finding-1"],
+      operation: "add",
+      roles: ["back", "left", "right"],
+      brief: "Show the rear structure and both side transitions.",
+    });
+
+    expect(parsed).toMatchObject({ roles: ["back", "left", "right"] });
+    expect(
+      RegenerationStrategySchema.safeParse({
+        kind: "change-views",
+        rationale: "The rear silhouette needs direct evidence.",
+        reasonFindingIds: ["finding-1"],
+        operation: "add",
+        yawDegrees: [180],
+        brief: "Show the rear structure.",
+      }).success,
+    ).toBe(false);
   });
 });
 
