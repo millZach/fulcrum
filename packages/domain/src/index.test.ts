@@ -3,13 +3,16 @@ import { describe, expect, it } from "vitest";
 import {
   ASSET_CLASS_HANDLING_POLICIES_V1,
   AssetEvaluationSchema,
+  AssetDocumentSchema,
   AssetPolicySchema,
   AssetPlanSchema,
   AssetBatchEntrySchema,
+  ConceptViewGuidanceSchema,
   CreateProjectInputSchema,
   EvaluationFindingSchema,
   FailureKindSchema,
   MacroGraphSuspendSchema,
+  MultiviewConceptSetSchema,
   NormalizedCropSchema,
   PlannedAssetSchema,
   ProjectStateSchema,
@@ -58,6 +61,122 @@ const ancestor = (revisionId: string, sha = "a".repeat(64)) => ({
   revisionId,
   sha256: sha,
   kind: "test-revision",
+});
+
+const artifact = (artifactId: string, sha = "a".repeat(64)) => ({
+  artifactId,
+  sha256: sha,
+  mediaType: "image/png",
+  byteLength: 64,
+  uri: `/api/artifacts/${artifactId}`,
+});
+
+const revision = (entityId: string, revisionId: string, sha: string) => ({
+  entityId,
+  revisionId,
+  kind: "concept-view-document",
+  artifact: artifact(`${revisionId}-artifact`, sha),
+  createdAt: "2026-08-24T12:00:00.000Z",
+  createdByRunId: "run-1",
+});
+
+const guidance = {
+  front: {
+    role: "front" as const,
+    azimuthDegrees: 0 as const,
+    elevationDegrees: 0 as const,
+    projection: "orthographic" as const,
+    framing: "full-subject-centered" as const,
+    background: "neutral-studio" as const,
+  },
+  left: {
+    role: "left" as const,
+    azimuthDegrees: 90 as const,
+    elevationDegrees: 0 as const,
+    projection: "orthographic" as const,
+    framing: "full-subject-centered" as const,
+    background: "neutral-studio" as const,
+  },
+  back: {
+    role: "back" as const,
+    azimuthDegrees: 180 as const,
+    elevationDegrees: 0 as const,
+    projection: "orthographic" as const,
+    framing: "full-subject-centered" as const,
+    background: "neutral-studio" as const,
+  },
+};
+
+const multiviewSet = (roles: Array<keyof typeof guidance>) => ({
+  multiviewConceptSetId: "hero:multiview-concept-set",
+  assetId: "hero",
+  sourceAssetPlanRevisionId: "asset-plan-revision-1",
+  sourceConceptSetRevisionId: "concept-set-revision-1",
+  anchorConcept: {
+    revision: revision(
+      "hero-concept",
+      "hero-concept-revision-1",
+      "1".repeat(64),
+    ),
+    image: artifact("hero-concept-image", "2".repeat(64)),
+  },
+  views: roles.map((role, index) => ({
+    role,
+    guidance: guidance[role],
+    revision: revision(
+      `hero:concept-view:${role}`,
+      `hero-${role}-revision-1`,
+      `${index + 3}`.repeat(64),
+    ),
+    image: artifact(`hero-${role}-image`, `${index + 7}`.repeat(64)),
+  })),
+  sourceRevisionIds: [
+    "asset-plan-revision-1",
+    "concept-set-revision-1",
+    "hero-concept-revision-1",
+  ],
+});
+
+describe("multiview concept schemas", () => {
+  it("multiview_set_rejects_duplicate_roles", () => {
+    expect(
+      MultiviewConceptSetSchema.safeParse(
+        multiviewSet(["front", "left", "left"]),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("multiview_set_requires_front_view", () => {
+    expect(
+      MultiviewConceptSetSchema.safeParse(multiviewSet(["left", "back"]))
+        .success,
+    ).toBe(false);
+  });
+
+  it("guidance_rejects_role_angle_mismatch", () => {
+    expect(
+      ConceptViewGuidanceSchema.safeParse({
+        ...guidance.left,
+        azimuthDegrees: 270,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("existing_asset_document_without_multiview_fields_still_parses", () => {
+    expect(
+      AssetDocumentSchema.parse({
+        assetId: "asset-1",
+        name: "Reliquary",
+        classification: "hero",
+        glb: { ...artifact("asset-glb"), mediaType: "model/gltf-binary" },
+        provider: "fulcrum-replay",
+        model: "reliquary-v1",
+        sourceConceptRevisionId: "concept-revision-1",
+        externalJobId: "replay-task-1",
+        costUsd: 0,
+      }).sourceMultiviewConceptSetRevisionId,
+    ).toBeUndefined();
+  });
 });
 
 const plannedAsset = (overrides: Record<string, unknown> = {}) => ({

@@ -22,6 +22,7 @@ import OpenAI from "openai";
 import sharp from "sharp";
 
 export * from "./m1.js";
+export { MultiviewConceptProduction } from "./multiview.js";
 export {
   ensureDurableSubscriptionImage,
   isM1LiveAuthorized,

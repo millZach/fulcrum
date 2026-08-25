@@ -171,7 +171,6 @@ const m2Fixture = (repository: ProjectRepository) => {
       runId,
     });
   const brief = revision("brief", "game-brief");
-  const conceptSet = revision("concept-set", "concept-set");
   const gameDesignSpec = revision("game-design", "game-design-spec");
   const visualDirectionSet = revision("directions", "visual-direction-set");
   const conceptImage = repository.putArtifact(
@@ -195,7 +194,52 @@ const m2Fixture = (repository: ProjectRepository) => {
         gameDesignSpec.revisionId,
         visualDirectionSet.revisionId,
       ],
+      ancestors: [gameDesignSpec, visualDirectionSet].map((source) => ({
+        revisionId: source.revisionId,
+        sha256: source.artifact.sha256,
+        kind: source.kind,
+      })),
       costUsd: 0,
+    },
+    runId,
+  });
+  const conceptSet = repository.writeRevision({
+    projectId,
+    entityId: `${projectId}:concept-set`,
+    kind: "concept-set",
+    value: {
+      conceptSetId: `${projectId}:concept-set`,
+      sourceDirectionRevisionId: visualDirectionSet.revisionId,
+      slots: [
+        {
+          slotId: "hero",
+          name: "Reliquary hero",
+          purpose: "Readable hero objective",
+          revisions: [
+            {
+              revision: concept,
+              inheritedVisualTokens: [
+                {
+                  tokenId: "hero-shape",
+                  category: "shape",
+                  value: "squat octagonal stone reliquary",
+                },
+                {
+                  tokenId: "hero-material",
+                  category: "material",
+                  value: "weathered dark stone and restrained bronze rings",
+                },
+                {
+                  tokenId: "hero-prohibited",
+                  category: "prohibited-style",
+                  value: "photoreal product rendering",
+                },
+              ],
+            },
+          ],
+          selectedRevisionId: concept.revisionId,
+        },
+      ],
     },
     runId,
   });
@@ -1190,6 +1234,10 @@ describe("M2 macro slot contracts", () => {
       .listEvents(fixture.projectId)
       .find(({ type }) => type === "asset.semantic-evaluation-submitted");
     expect(baselineSubmission).toBeDefined();
+    const completedViewImages = repository
+      .listEvents(fixture.projectId)
+      .filter(({ type }) => type === "concept-view.image-completed").length;
+    expect(completedViewImages).toBe(7);
     repository.close();
 
     const reconstructed = new ProjectRepository(root);
@@ -1215,6 +1263,11 @@ describe("M2 macro slot contracts", () => {
       new Set(semanticSubmissions.map(({ payload }) => payload.requestDigest))
         .size,
     ).toBe(2);
+    expect(
+      reconstructed
+        .listEvents(fixture.projectId)
+        .filter(({ type }) => type === "concept-view.image-completed"),
+    ).toHaveLength(completedViewImages);
     reconstructed.close();
   });
 

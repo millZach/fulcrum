@@ -141,6 +141,9 @@ importers:
 
   packages/production:
     dependencies:
+      '@fulcrum/creative':
+        specifier: workspace:*
+        version: link:../creative
       '@fulcrum/domain':
         specifier: workspace:*
         version: link:../domain

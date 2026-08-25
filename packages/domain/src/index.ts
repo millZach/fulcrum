@@ -422,6 +422,194 @@ export type AssetClassification = z.infer<typeof AssetClassificationSchema>;
 export const ConceptViewRoleSchema = z.enum(["front", "left", "back", "right"]);
 export type ConceptViewRole = z.infer<typeof ConceptViewRoleSchema>;
 
+const ConceptViewGuidanceBaseSchema = z.object({
+  elevationDegrees: z.literal(0),
+  projection: z.literal("orthographic"),
+  framing: z.literal("full-subject-centered"),
+  background: z.literal("neutral-studio"),
+});
+
+export const ConceptViewGuidanceSchema = z.discriminatedUnion("role", [
+  ConceptViewGuidanceBaseSchema.extend({
+    role: z.literal("front"),
+    azimuthDegrees: z.literal(0),
+  }),
+  ConceptViewGuidanceBaseSchema.extend({
+    role: z.literal("left"),
+    azimuthDegrees: z.literal(90),
+  }),
+  ConceptViewGuidanceBaseSchema.extend({
+    role: z.literal("back"),
+    azimuthDegrees: z.literal(180),
+  }),
+  ConceptViewGuidanceBaseSchema.extend({
+    role: z.literal("right"),
+    azimuthDegrees: z.literal(270),
+  }),
+]);
+export type ConceptViewGuidance = z.infer<typeof ConceptViewGuidanceSchema>;
+
+export const ConceptViewDocumentSchema = z.object({
+  conceptViewId: z.string().min(1),
+  assetId: z.string().min(1),
+  guidance: ConceptViewGuidanceSchema,
+  attempt: z.number().int().nonnegative(),
+  prompt: z.string().min(1).max(CONCEPT_PROMPT_MAX_CHARS),
+  promptHash: z.string().regex(/^[a-f0-9]{64}$/),
+  image: ArtifactRefSchema,
+  provider: z.string().min(1),
+  model: z.string().min(1),
+  providerVersion: z.string().min(1).optional(),
+  seed: z.string().min(1).optional(),
+  costUsd: z.number().nonnegative(),
+  sourceConceptRevisionId: z.string().min(1),
+  sourceRevisionIds: z.array(z.string().min(1)).min(3),
+  ancestors: z.array(RevisionAncestorSchema).min(3),
+  referenceArtifactHashes: z.array(z.string().regex(/^[a-f0-9]{64}$/)).min(1),
+  operation: z.literal("identity-preserving-concept-view"),
+});
+export type ConceptViewDocument = z.infer<typeof ConceptViewDocumentSchema>;
+
+export const MultiviewConceptSetViewSchema = z.object({
+  role: ConceptViewRoleSchema,
+  guidance: ConceptViewGuidanceSchema,
+  revision: RevisionRefSchema,
+  image: ArtifactRefSchema,
+});
+
+export const MultiviewConceptSetSchema = z
+  .object({
+    multiviewConceptSetId: z.string().min(1),
+    assetId: z.string().min(1),
+    sourceAssetPlanRevisionId: z.string().min(1),
+    sourceConceptSetRevisionId: z.string().min(1),
+    anchorConcept: z.object({
+      revision: RevisionRefSchema,
+      image: ArtifactRefSchema,
+    }),
+    previousMultiviewConceptSetRevisionId: z.string().min(1).optional(),
+    strategyRevisionId: z.string().min(1).optional(),
+    views: z.array(MultiviewConceptSetViewSchema).min(2).max(4),
+    sourceRevisionIds: z.array(z.string().min(1)).min(3),
+  })
+  .superRefine((set, context) => {
+    const roles = set.views.map(({ role }) => role);
+    if (new Set(roles).size !== roles.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["views"],
+        message: "A multiview set cannot repeat a view role.",
+      });
+    }
+    if (!roles.includes("front")) {
+      context.addIssue({
+        code: "custom",
+        path: ["views"],
+        message: "A provider-ready multiview set requires a front view.",
+      });
+    }
+    set.views.forEach((view, index) => {
+      if (view.role !== view.guidance.role) {
+        context.addIssue({
+          code: "custom",
+          path: ["views", index, "guidance", "role"],
+          message: "The entry role and guidance role must match.",
+        });
+      }
+    });
+  });
+export type MultiviewConceptSet = z.infer<typeof MultiviewConceptSetSchema>;
+
+const MultiviewConceptRequestBaseSchema = z.object({
+  projectId: z.string().min(1),
+  assetPlan: RevisionRefSchema,
+  assetId: z.string().min(1),
+  previousMultiviewConceptSet: RevisionRefSchema.optional(),
+  strategyRevision: RevisionRefSchema.optional(),
+  requestedRoles: z.array(ConceptViewRoleSchema).min(1).max(4).optional(),
+  attempt: z.number().int().nonnegative().default(0),
+});
+
+const uniqueRequestedRoles = (
+  request: { requestedRoles?: ConceptViewRole[] | undefined },
+  context: z.RefinementCtx,
+) => {
+  if (
+    request.requestedRoles &&
+    new Set(request.requestedRoles).size !== request.requestedRoles.length
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["requestedRoles"],
+      message: "Requested view roles must be unique.",
+    });
+  }
+};
+
+export const MultiviewConceptRequestSchema =
+  MultiviewConceptRequestBaseSchema.superRefine(uniqueRequestedRoles);
+export type MultiviewConceptRequest = z.infer<
+  typeof MultiviewConceptRequestSchema
+>;
+
+export const ConceptViewGenerationRequestSchema =
+  MultiviewConceptRequestBaseSchema.extend({
+    runId: z.string().min(1),
+    mode: ProviderModeSchema,
+    imageProvider: ImageProviderSchema,
+    sourceConceptSet: RevisionRefSchema,
+    anchorConcept: RevisionRefSchema,
+    rolesToGenerate: z.array(ConceptViewRoleSchema).min(1).max(4),
+  }).superRefine(uniqueRequestedRoles);
+export type ConceptViewGenerationRequest = z.infer<
+  typeof ConceptViewGenerationRequestSchema
+>;
+
+export const AssetRegenerationInputSchema = z.object({
+  attemptNumber: z.number().int().positive(),
+  strategyRevision: RevisionRefSchema,
+  parentAssetRevision: RevisionRefSchema,
+  additionalConceptViews: z.array(RevisionRefSchema).optional(),
+});
+export type AssetRegenerationInput = z.infer<
+  typeof AssetRegenerationInputSchema
+>;
+
+export const LegacyAssetProductionRequestSchema = z
+  .object({
+    projectId: z.string().min(1),
+    runId: z.string().min(1),
+    mode: ProviderModeSchema,
+    assetProvider: AssetProviderSchema,
+    concept: RevisionRefSchema,
+    regeneration: AssetRegenerationInputSchema.optional(),
+  })
+  .strict();
+export type LegacyAssetProductionRequest = z.infer<
+  typeof LegacyAssetProductionRequestSchema
+>;
+
+export const M2AssetProductionRequestSchema = z
+  .object({
+    projectId: z.string().min(1),
+    assetPlan: RevisionRefSchema,
+    assetId: z.string().min(1),
+    multiviewConceptSet: RevisionRefSchema.optional(),
+    regeneration: AssetRegenerationInputSchema.optional(),
+  })
+  .strict();
+export type M2AssetProductionRequest = z.infer<
+  typeof M2AssetProductionRequestSchema
+>;
+
+export const AssetProductionRequestSchema = z.union([
+  LegacyAssetProductionRequestSchema,
+  M2AssetProductionRequestSchema,
+]);
+export type AssetProductionRequest = z.infer<
+  typeof AssetProductionRequestSchema
+>;
+
 export const TextureChannelSchema = z.enum([
   "base-color",
   "metallic-roughness",
@@ -445,6 +633,12 @@ export const AssetDocumentSchema = z.object({
   provider: z.string().min(1),
   model: z.string().min(1),
   sourceConceptRevisionId: z.string().min(1),
+  sourceMultiviewConceptSetRevisionId: z.string().min(1).optional(),
+  sourceImageArtifactHashes: z
+    .array(z.string().regex(/^[a-f0-9]{64}$/))
+    .min(1)
+    .max(4)
+    .optional(),
   sourceConceptRevisionIds: z.array(z.string().min(1)).optional(),
   parentAssetRevisionId: z.string().min(1).optional(),
   regenerationStrategyRevisionId: z.string().min(1).optional(),
@@ -1698,6 +1892,7 @@ export const MultiviewNodeOutputSchema = AssetPathBaseSchema.extend({
   multiviewConceptSet: RevisionRefSchema.optional(),
   multiviewDecision: z.enum(["ready", "not-required"]),
 });
+export type MultiviewNodeOutput = z.infer<typeof MultiviewNodeOutputSchema>;
 export const AssetProductionNodeOutputSchema = MultiviewNodeOutputSchema.extend(
   {
     candidateAsset: RevisionRefSchema,

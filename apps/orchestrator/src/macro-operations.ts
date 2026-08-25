@@ -100,7 +100,7 @@ export const unavailableM2MacroGraphSlots = (): M2MacroGraphSlots => ({
 });
 
 export type M2MacroGraphSlotOptions = {
-  assetProduction?: Pick<AssetProduction, "ensure">;
+  assetProduction?: Pick<AssetProduction, "ensure" | "ensureMultiviewConcepts">;
   assetQuality?: Pick<
     AssetQuality,
     "inspect" | "ensureSemantic" | "selectRegeneration"
@@ -257,50 +257,6 @@ export const createM2MacroGraphSlots = (
     });
   };
 
-  const fakeConceptViews = (
-    projectId: string,
-    runId: string,
-    assetId: string,
-    strategyRevision: RevisionRef,
-    operation: "add" | "replace",
-    roles: Array<"front" | "left" | "back" | "right">,
-  ): { set: RevisionRef; views: RevisionRef[] } => {
-    const views = roles.map(
-      (role) =>
-        repository.ensureRevision({
-          projectId,
-          operationKey: `m2.replay-concept-view:${strategyRevision.revisionId}:${role}`,
-          entityId: `${assetId}:concept-view:${role}`,
-          kind: "replay-concept-view",
-          runId,
-          createValue: () => ({
-            schema: "fulcrum.replay-concept-view",
-            version: 1,
-            assetId,
-            role,
-            strategyRevisionId: strategyRevision.revisionId,
-          }),
-        }).revision,
-    );
-    const set = repository.ensureRevision({
-      projectId,
-      operationKey: `m2.replay-multiview-set:${strategyRevision.revisionId}:${operation}:${roles.join(",")}`,
-      entityId: `${assetId}:multiview-concept-set`,
-      kind: "replay-multiview-concept-set",
-      runId,
-      createValue: () => ({
-        schema: "fulcrum.replay-multiview-concept-set",
-        version: 1,
-        assetId,
-        operation,
-        requestedRoles: roles,
-        views,
-        strategyRevisionId: strategyRevision.revisionId,
-      }),
-    }).revision;
-    return { set, views };
-  };
-
   return {
     assetPlanning: {
       ensure: async ({ projectId }) => {
@@ -377,51 +333,22 @@ export const createM2MacroGraphSlots = (
       },
     },
     multiviewConcepts: {
-      ensure: async (input) => {
-        try {
-          const { asset } = planned(input);
-          return {
-            status: "ready" as const,
-            value: {
-              ...input,
-              classification: asset.classification,
-              multiviewDecision: "not-required" as const,
-            },
-          };
-        } catch (error) {
-          return slotFailure(
-            "asset-plan-route-invalid",
-            error instanceof Error ? error.message : String(error),
-            "terminal",
-            [input.assetPlan.revisionId],
-          );
-        }
-      },
+      ensure: async (input) =>
+        await assets.ensureMultiviewConcepts({ ...input, attempt: 0 }),
     },
     assetProduction: {
       ensure: async (input) => {
-        const state = repository.getProject(input.projectId);
-        let concept: RevisionRef;
-        try {
-          concept = sourceConcept(input);
-        } catch (error) {
-          return slotFailure(
-            "asset-source-concept-missing",
-            error instanceof Error ? error.message : String(error),
-            "user-action-required",
-            [input.assetPlan.revisionId],
-          );
-        }
         const outcome = await assets.ensure({
           projectId: input.projectId,
-          runId: state.runId,
-          mode: state.mode,
-          assetProvider: state.assetProvider,
-          concept,
+          assetPlan: input.assetPlan,
+          assetId: input.assetId,
+          ...(input.multiviewConceptSet
+            ? { multiviewConceptSet: input.multiviewConceptSet }
+            : {}),
         });
         if (outcome.status === "pending") return outcome;
         if (outcome.status === "failed")
-          return productionFailure(outcome.error, [concept.revisionId]);
+          return productionFailure(outcome.error, [input.assetPlan.revisionId]);
         return {
           status: "ready" as const,
           value: { ...input, candidateAsset: outcome.value },
@@ -597,35 +524,34 @@ export const createM2MacroGraphSlots = (
             };
           }
 
-          let additionalConceptViews: RevisionRef[] | undefined;
           if (strategy.kind === "change-views") {
-            const views = fakeConceptViews(
-              input.projectId,
-              state.runId,
-              input.assetId,
-              selected.revision,
-              strategy.operation,
-              strategy.roles,
-            );
-            multiviewConceptSet = views.set;
-            additionalConceptViews = views.views;
+            const views = await assets.ensureMultiviewConcepts({
+              projectId: input.projectId,
+              assetPlan: input.assetPlan,
+              assetId: input.assetId,
+              ...(multiviewConceptSet
+                ? { previousMultiviewConceptSet: multiviewConceptSet }
+                : {}),
+              strategyRevision: selected.revision,
+              requestedRoles: strategy.roles,
+              attempt: current.attemptNumber + 1,
+            });
+            if (views.status !== "ready") return views;
+            multiviewConceptSet = views.value.multiviewConceptSet;
           } else if (strategy.kind === "reclassify") {
             classification = strategy.to;
             policy = ensurePolicy(input.projectId, state.runId, classification);
           }
 
-          const concept = sourceConcept(input);
           const produced = await assets.ensure({
             projectId: input.projectId,
-            runId: state.runId,
-            mode: state.mode,
-            assetProvider: state.assetProvider,
-            concept,
+            assetPlan: input.assetPlan,
+            assetId: input.assetId,
+            ...(multiviewConceptSet ? { multiviewConceptSet } : {}),
             regeneration: {
               attemptNumber: current.attemptNumber + 1,
               strategyRevision: selected.revision,
               parentAssetRevision: current.asset,
-              ...(additionalConceptViews ? { additionalConceptViews } : {}),
             },
           });
           if (produced.status === "pending") return produced;

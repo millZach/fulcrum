@@ -10,7 +10,10 @@ import type {
 import { ProjectRepository } from "@fulcrum/project";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { PostConceptOperations } from "./macro-operations.js";
+import {
+  createM2MacroGraphSlots,
+  PostConceptOperations,
+} from "./macro-operations.js";
 
 const roots: string[] = [];
 
@@ -212,5 +215,134 @@ describe("PostConceptOperations", () => {
     expect(production).not.toHaveBeenCalled();
     expect(quality).not.toHaveBeenCalled();
     repository.close();
+  });
+});
+
+describe("M2 multiview macro operation", () => {
+  const slotsWith = (
+    repository: ProjectRepository,
+    ensureMultiviewConcepts: ReturnType<typeof vi.fn>,
+  ) =>
+    createM2MacroGraphSlots(repository, { plan: vi.fn() } as never, {
+      assetProduction: {
+        ensure: vi.fn(),
+        ensureMultiviewConcepts,
+      } as never,
+    });
+
+  it("multiview_node_calls_one_deep_module_and_returns_ready", async () => {
+    const { repository, projectId, assetPlan } = (() => {
+      const base = fixture();
+      return { ...base, assetPlan: base.revision("asset-plan", "asset-plan") };
+    })();
+    const set = repository.writeRevision({
+      projectId,
+      entityId: "hero:multiview-concept-set",
+      kind: "multiview-concept-set",
+      value: { fixture: true },
+      runId: "run-1",
+    });
+    const ensureMultiviewConcepts = vi.fn(async (input) => ({
+      status: "ready" as const,
+      value: {
+        projectId,
+        assetPlan,
+        assetId: "hero",
+        classification: "hero" as const,
+        multiviewConceptSet: set,
+        multiviewDecision: "ready" as const,
+      },
+    }));
+
+    const outcome = await slotsWith(
+      repository,
+      ensureMultiviewConcepts,
+    ).multiviewConcepts.ensure({ projectId, assetPlan, assetId: "hero" });
+
+    expect(outcome).toMatchObject({
+      status: "ready",
+      value: {
+        multiviewDecision: "ready",
+        multiviewConceptSet: { revisionId: set.revisionId },
+      },
+    });
+    expect(ensureMultiviewConcepts).toHaveBeenCalledOnce();
+    expect(ensureMultiviewConcepts).toHaveBeenCalledWith({
+      projectId,
+      assetPlan,
+      assetId: "hero",
+      attempt: 0,
+    });
+    repository.close();
+  });
+
+  it("multiview_node_checkpoints_not_required_without_placeholder_revision", async () => {
+    const base = fixture();
+    const assetPlan = base.revision("asset-plan", "asset-plan");
+    const ensureMultiviewConcepts = vi.fn(async () => ({
+      status: "ready" as const,
+      value: {
+        projectId: base.projectId,
+        assetPlan,
+        assetId: "kit",
+        classification: "kit" as const,
+        multiviewDecision: "not-required" as const,
+      },
+    }));
+
+    const outcome = await slotsWith(
+      base.repository,
+      ensureMultiviewConcepts,
+    ).multiviewConcepts.ensure({
+      projectId: base.projectId,
+      assetPlan,
+      assetId: "kit",
+    });
+
+    expect(outcome).toEqual({
+      status: "ready",
+      value: {
+        projectId: base.projectId,
+        assetPlan,
+        assetId: "kit",
+        classification: "kit",
+        multiviewDecision: "not-required",
+      },
+    });
+    if (outcome.status === "ready")
+      expect(outcome.value.multiviewConceptSet).toBeUndefined();
+    base.repository.close();
+  });
+
+  it("pending_or_user_action_failure_preserves_project_truth_for_reconstruction", async () => {
+    const base = fixture();
+    const assetPlan = base.revision("asset-plan", "asset-plan");
+    const before = base.repository.getProject(base.projectId);
+    const ensureMultiviewConcepts = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "pending",
+        requestId: "view-request-1",
+        resumeAfter: "2026-01-01T00:00:05.000Z",
+      })
+      .mockResolvedValueOnce({
+        status: "failed",
+        error: {
+          code: "submission-unknown",
+          message: "The image result is ambiguous.",
+          kind: "user-action-required",
+          evidenceRevisionIds: [assetPlan.revisionId],
+        },
+      });
+    const slot = slotsWith(
+      base.repository,
+      ensureMultiviewConcepts,
+    ).multiviewConcepts;
+    const input = { projectId: base.projectId, assetPlan, assetId: "hero" };
+
+    expect((await slot.ensure(input)).status).toBe("pending");
+    expect((await slot.ensure(input)).status).toBe("failed");
+    expect(base.repository.getProject(base.projectId)).toEqual(before);
+    base.repository.close();
   });
 });
