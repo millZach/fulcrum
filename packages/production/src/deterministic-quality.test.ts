@@ -219,6 +219,92 @@ describe("inspectParsedAsset", () => {
     expect(result.measurements.topology.normalMismatchTriangles).toBe(1);
   });
 
+  it("inspects_a_dense_indexed_grid_with_bounded_memory", () => {
+    const side = 449;
+    const vertexCount = side * side;
+    const triangleCount = (side - 1) * (side - 1) * 2;
+    const positions = new Float32Array(vertexCount * 3);
+    const normals = new Float32Array(vertexCount * 3);
+    const indices = new Uint32Array(triangleCount * 3);
+
+    for (let y = 0; y < side; y += 1)
+      for (let x = 0; x < side; x += 1) {
+        const vertex = y * side + x;
+        positions[vertex * 3] = x / (side - 1);
+        positions[vertex * 3 + 1] = y / (side - 1);
+        normals[vertex * 3 + 2] = 1;
+      }
+
+    let offset = 0;
+    for (let y = 0; y < side - 1; y += 1)
+      for (let x = 0; x < side - 1; x += 1) {
+        const topLeft = y * side + x;
+        const topRight = topLeft + 1;
+        const bottomLeft = topLeft + side;
+        const bottomRight = bottomLeft + 1;
+        indices.set(
+          [topLeft, topRight, bottomLeft, topRight, bottomRight, bottomLeft],
+          offset,
+        );
+        offset += 6;
+      }
+
+    const document = new Document();
+    const scene = document.createScene("dense-grid");
+    const buffer = document.createBuffer("buffer");
+    const material = document.createMaterial("material");
+    const primitive = document
+      .createPrimitive()
+      .setAttribute(
+        "POSITION",
+        document
+          .createAccessor("positions", buffer)
+          .setType("VEC3")
+          .setArray(positions),
+      )
+      .setAttribute(
+        "NORMAL",
+        document
+          .createAccessor("normals", buffer)
+          .setType("VEC3")
+          .setArray(normals),
+      )
+      .setIndices(
+        document
+          .createAccessor("indices", buffer)
+          .setType("SCALAR")
+          .setArray(indices),
+      )
+      .setMaterial(material);
+    const mesh = document.createMesh("dense-grid").addPrimitive(primitive);
+    scene.addChild(document.createNode("dense-grid").setMesh(mesh));
+
+    const result = inspectParsedAsset(
+      document,
+      asset(),
+      policy({
+        mesh: {
+          ...DEFAULT_ASSET_POLICIES.hero.mesh,
+          maxTriangles: triangleCount,
+        },
+      }),
+    );
+
+    expect(result.measurements.mesh).toMatchObject({
+      vertexCount,
+      triangleCount,
+      boundsMeters: { x: 1, y: 1, z: 0 },
+    });
+    expect(result.measurements.topology).toEqual({
+      degenerateTriangles: 0,
+      nonManifoldEdges: 0,
+      boundaryEdges: 4 * (side - 1),
+      unreferencedVertices: 0,
+      inconsistentWindingEdges: 0,
+      normalMismatchTriangles: 0,
+    });
+  }, 30_000);
+
   it("finds_unused_and_signature_duplicate_materials", () => {
     const document = new Document();
     const used = document

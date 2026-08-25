@@ -219,11 +219,18 @@ export const DEFAULT_ASSET_POLICIES: Readonly<
 
 type Vec3 = [number, number, number];
 
-type Triangle = {
-  ordinal: number;
-  indices: [number, number, number];
-  positions: [Vec3, Vec3, Vec3];
-  normals?: [Vec3, Vec3, Vec3];
+type PrimitiveInspection = {
+  triangleCount: number;
+  vertexCount: number;
+  referencedVertexCount: number;
+  positionAccessor?: Accessor;
+  errors: {
+    mode: boolean;
+    positions: boolean;
+    indices: boolean;
+    triples: boolean;
+    normals: boolean;
+  };
 };
 
 export type ParsedAssetInspection = {
@@ -234,13 +241,17 @@ export type ParsedAssetInspection = {
   qualityVector: AssetQualityVector;
 };
 
-const readVec3 = (accessor: Accessor, index: number): Vec3 => {
-  const value = accessor.getElement(index, []);
-  return [
-    value[0] ?? Number.NaN,
-    value[1] ?? Number.NaN,
-    value[2] ?? Number.NaN,
-  ];
+const readVec3Into = (
+  accessor: Accessor,
+  index: number,
+  target: Vec3,
+): Vec3 => {
+  target[0] = Number.NaN;
+  target[1] = Number.NaN;
+  target[2] = Number.NaN;
+  accessor.getElement(index, target);
+  target.length = 3;
+  return target;
 };
 
 const isFiniteVec3 = (value: Vec3): boolean => value.every(Number.isFinite);
@@ -269,14 +280,15 @@ const normalize = (value: Vec3): Vec3 | undefined => {
   return [value[0] * inverse, value[1] * inverse, value[2] * inverse];
 };
 
-const isDegenerate = (triangle: Triangle): boolean => {
-  const [a, b, c] = triangle.positions;
-  if (
-    triangle.indices[0] === triangle.indices[1] ||
-    triangle.indices[1] === triangle.indices[2] ||
-    triangle.indices[2] === triangle.indices[0]
-  )
-    return true;
+const isDegenerate = (
+  indexA: number,
+  indexB: number,
+  indexC: number,
+  a: Vec3,
+  b: Vec3,
+  c: Vec3,
+): boolean => {
+  if (indexA === indexB || indexB === indexC || indexC === indexA) return true;
   const ab = subtract(b, a);
   const ac = subtract(c, a);
   const bc = subtract(c, b);
@@ -291,20 +303,28 @@ const isDegenerate = (triangle: Triangle): boolean => {
   );
 };
 
-const transformPoint = (point: Vec3, matrix: readonly number[]): Vec3 => [
-  matrix[0]! * point[0] +
+const transformPointInto = (
+  point: Vec3,
+  matrix: readonly number[],
+  target: Vec3,
+): Vec3 => {
+  target[0] =
+    matrix[0]! * point[0] +
     matrix[4]! * point[1] +
     matrix[8]! * point[2] +
-    matrix[12]!,
-  matrix[1]! * point[0] +
+    matrix[12]!;
+  target[1] =
+    matrix[1]! * point[0] +
     matrix[5]! * point[1] +
     matrix[9]! * point[2] +
-    matrix[13]!,
-  matrix[2]! * point[0] +
+    matrix[13]!;
+  target[2] =
+    matrix[2]! * point[0] +
     matrix[6]! * point[1] +
     matrix[10]! * point[2] +
-    matrix[14]!,
-];
+    matrix[14]!;
+  return target;
+};
 
 const textureHash = (texture: Texture | null): string | null => {
   if (!texture) return null;
@@ -352,24 +372,100 @@ const canonicalFindingId = (
     .update(JSON.stringify([assetId, findingCode, summary]))
     .digest("hex")}`;
 
-const inspectPrimitive = (
+type TriangleVisitor = (
+  indexA: number,
+  indexB: number,
+  indexC: number,
+  positionA: Vec3,
+  positionB: Vec3,
+  positionC: Vec3,
+  normalA?: Vec3,
+  normalB?: Vec3,
+  normalC?: Vec3,
+) => void;
+
+const readPrimitiveIndex = (
+  indices: Accessor,
+  offset: number,
+  vertexCount: number,
+  target: number[],
+): number => {
+  target[0] = Number.NaN;
+  const value = indices.getElement(offset, target)[0];
+  return value !== undefined &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value < vertexCount
+    ? value
+    : -1;
+};
+
+const visitPrimitiveTriangles = (
   primitive: Primitive,
-  ordinalBase: number,
-): {
-  triangles: Triangle[];
-  vertexCount: number;
-  referencedVertices: Set<number>;
-  positionAccessor?: Accessor;
-  errors: {
-    mode: boolean;
-    positions: boolean;
-    indices: boolean;
-    triples: boolean;
-    normals: boolean;
-  };
-} => {
+  visitor: TriangleVisitor,
+  invalidPosition?: () => void,
+): void => {
   const positions = primitive.getAttribute("POSITION");
+  if (!positions) return;
   const normals = primitive.getAttribute("NORMAL");
+  const indices = primitive.getIndices();
+  const vertexCount = positions.getCount();
+  const drawCount = indices?.getCount() ?? vertexCount;
+  const indexTarget: number[] = [Number.NaN];
+  const positionA: Vec3 = [Number.NaN, Number.NaN, Number.NaN];
+  const positionB: Vec3 = [Number.NaN, Number.NaN, Number.NaN];
+  const positionC: Vec3 = [Number.NaN, Number.NaN, Number.NaN];
+  const normalA: Vec3 = [Number.NaN, Number.NaN, Number.NaN];
+  const normalB: Vec3 = [Number.NaN, Number.NaN, Number.NaN];
+  const normalC: Vec3 = [Number.NaN, Number.NaN, Number.NaN];
+
+  for (let offset = 0; offset + 2 < drawCount; offset += 3) {
+    const indexA = indices
+      ? readPrimitiveIndex(indices, offset, vertexCount, indexTarget)
+      : offset;
+    const indexB = indices
+      ? readPrimitiveIndex(indices, offset + 1, vertexCount, indexTarget)
+      : offset + 1;
+    const indexC = indices
+      ? readPrimitiveIndex(indices, offset + 2, vertexCount, indexTarget)
+      : offset + 2;
+    if (indexA < 0 || indexB < 0 || indexC < 0) continue;
+
+    readVec3Into(positions, indexA, positionA);
+    readVec3Into(positions, indexB, positionB);
+    readVec3Into(positions, indexC, positionC);
+    if (
+      !isFiniteVec3(positionA) ||
+      !isFiniteVec3(positionB) ||
+      !isFiniteVec3(positionC)
+    ) {
+      invalidPosition?.();
+      continue;
+    }
+
+    if (normals && normals.getType() === "VEC3") {
+      readVec3Into(normals, indexA, normalA);
+      readVec3Into(normals, indexB, normalB);
+      readVec3Into(normals, indexC, normalC);
+      visitor(
+        indexA,
+        indexB,
+        indexC,
+        positionA,
+        positionB,
+        positionC,
+        normalA,
+        normalB,
+        normalC,
+      );
+    } else {
+      visitor(indexA, indexB, indexC, positionA, positionB, positionC);
+    }
+  }
+};
+
+const inspectPrimitive = (primitive: Primitive): PrimitiveInspection => {
+  const positions = primitive.getAttribute("POSITION");
   const indices = primitive.getIndices();
   const errors = {
     mode: primitive.getMode() !== Primitive.Mode.TRIANGLES,
@@ -380,90 +476,272 @@ const inspectPrimitive = (
   };
   if (!positions)
     return {
-      triangles: [],
+      triangleCount: 0,
       vertexCount: 0,
-      referencedVertices: new Set(),
+      referencedVertexCount: 0,
       errors,
     };
 
   const vertexCount = positions.getCount();
-  const referencedVertices = new Set<number>();
-  const drawIndices: number[] = [];
+  let referencedVertexCount = 0;
   if (indices) {
+    const referencedVertices = new Uint8Array(vertexCount);
+    const indexTarget: number[] = [Number.NaN];
     for (let index = 0; index < indices.getCount(); index += 1) {
-      const value = indices.getElement(index, [])[0];
-      if (
-        value === undefined ||
-        !Number.isInteger(value) ||
-        value < 0 ||
-        value >= vertexCount
-      ) {
+      const value = readPrimitiveIndex(
+        indices,
+        index,
+        vertexCount,
+        indexTarget,
+      );
+      if (value < 0) {
         errors.indices = true;
-        drawIndices.push(-1);
-      } else {
-        drawIndices.push(value);
-        referencedVertices.add(value);
+      } else if (referencedVertices[value] === 0) {
+        referencedVertices[value] = 1;
+        referencedVertexCount += 1;
       }
     }
   } else {
-    for (let index = 0; index < vertexCount; index += 1) {
-      drawIndices.push(index);
-      referencedVertices.add(index);
-    }
+    referencedVertexCount = vertexCount;
   }
-  if (drawIndices.length % 3 !== 0) errors.triples = true;
+  const drawCount = indices?.getCount() ?? vertexCount;
+  if (drawCount % 3 !== 0) errors.triples = true;
 
-  const triangles: Triangle[] = [];
-  for (let offset = 0; offset + 2 < drawIndices.length; offset += 3) {
-    const triangleIndices: [number, number, number] = [
-      drawIndices[offset]!,
-      drawIndices[offset + 1]!,
-      drawIndices[offset + 2]!,
-    ];
-    if (triangleIndices.some((value) => value < 0)) continue;
-    const trianglePositions: [Vec3, Vec3, Vec3] = [
-      readVec3(positions, triangleIndices[0]),
-      readVec3(positions, triangleIndices[1]),
-      readVec3(positions, triangleIndices[2]),
-    ];
-    if (!trianglePositions.every(isFiniteVec3)) {
-      errors.positions = true;
-      continue;
-    }
-    let triangleNormals: [Vec3, Vec3, Vec3] | undefined;
-    if (normals && normals.getType() === "VEC3") {
-      triangleNormals = [
-        readVec3(normals, triangleIndices[0]),
-        readVec3(normals, triangleIndices[1]),
-        readVec3(normals, triangleIndices[2]),
-      ];
-      if (!triangleNormals.every((normal) => normalize(normal) !== undefined))
+  let triangleCount = 0;
+  visitPrimitiveTriangles(
+    primitive,
+    (
+      _indexA,
+      _indexB,
+      _indexC,
+      _positionA,
+      _positionB,
+      _positionC,
+      normalA,
+      normalB,
+      normalC,
+    ) => {
+      triangleCount += 1;
+      if (
+        !normalA ||
+        !normalB ||
+        !normalC ||
+        normalize(normalA) === undefined ||
+        normalize(normalB) === undefined ||
+        normalize(normalC) === undefined
+      )
         errors.normals = true;
-    } else {
-      errors.normals = true;
-    }
-    triangles.push({
-      ordinal: ordinalBase + triangles.length,
-      indices: triangleIndices,
-      positions: trianglePositions,
-      ...(triangleNormals ? { normals: triangleNormals } : {}),
-    });
-  }
+    },
+    () => {
+      errors.positions = true;
+    },
+  );
 
   return {
-    triangles,
+    triangleCount,
     vertexCount,
-    referencedVertices,
+    referencedVertexCount,
     positionAccessor: positions,
     errors,
   };
 };
 
-type WeldedEdge = { directions: string[] };
+const tableCapacityFor = (maximumEntries: number): number => {
+  let capacity = 16;
+  while (capacity * 0.7 < maximumEntries) capacity *= 2;
+  return capacity;
+};
+
+const hashNumbers = (first: number, second: number, third: number): number => {
+  let hash = Math.imul(first, 0x9e3779b1);
+  hash ^= Math.imul(second, 0x85ebca6b);
+  hash ^= Math.imul(third, 0xc2b2ae35);
+  hash ^= hash >>> 16;
+  return hash >>> 0;
+};
+
+class WeldGrid {
+  private readonly xCoordinates: Float64Array;
+  private readonly yCoordinates: Float64Array;
+  private readonly zCoordinates: Float64Array;
+  private readonly cells: Array<number[] | undefined>;
+  private readonly mask: number;
+
+  constructor(maximumEntries: number) {
+    const capacity = tableCapacityFor(maximumEntries);
+    this.xCoordinates = new Float64Array(capacity);
+    this.yCoordinates = new Float64Array(capacity);
+    this.zCoordinates = new Float64Array(capacity);
+    this.cells = new Array<number[] | undefined>(capacity);
+    this.mask = capacity - 1;
+  }
+
+  get(x: number, y: number, z: number): number[] | undefined {
+    let slot = hashNumbers(x, y, z) & this.mask;
+    while (this.cells[slot] !== undefined) {
+      if (
+        this.xCoordinates[slot] === x &&
+        this.yCoordinates[slot] === y &&
+        this.zCoordinates[slot] === z
+      )
+        return this.cells[slot];
+      slot = (slot + 1) & this.mask;
+    }
+    return undefined;
+  }
+
+  append(x: number, y: number, z: number, id: number): void {
+    let slot = hashNumbers(x, y, z) & this.mask;
+    while (this.cells[slot] !== undefined) {
+      if (
+        this.xCoordinates[slot] === x &&
+        this.yCoordinates[slot] === y &&
+        this.zCoordinates[slot] === z
+      ) {
+        this.cells[slot]!.push(id);
+        return;
+      }
+      slot = (slot + 1) & this.mask;
+    }
+    this.xCoordinates[slot] = x;
+    this.yCoordinates[slot] = y;
+    this.zCoordinates[slot] = z;
+    this.cells[slot] = [id];
+  }
+}
+
+class TriangleSet {
+  private readonly first: Float64Array;
+  private readonly second: Float64Array;
+  private readonly third: Float64Array;
+  private readonly occupied: Uint8Array;
+  private readonly mask: number;
+
+  constructor(maximumEntries: number) {
+    const capacity = tableCapacityFor(maximumEntries);
+    this.first = new Float64Array(capacity);
+    this.second = new Float64Array(capacity);
+    this.third = new Float64Array(capacity);
+    this.occupied = new Uint8Array(capacity);
+    this.mask = capacity - 1;
+  }
+
+  add(valueA: number, valueB: number, valueC: number): boolean {
+    let first = valueA;
+    let second = valueB;
+    let third = valueC;
+    if (first > second) {
+      const swap = first;
+      first = second;
+      second = swap;
+    }
+    if (second > third) {
+      const swap = second;
+      second = third;
+      third = swap;
+    }
+    if (first > second) {
+      const swap = first;
+      first = second;
+      second = swap;
+    }
+
+    let slot = hashNumbers(first, second, third) & this.mask;
+    while (this.occupied[slot] !== 0) {
+      if (
+        this.first[slot] === first &&
+        this.second[slot] === second &&
+        this.third[slot] === third
+      )
+        return false;
+      slot = (slot + 1) & this.mask;
+    }
+    this.first[slot] = first;
+    this.second[slot] = second;
+    this.third[slot] = third;
+    this.occupied[slot] = 1;
+    return true;
+  }
+}
+
+class EdgeTable {
+  private readonly lowerVertices: Float64Array;
+  private readonly upperVertices: Float64Array;
+  private readonly counts: Float64Array;
+  private readonly directionMasks: Uint8Array;
+  private readonly duplicateDirections: Uint8Array;
+  private readonly mask: number;
+  private _size = 0;
+  private _boundaryEdges = 0;
+  private _nonManifoldEdges = 0;
+  private _inconsistentWindingEdges = 0;
+
+  constructor(maximumEntries: number) {
+    const capacity = tableCapacityFor(maximumEntries);
+    this.lowerVertices = new Float64Array(capacity);
+    this.upperVertices = new Float64Array(capacity);
+    this.counts = new Float64Array(capacity);
+    this.directionMasks = new Uint8Array(capacity);
+    this.duplicateDirections = new Uint8Array(capacity);
+    this.mask = capacity - 1;
+  }
+
+  add(from: number, to: number): void {
+    const lower = Math.min(from, to);
+    const upper = Math.max(from, to);
+    const direction = from === lower ? 1 : 2;
+    let slot = hashNumbers(lower, upper, 0) & this.mask;
+    while (this.counts[slot] !== 0) {
+      if (
+        this.lowerVertices[slot] === lower &&
+        this.upperVertices[slot] === upper
+      ) {
+        const count = this.counts[slot]!;
+        if (count === 1) this._boundaryEdges -= 1;
+        if (count === 2) this._nonManifoldEdges += 1;
+        if (
+          this.duplicateDirections[slot] === 0 &&
+          (this.directionMasks[slot]! & direction) !== 0
+        ) {
+          this.duplicateDirections[slot] = 1;
+          this._inconsistentWindingEdges += 1;
+        }
+        this.counts[slot] = count + 1;
+        this.directionMasks[slot]! |= direction;
+        return;
+      }
+      slot = (slot + 1) & this.mask;
+    }
+
+    this.lowerVertices[slot] = lower;
+    this.upperVertices[slot] = upper;
+    this.counts[slot] = 1;
+    this.directionMasks[slot] = direction;
+    this._size += 1;
+    this._boundaryEdges += 1;
+  }
+
+  get size(): number {
+    return this._size;
+  }
+
+  get boundaryEdges(): number {
+    return this._boundaryEdges;
+  }
+
+  get nonManifoldEdges(): number {
+    return this._nonManifoldEdges;
+  }
+
+  get inconsistentWindingEdges(): number {
+    return this._inconsistentWindingEdges;
+  }
+}
 
 const topologyForMesh = (
   mesh: Mesh,
   toleranceRatio: number,
+  inspections: ReadonlyMap<Primitive, PrimitiveInspection>,
 ): {
   degenerateTriangles: number;
   nonManifoldEdges: number;
@@ -475,40 +753,60 @@ const topologyForMesh = (
   duplicateTriangles: number;
   triangleCount: number;
 } => {
-  const primitiveResults = mesh
-    .listPrimitives()
-    .map((primitive, index) => inspectPrimitive(primitive, index * 1_000_000));
-  const points = primitiveResults.flatMap((result) =>
-    result.positionAccessor
-      ? Array.from({ length: result.vertexCount }, (_, index) =>
-          readVec3(result.positionAccessor!, index),
-        ).filter(isFiniteVec3)
-      : [],
+  const primitives = mesh.listPrimitives();
+  const primitiveResults = primitives.map((primitive) =>
+    inspections.get(primitive)!,
   );
   const minimum: Vec3 = [Infinity, Infinity, Infinity];
   const maximum: Vec3 = [-Infinity, -Infinity, -Infinity];
-  for (const point of points) {
-    for (let axis = 0; axis < 3; axis += 1) {
-      minimum[axis] = Math.min(minimum[axis]!, point[axis]!);
-      maximum[axis] = Math.max(maximum[axis]!, point[axis]!);
+  const point: Vec3 = [Number.NaN, Number.NaN, Number.NaN];
+  for (const result of primitiveResults) {
+    if (!result.positionAccessor) continue;
+    for (let index = 0; index < result.vertexCount; index += 1) {
+      readVec3Into(result.positionAccessor, index, point);
+      if (!isFiniteVec3(point)) continue;
+      for (let axis = 0; axis < 3; axis += 1) {
+        minimum[axis] = Math.min(minimum[axis]!, point[axis]!);
+        maximum[axis] = Math.max(maximum[axis]!, point[axis]!);
+      }
     }
   }
   const diagonal = Number.isFinite(minimum[0])
     ? Math.sqrt(lengthSquared(subtract(maximum, minimum)))
     : 0;
   const tolerance = Math.max(diagonal * toleranceRatio, 1e-9);
-  const cells = new Map<string, number[]>();
-  const weldedPoints: Vec3[] = [];
-  const weld = (point: Vec3): number => {
-    const coordinate = point.map((value) => Math.floor(value / tolerance));
+  const maximumWeldedPointCount = primitiveResults.reduce(
+    (sum, result) => sum + result.vertexCount,
+    0,
+  );
+  const cells = new WeldGrid(maximumWeldedPointCount);
+  const weldedPoints = new Float64Array(maximumWeldedPointCount * 3);
+  let weldedPointCount = 0;
+  const weld = (position: Vec3): number => {
+    const coordinateX = Math.floor(position[0] / tolerance);
+    const coordinateY = Math.floor(position[1] / tolerance);
+    const coordinateZ = Math.floor(position[2] / tolerance);
     let match: number | undefined;
     for (let dx = -1; dx <= 1; dx += 1)
       for (let dy = -1; dy <= 1; dy += 1)
         for (let dz = -1; dz <= 1; dz += 1) {
-          const key = `${coordinate[0]! + dx}:${coordinate[1]! + dy}:${coordinate[2]! + dz}`;
-          for (const candidate of cells.get(key) ?? []) {
+          const candidates = cells.get(
+            coordinateX + dx,
+            coordinateY + dy,
+            coordinateZ + dz,
+          );
+          if (!candidates) continue;
+          for (const candidate of candidates) {
+            const candidateOffset = candidate * 3;
+            const differenceX = weldedPoints[candidateOffset]! - position[0];
+            const differenceY =
+              weldedPoints[candidateOffset + 1]! - position[1];
+            const differenceZ =
+              weldedPoints[candidateOffset + 2]! - position[2];
             if (
-              lengthSquared(subtract(weldedPoints[candidate]!, point)) <=
+              differenceX * differenceX +
+                differenceY * differenceY +
+                differenceZ * differenceZ <=
                 tolerance * tolerance &&
               (match === undefined || candidate < match)
             )
@@ -516,80 +814,101 @@ const topologyForMesh = (
           }
         }
     if (match !== undefined) return match;
-    const id = weldedPoints.length;
-    weldedPoints.push(point);
-    const key = `${coordinate[0]}:${coordinate[1]}:${coordinate[2]}`;
-    cells.set(key, [...(cells.get(key) ?? []), id]);
+    const id = weldedPointCount;
+    const weldedOffset = id * 3;
+    weldedPoints[weldedOffset] = position[0];
+    weldedPoints[weldedOffset + 1] = position[1];
+    weldedPoints[weldedOffset + 2] = position[2];
+    weldedPointCount += 1;
+    cells.append(coordinateX, coordinateY, coordinateZ, id);
     return id;
   };
 
-  const edges = new Map<string, WeldedEdge>();
-  const triangleKeys = new Set<string>();
+  const maximumTriangleCount = primitiveResults.reduce(
+    (sum, result) => sum + result.triangleCount,
+    0,
+  );
+  const edges = new EdgeTable(maximumTriangleCount * 3);
+  const triangleKeys = new TriangleSet(maximumTriangleCount);
   let duplicateTriangles = 0;
   let degenerateTriangles = 0;
   let normalMismatchTriangles = 0;
   let triangleCount = 0;
   let unreferencedVertices = 0;
-  for (const result of primitiveResults) {
+  for (
+    let primitiveIndex = 0;
+    primitiveIndex < primitives.length;
+    primitiveIndex += 1
+  ) {
+    const primitive = primitives[primitiveIndex]!;
+    const result = primitiveResults[primitiveIndex]!;
     if (result.positionAccessor && result.positionAccessor.getCount() > 0) {
       unreferencedVertices +=
-        result.positionAccessor.getCount() - result.referencedVertices.size;
+        result.positionAccessor.getCount() - result.referencedVertexCount;
     }
-    for (const triangle of result.triangles) {
-      triangleCount += 1;
-      const degenerate = isDegenerate(triangle);
-      if (degenerate) degenerateTriangles += 1;
-      if (!degenerate && triangle.normals) {
-        const faceNormal = normalize(
-          cross(
-            subtract(triangle.positions[1], triangle.positions[0]),
-            subtract(triangle.positions[2], triangle.positions[0]),
-          ),
+    visitPrimitiveTriangles(
+      primitive,
+      (
+        indexA,
+        indexB,
+        indexC,
+        positionA,
+        positionB,
+        positionC,
+        normalA,
+        normalB,
+        normalC,
+      ) => {
+        triangleCount += 1;
+        const degenerate = isDegenerate(
+          indexA,
+          indexB,
+          indexC,
+          positionA,
+          positionB,
+          positionC,
         );
-        const normals = triangle.normals.map(normalize);
-        const average = normals.every(Boolean)
-          ? normalize([
-              normals.reduce((sum, normal) => sum + normal![0], 0),
-              normals.reduce((sum, normal) => sum + normal![1], 0),
-              normals.reduce((sum, normal) => sum + normal![2], 0),
-            ])
-          : undefined;
-        if (!faceNormal || !average || dot(faceNormal, average) < 0)
-          normalMismatchTriangles += 1;
-      }
-      const welded = triangle.positions.map(weld) as [number, number, number];
-      const triangleKey = [...welded].sort((a, b) => a - b).join(":");
-      if (triangleKeys.has(triangleKey)) duplicateTriangles += 1;
-      else triangleKeys.add(triangleKey);
-      if (degenerate) continue;
-      for (const [from, to] of [
-        [welded[0], welded[1]],
-        [welded[1], welded[2]],
-        [welded[2], welded[0]],
-      ] as Array<[number, number]>) {
-        const key = from < to ? `${from}:${to}` : `${to}:${from}`;
-        const edge = edges.get(key) ?? { directions: [] };
-        edge.directions.push(`${from}:${to}`);
-        edges.set(key, edge);
-      }
-    }
-  }
+        if (degenerate) degenerateTriangles += 1;
+        if (degenerate === false && normalA && normalB && normalC) {
+          const faceNormal = normalize(
+            cross(
+              subtract(positionB, positionA),
+              subtract(positionC, positionA),
+            ),
+          );
+          const normalizedA = normalize(normalA);
+          const normalizedB = normalize(normalB);
+          const normalizedC = normalize(normalC);
+          const average =
+            normalizedA && normalizedB && normalizedC
+              ? normalize([
+                  0 + normalizedA[0] + normalizedB[0] + normalizedC[0],
+                  0 + normalizedA[1] + normalizedB[1] + normalizedC[1],
+                  0 + normalizedA[2] + normalizedB[2] + normalizedC[2],
+                ])
+              : undefined;
+          if (!faceNormal || !average || dot(faceNormal, average) < 0)
+            normalMismatchTriangles += 1;
+        }
 
-  let boundaryEdges = 0;
-  let nonManifoldEdges = 0;
-  let inconsistentWindingEdges = 0;
-  for (const edge of edges.values()) {
-    if (edge.directions.length === 1) boundaryEdges += 1;
-    if (edge.directions.length > 2) nonManifoldEdges += 1;
-    if (new Set(edge.directions).size < edge.directions.length)
-      inconsistentWindingEdges += 1;
+        const weldedA = weld(positionA);
+        const weldedB = weld(positionB);
+        const weldedC = weld(positionC);
+        if (!triangleKeys.add(weldedA, weldedB, weldedC))
+          duplicateTriangles += 1;
+        if (degenerate) return;
+        edges.add(weldedA, weldedB);
+        edges.add(weldedB, weldedC);
+        edges.add(weldedC, weldedA);
+      },
+    );
   }
   return {
     degenerateTriangles,
-    nonManifoldEdges,
-    boundaryEdges,
+    nonManifoldEdges: edges.nonManifoldEdges,
+    boundaryEdges: edges.boundaryEdges,
     unreferencedVertices,
-    inconsistentWindingEdges,
+    inconsistentWindingEdges: edges.inconsistentWindingEdges,
     normalMismatchTriangles,
     edgeCount: edges.size,
     duplicateTriangles,
@@ -605,20 +924,23 @@ export const inspectParsedAsset = (
   const root = document.getRoot();
   const meshes = root.listMeshes();
   const primitives = meshes.flatMap((mesh) => mesh.listPrimitives());
-  const primitiveResults = primitives.map((primitive, index) =>
-    inspectPrimitive(primitive, index * 1_000_000),
-  );
+  const primitiveResults = primitives.map(inspectPrimitive);
+  const inspections = new Map<Primitive, PrimitiveInspection>();
+  for (let index = 0; index < primitives.length; index += 1)
+    inspections.set(primitives[index]!, primitiveResults[index]!);
   const vertexCount = primitiveResults.reduce(
     (sum, result) => sum + result.vertexCount,
     0,
   );
   const triangleCount = primitiveResults.reduce(
-    (sum, result) => sum + result.triangles.length,
+    (sum, result) => sum + result.triangleCount,
     0,
   );
 
   const minimum: Vec3 = [Infinity, Infinity, Infinity];
   const maximum: Vec3 = [-Infinity, -Infinity, -Infinity];
+  const local: Vec3 = [Number.NaN, Number.NaN, Number.NaN];
+  const world: Vec3 = [Number.NaN, Number.NaN, Number.NaN];
   const scene = root.listScenes()[0];
   scene?.traverse((node) => {
     const mesh = node.getMesh();
@@ -628,9 +950,9 @@ export const inspectParsedAsset = (
       const positions = primitive.getAttribute("POSITION");
       if (!positions) continue;
       for (let index = 0; index < positions.getCount(); index += 1) {
-        const local = readVec3(positions, index);
+        readVec3Into(positions, index, local);
         if (!isFiniteVec3(local)) continue;
-        const world = transformPoint(local, matrix);
+        transformPointInto(local, matrix, world);
         if (!isFiniteVec3(world)) continue;
         for (let axis = 0; axis < 3; axis += 1) {
           minimum[axis] = Math.min(minimum[axis]!, world[axis]!);
@@ -646,7 +968,7 @@ export const inspectParsedAsset = (
   };
 
   const topologyParts = meshes.map((mesh) =>
-    topologyForMesh(mesh, policy.topology.weldToleranceRatio),
+    topologyForMesh(mesh, policy.topology.weldToleranceRatio, inspections),
   );
   const sumTopology = (key: keyof (typeof topologyParts)[number]): number =>
     topologyParts.reduce((sum, part) => sum + part[key], 0);
