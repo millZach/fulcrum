@@ -167,10 +167,18 @@ const AssetPlanDraftProcedureWireSchema = z.object({
     .min(1),
 });
 
-export const AssetPlanDraftAssetWireSchema = z.object({
-  ...AssetPlanDraftAssetSchema.shape,
-  procedure: AssetPlanDraftProcedureWireSchema.nullable(),
-});
+export const AssetPlanDraftAssetWireSchema = z.union([
+  z.object({
+    ...AssetPlanDraftAssetSchema.shape,
+    classification: z.enum(["hero", "kit", "functional"]),
+    procedure: z.null(),
+  }),
+  z.object({
+    ...AssetPlanDraftAssetSchema.shape,
+    classification: z.literal("procedural"),
+    procedure: AssetPlanDraftProcedureWireSchema,
+  }),
+]);
 
 export const AssetPlanDraftWireSchema = z.object({
   assets: z
@@ -787,6 +795,26 @@ const zodIssues = (error: z.ZodError): AssetPlanIssue[] =>
     ),
   }));
 
+const validateAssetPlanDraftWire = (
+  draft: AssetPlanDraftWire,
+):
+  | { success: true; draft: AssetPlanDraft }
+  | { success: false; issues: AssetPlanIssue[] } => {
+  let mapped: AssetPlanDraft;
+  try {
+    mapped = mapAssetPlanDraftWire(draft);
+  } catch (caught) {
+    if (caught instanceof z.ZodError) {
+      return { success: false, issues: zodIssues(caught) };
+    }
+    throw caught;
+  }
+  const parsed = AssetPlanDraftSchema.safeParse(mapped);
+  return parsed.success
+    ? { success: true, draft: parsed.data }
+    : { success: false, issues: zodIssues(parsed.error) };
+};
+
 const failure = (
   code: AssetPlanFailure["code"],
   kind: AssetPlanFailure["kind"],
@@ -1247,55 +1275,50 @@ class AssetPlannerImplementation implements AssetPlanning {
             : [];
         },
       );
-      const generated = await this.dependencies.execution.generateStructured({
-        provider: input.orchestratorProvider,
-        cwd: process.env.FULCRUM_REPOSITORY_ROOT ?? process.cwd(),
-        systemPrompt:
-          "Create a compact asset-plan draft. Use only supplied concept slot IDs and return no lineage, policy, provenance, or final IDs.",
-        prompt: JSON.stringify({
-          gameDesignSpec: documents.gameDesignSpecDocument,
-          selectedConcepts: selectedSummaries,
-          ...(input.replan
-            ? {
-                previousPlan: documents.previousPlanDocument,
-                changeRequest: input.replan.decision.notes,
-              }
-            : {}),
-        }),
-        schema: AssetPlanDraftWireSchema,
+      const systemPrompt =
+        "Create a compact asset-plan draft. Return no lineage, policy, provenance, or final IDs. Asset keys must be unique; dependsOnAssetKeys may only reference assetKeys present in this draft and must stay acyclic; sourceConceptSlotIds may only use the supplied slot IDs.";
+      const prompt = JSON.stringify({
+        gameDesignSpec: documents.gameDesignSpecDocument,
+        selectedConcepts: selectedSummaries,
+        ...(input.replan
+          ? {
+              previousPlan: documents.previousPlanDocument,
+              changeRequest: input.replan.decision.notes,
+            }
+          : {}),
       });
-      let mapped: AssetPlanDraft;
-      try {
-        mapped = mapAssetPlanDraftWire(generated.value);
-      } catch (caught) {
-        if (caught instanceof z.ZodError) {
+      let validationIssues: AssetPlanIssue[] = [];
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        const generated = await this.dependencies.execution.generateStructured({
+          provider: input.orchestratorProvider,
+          cwd: process.env.FULCRUM_REPOSITORY_ROOT ?? process.cwd(),
+          systemPrompt:
+            attempt === 1
+              ? systemPrompt
+              : `${systemPrompt}\n\nCorrection required. The previous draft failed validation with these issues: ${JSON.stringify(validationIssues)}. Correct every issue and return a corrected complete draft.`,
+          prompt,
+          schema: AssetPlanDraftWireSchema,
+        });
+        const validated = validateAssetPlanDraftWire(generated.value);
+        if (validated.success) {
           return {
-            status: "failed",
-            outcome: this.failOutput(
-              input,
-              submission.requestId,
-              pending.payload,
-              "The orchestrator returned an invalid asset-plan draft.",
-              zodIssues(caught),
-            ),
+            status: "ready",
+            draft: validated.draft,
+            model: generated.model,
           };
         }
-        throw caught;
+        validationIssues = validated.issues;
       }
-      const parsed = AssetPlanDraftSchema.safeParse(mapped);
-      if (!parsed.success) {
-        return {
-          status: "failed",
-          outcome: this.failOutput(
-            input,
-            submission.requestId,
-            pending.payload,
-            "The orchestrator returned an invalid asset-plan draft.",
-            zodIssues(parsed.error),
-          ),
-        };
-      }
-      return { status: "ready", draft: parsed.data, model: generated.model };
+      return {
+        status: "failed",
+        outcome: this.failOutput(
+          input,
+          submission.requestId,
+          pending.payload,
+          "The orchestrator returned an invalid asset-plan draft.",
+          validationIssues,
+        ),
+      };
     } catch (caught) {
       const error = failure(
         "asset-plan-submission-unknown",

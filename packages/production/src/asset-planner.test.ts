@@ -36,11 +36,40 @@ import {
 
 describe("asset-plan live JSON Schema", () => {
   it("AssetPlanDraftWireSchema is OpenAI strict-compatible", () => {
-    expect(() =>
-      assertStrictCompatibleJsonSchema(
-        z.toJSONSchema(AssetPlanDraftWireSchema),
-      ),
-    ).not.toThrow();
+    const jsonSchema = z.toJSONSchema(AssetPlanDraftWireSchema);
+    expect(() => assertStrictCompatibleJsonSchema(jsonSchema)).not.toThrow();
+    const required = [
+      "assetKey",
+      "name",
+      "classification",
+      "rationale",
+      "sourceConceptSlotIds",
+      "dependsOnAssetKeys",
+      "procedure",
+      "acceptanceCriteria",
+    ];
+    expect(jsonSchema).toMatchObject({
+      properties: {
+        assets: {
+          items: {
+            anyOf: [
+              { additionalProperties: false, required },
+              { additionalProperties: false, required },
+            ],
+          },
+        },
+      },
+    });
+  });
+
+  it("rejects a procedural wire asset with a null procedure", () => {
+    const wire = proceduralWireDraft();
+
+    expect(
+      AssetPlanDraftWireSchema.safeParse({
+        assets: [{ ...wire.assets[0], procedure: null }],
+      }).success,
+    ).toBe(false);
   });
 });
 
@@ -85,15 +114,19 @@ describe("mapAssetPlanDraftWire", () => {
     expect(AssetPlanDraftSchema.parse(mapped)).toEqual(mapped);
   });
 
-  it("omits a null wire procedure from the domain asset", () => {
+  it("maps a non-procedural wire variant without a domain procedure", () => {
     const wire = proceduralWireDraft();
-    wire.assets[0] = {
-      ...wire.assets[0]!,
-      classification: "hero",
-      procedure: null,
-    };
+    const parsed = AssetPlanDraftWireSchema.parse({
+      assets: [
+        {
+          ...wire.assets[0]!,
+          classification: "hero",
+          procedure: null,
+        },
+      ],
+    });
 
-    expect(mapAssetPlanDraftWire(wire).assets[0]).not.toHaveProperty(
+    expect(mapAssetPlanDraftWire(parsed).assets[0]).not.toHaveProperty(
       "procedure",
     );
   });
@@ -720,17 +753,28 @@ const executionReturning = (value: unknown): StructuredModelExecution => ({
 });
 
 const wireDraftFromDomain = (draft: AssetPlanDraft): AssetPlanDraftWire => ({
-  assets: draft.assets.map((asset) => ({
-    ...asset,
-    procedure: asset.procedure
-      ? {
-          generatorId: asset.procedure.generatorId,
-          parameters: Object.entries(asset.procedure.parameters).map(
-            ([name, value]) => ({ name, value }),
-          ),
-        }
-      : null,
-  })),
+  assets: draft.assets.map((asset) => {
+    if (asset.classification !== "procedural") {
+      return {
+        ...asset,
+        classification: asset.classification,
+        procedure: null,
+      };
+    }
+    if (!asset.procedure) {
+      throw new Error("Procedural domain fixture requires a procedure.");
+    }
+    return {
+      ...asset,
+      classification: asset.classification,
+      procedure: {
+        generatorId: asset.procedure.generatorId,
+        parameters: Object.entries(asset.procedure.parameters).map(
+          ([name, value]) => ({ name, value }),
+        ),
+      },
+    };
+  }),
 });
 
 describe("AssetPlanner.plan", () => {
@@ -878,6 +922,107 @@ describe("AssetPlanner.plan", () => {
         .listEvents(fixture.input.projectId)
         .some((event) => event.type === "asset-plan.created"),
     ).toBe(false);
+    fixture.repository.close();
+  });
+
+  it("invalid_live_draft_is_corrected_once_within_the_same_submission", async () => {
+    const fixture = plannerFixture("live");
+    const validDraft = wireDraftFromDomain(
+      deriveReplayAssetPlanDraft(fixture.resolved),
+    );
+    const cyclicDraft = structuredClone(validDraft);
+    cyclicDraft.assets[0]!.dependsOnAssetKeys = [
+      cyclicDraft.assets[1]!.assetKey,
+    ];
+    cyclicDraft.assets[1]!.dependsOnAssetKeys = [
+      cyclicDraft.assets[0]!.assetKey,
+    ];
+    const execution = executionReturning(validDraft);
+    vi.mocked(execution.generateStructured)
+      .mockResolvedValueOnce({
+        value: cyclicDraft,
+        provider: "openai",
+        model: "planner-model",
+      })
+      .mockResolvedValueOnce({
+        value: validDraft,
+        provider: "openai",
+        model: "planner-model",
+      });
+    const recordSubmissionIntent = vi.spyOn(
+      fixture.repository,
+      "recordSubmissionIntent",
+    );
+    const planner = createAssetPlannerForTest(fixture.repository, {
+      execution,
+      now: () => timestamp,
+      revisionId: () => "plan-revision-1",
+    });
+
+    expect((await planner.plan(fixture.input)).status).toBe("ready");
+    expect(recordSubmissionIntent).toHaveBeenCalledTimes(1);
+    expect(execution.generateStructured).toHaveBeenCalledTimes(2);
+    const firstPrompt = vi.mocked(execution.generateStructured).mock
+      .calls[0]?.[0].systemPrompt;
+    const correctionPrompt = vi.mocked(execution.generateStructured).mock
+      .calls[1]?.[0].systemPrompt;
+    expect(firstPrompt).toContain(
+      "Asset keys must be unique; dependsOnAssetKeys may only reference assetKeys present in this draft and must stay acyclic; sourceConceptSlotIds may only use the supplied slot IDs.",
+    );
+    expect(correctionPrompt).toContain(firstPrompt);
+    for (const asset of cyclicDraft.assets.slice(0, 2)) {
+      expect(correctionPrompt).toContain(
+        `Asset ${asset.assetKey} participates in a dependency cycle.`,
+      );
+    }
+    expect(correctionPrompt).toContain("return a corrected complete draft");
+    fixture.repository.close();
+  });
+
+  it("second_invalid_live_draft_reports_only_the_second_attempt_issues", async () => {
+    const fixture = plannerFixture("live");
+    const cyclicDraft = wireDraftFromDomain(
+      deriveReplayAssetPlanDraft(fixture.resolved),
+    );
+    cyclicDraft.assets[0]!.dependsOnAssetKeys = [
+      cyclicDraft.assets[0]!.assetKey,
+    ];
+    const execution = executionReturning({});
+    vi.mocked(execution.generateStructured)
+      .mockResolvedValueOnce({
+        value: cyclicDraft,
+        provider: "openai",
+        model: "planner-model",
+      })
+      .mockResolvedValueOnce({
+        value: proceduralWireDraft([
+          { name: "segments", value: 12 },
+          { name: "segments", value: 16 },
+        ]),
+        provider: "openai",
+        model: "planner-model",
+      });
+    const planner = createAssetPlannerForTest(fixture.repository, {
+      execution,
+      now: () => timestamp,
+      revisionId: () => "plan-revision-1",
+    });
+
+    const outcome = await planner.plan(fixture.input);
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "asset-plan-invalid-output",
+        issues: [
+          {
+            path: ["assets", 0, "procedure", "parameters", 1, "name"],
+            message: "Duplicate procedure parameter name: segments.",
+          },
+        ],
+      },
+    });
+    expect(execution.generateStructured).toHaveBeenCalledTimes(2);
     fixture.repository.close();
   });
 
