@@ -340,7 +340,7 @@ const m2Fixture = (repository: ProjectRepository) => {
     createdAt,
     updatedAt: createdAt,
   });
-  return { projectId, runId, assetPlan, concept, revision };
+  return { repository, projectId, runId, assetPlan, concept, revision };
 };
 
 const readyM2Slots = (
@@ -761,6 +761,7 @@ const batchSlots = (
   orderedAssetIds: string[],
   hooks: {
     multiview?: M2MacroGraphSlots["multiviewConcepts"]["ensure"];
+    assetProduction?: M2MacroGraphSlots["assetProduction"]["ensure"];
     regeneration?: M2MacroGraphSlots["regeneration"]["ensure"];
     classification?: (assetId: string) => "hero" | "kit";
   } = {},
@@ -798,16 +799,21 @@ const batchSlots = (
         })),
     },
     assetProduction: {
-      ensure: async (input) => ({
-        status: "ready",
-        value: { ...input, candidateAsset: candidate },
-      }),
+      ensure:
+        hooks.assetProduction ??
+        (async (input) => ({
+          status: "ready",
+          value: { ...input, candidateAsset: candidate },
+        })),
     },
     deterministicQa: {
-      ensure: async (input) => ({
-        status: "ready",
-        value: { ...input, deterministicReport: deterministic },
-      }),
+      ensure: async (input) => {
+        fixture.repository.getProject(input.projectId);
+        return {
+          status: "ready",
+          value: { ...input, deterministicReport: deterministic },
+        };
+      },
     },
     turntableEvaluation: {
       ensure: async (input) => ({
@@ -939,7 +945,7 @@ describe("M2 macro slot contracts", () => {
     repository.close();
   });
 
-  it("one_suspended_iteration_resumes_by_foreach_index", async () => {
+  it("one_suspended_iteration_resumes", async () => {
     const repository = new ProjectRepository(temporaryRoot());
     const fixture = m2Fixture(repository);
     const calls = new Map<string, number>();
@@ -976,6 +982,109 @@ describe("M2 macro slot contracts", () => {
 
     expect(completed.state.stage).toBe("complete");
     expect(calls.get("door")).toBe(2);
+    repository.close();
+  });
+
+  it("two_concurrent_asset_production_suspends_do_not_block_the_batch", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const fixture = m2Fixture(repository);
+    repository.saveProject({
+      ...repository.getProject(fixture.projectId),
+      mode: "live",
+    });
+    const calls = new Map<string, number>();
+    const submissionRequestIds = new Map<string, Set<string>>();
+    const completedAssetIds = new Set<string>();
+    const candidate = fixture.revision("concurrent-candidate");
+    const deterministic = fixture.revision("concurrent-deterministic");
+    const semantic = fixture.revision("concurrent-semantic");
+    const slots = batchSlots(fixture, ["hero", "door"], {
+      multiview: async (input) => {
+        if (input.assetId === "door")
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        return {
+          status: "ready",
+          value: {
+            ...input,
+            classification: input.assetId === "hero" ? "hero" : "kit",
+            multiviewDecision: "not-required",
+          },
+        };
+      },
+      assetProduction: async (input) => {
+        const count = (calls.get(input.assetId) ?? 0) + 1;
+        calls.set(input.assetId, count);
+        const intent = repository.recordSubmissionIntent({
+          projectId: input.projectId,
+          operation: "image-to-model",
+          provider: "fixture",
+          idempotencyKey: `m2-production:${input.assetId}`,
+          payload: { assetId: input.assetId },
+        });
+        const requestIds = submissionRequestIds.get(input.assetId) ?? new Set();
+        requestIds.add(intent.requestId);
+        submissionRequestIds.set(input.assetId, requestIds);
+        if (count > 1)
+          return {
+            status: "ready",
+            value: { ...input, candidateAsset: candidate },
+          };
+        return {
+          status: "pending",
+          requestId: intent.requestId,
+          resumeAfter: "2026-01-01T00:00:05.000Z",
+        };
+      },
+      regeneration: async (input) => {
+        completedAssetIds.add(input.assetId);
+        return {
+          status: "ready",
+          value: {
+            ...input,
+            bestAsset: candidate,
+            finalDeterministicReport: deterministic,
+            finalSemanticReport: semantic,
+            attemptCount: 1,
+            validated: true,
+          },
+        };
+      },
+    });
+    const driver = new PostConceptGraphDriver(repository, { slots });
+    await driver.advance(fixture.projectId);
+    approveFixturePlan(repository, fixture);
+
+    const suspended = await driver.advance(
+      fixture.projectId,
+      "approval-recorded",
+    );
+    expect(suspended.state).toMatchObject({
+      status: "active",
+      stage: "asset-batch",
+    });
+    expect(completedAssetIds.size).toBe(0);
+
+    const completed = await driver.advance(fixture.projectId);
+
+    expect(completed.state).toMatchObject({
+      status: "complete",
+      stage: "complete",
+    });
+    expect(calls).toEqual(
+      new Map([
+        ["hero", 2],
+        ["door", 2],
+      ]),
+    );
+    expect(completedAssetIds).toEqual(new Set(["hero", "door"]));
+    expect(submissionRequestIds.get("hero")?.size).toBe(1);
+    expect(submissionRequestIds.get("door")?.size).toBe(1);
+    expect(repository.getSubmissionByKey("m2-production:hero")?.requestId).toBe(
+      [...submissionRequestIds.get("hero")!][0],
+    );
+    expect(repository.getSubmissionByKey("m2-production:door")?.requestId).toBe(
+      [...submissionRequestIds.get("door")!][0],
+    );
     repository.close();
   });
 

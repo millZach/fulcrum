@@ -84,6 +84,8 @@ const m0Step = (
     },
   });
 
+type M2PhaseRun<O> = { status: "ready"; value: O } | { status: "suspended" };
+
 const runM2Phase = async <I, O>(
   phase: MacroPhase<I, O>,
   input: I,
@@ -91,19 +93,42 @@ const runM2Phase = async <I, O>(
   nodeId: z.infer<typeof MacroGraphSuspendSchema>["nodeId"],
   projectId: string,
   assetId?: string,
-): Promise<O> => {
+): Promise<M2PhaseRun<O>> => {
   const outcome = await phase.ensure(input);
   if (outcome.status === "failed") return failed(outcome.error);
-  if (outcome.status === "pending")
-    return (await suspend({
+  if (outcome.status === "pending") {
+    // Mastra 1.59 records suspension without unwinding execute, so tell the
+    // enclosing step to return before it calls the next phase.
+    await suspend({
       projectId,
       nodeId,
       reason: "provider-pending",
       requestId: outcome.requestId,
       resumeAfter: outcome.resumeAfter,
       ...(assetId ? { assetId } : {}),
-    })) as never;
-  return outcome.value;
+    });
+    return { status: "suspended" };
+  }
+  return { status: "ready", value: outcome.value };
+};
+
+const runM2Step = async <I, O>(
+  phase: MacroPhase<I, O>,
+  input: I,
+  suspend: (payload: z.infer<typeof MacroGraphSuspendSchema>) => unknown,
+  nodeId: z.infer<typeof MacroGraphSuspendSchema>["nodeId"],
+  projectId: string,
+  assetId?: string,
+): Promise<O> => {
+  const result = await runM2Phase(
+    phase,
+    input,
+    suspend,
+    nodeId,
+    projectId,
+    assetId,
+  );
+  return result.status === "ready" ? result.value : (undefined as never);
 };
 
 const createM0Tail = (operations: PostConceptOperations) => {
@@ -150,7 +175,7 @@ const createM2AssetPath = (slots: M2MacroGraphSlots) => {
     suspendSchema: MacroGraphSuspendSchema,
     resumeSchema: MacroGraphResumeSchema,
     execute: async ({ inputData, suspend }) =>
-      await runM2Phase(
+      await runM2Step(
         slots.multiviewConcepts,
         inputData,
         suspend,
@@ -166,7 +191,7 @@ const createM2AssetPath = (slots: M2MacroGraphSlots) => {
     suspendSchema: MacroGraphSuspendSchema,
     resumeSchema: MacroGraphResumeSchema,
     execute: async ({ inputData, suspend }) =>
-      await runM2Phase(
+      await runM2Step(
         slots.assetProduction,
         inputData,
         suspend,
@@ -182,7 +207,7 @@ const createM2AssetPath = (slots: M2MacroGraphSlots) => {
     suspendSchema: MacroGraphSuspendSchema,
     resumeSchema: MacroGraphResumeSchema,
     execute: async ({ inputData, suspend }) =>
-      await runM2Phase(
+      await runM2Step(
         slots.deterministicQa,
         inputData,
         suspend,
@@ -198,7 +223,7 @@ const createM2AssetPath = (slots: M2MacroGraphSlots) => {
     suspendSchema: MacroGraphSuspendSchema,
     resumeSchema: MacroGraphResumeSchema,
     execute: async ({ inputData, suspend }) =>
-      await runM2Phase(
+      await runM2Step(
         slots.turntableEvaluation,
         inputData,
         suspend,
@@ -214,7 +239,7 @@ const createM2AssetPath = (slots: M2MacroGraphSlots) => {
     suspendSchema: MacroGraphSuspendSchema,
     resumeSchema: MacroGraphResumeSchema,
     execute: async ({ inputData, suspend }) =>
-      await runM2Phase(
+      await runM2Step(
         slots.regeneration,
         inputData,
         suspend,
@@ -252,38 +277,45 @@ const createM2AssetIteration = (slots: M2MacroGraphSlots) =>
         inputData.projectId,
         inputData.assetId,
       );
+      if (multiview.status === "suspended") return undefined as never;
       const produced = await runM2Phase(
         slots.assetProduction,
-        multiview,
+        multiview.value,
         suspend,
         M2_GRAPH_SLOTS.assetProduction,
         inputData.projectId,
         inputData.assetId,
       );
+      if (produced.status === "suspended") return undefined as never;
       const deterministic = await runM2Phase(
         slots.deterministicQa,
-        produced,
+        produced.value,
         suspend,
         M2_GRAPH_SLOTS.deterministicQa,
         inputData.projectId,
         inputData.assetId,
       );
+      if (deterministic.status === "suspended") return undefined as never;
       const semantic = await runM2Phase(
         slots.turntableEvaluation,
-        deterministic,
+        deterministic.value,
         suspend,
         M2_GRAPH_SLOTS.turntableEvaluation,
         inputData.projectId,
         inputData.assetId,
       );
-      return await runM2Phase(
+      if (semantic.status === "suspended") return undefined as never;
+      const regenerated = await runM2Phase(
         slots.regeneration,
-        semantic,
+        semantic.value,
         suspend,
         M2_GRAPH_SLOTS.regeneration,
         inputData.projectId,
         inputData.assetId,
       );
+      return regenerated.status === "ready"
+        ? regenerated.value
+        : (undefined as never);
     },
   });
 
@@ -306,6 +338,8 @@ const createM2Batch = (
         M2_GRAPH_SLOTS.assetPlanning,
         inputData.projectId,
       );
+      if (result.status === "suspended") return undefined as never;
+      const planning = result.value;
       const state = repository.getProject(inputData.projectId);
       const wasReplan =
         state.assetPlanApproval?.decision === "changes-requested";
@@ -313,11 +347,11 @@ const createM2Batch = (
         repository.commitWorkflowCheckpoint({
           projectId: state.projectId,
           runId: state.runId,
-          checkpointKey: `${M2_GRAPH_SLOTS.assetPlanning}:${result.assetPlan.revisionId}`,
+          checkpointKey: `${M2_GRAPH_SLOTS.assetPlanning}:${planning.assetPlan.revisionId}`,
           expectedStage: "asset-planning",
           nextState: {
             ...state,
-            assetPlan: result.assetPlan,
+            assetPlan: planning.assetPlan,
             assetPlanApproval: undefined,
             assetPlanReplanCount: wasReplan
               ? (state.assetPlanReplanCount ?? 0) + 1
@@ -335,11 +369,11 @@ const createM2Batch = (
                 state.gameDesignSpec?.revisionId,
                 state.visualDirectionSet?.revisionId,
               ].filter((value): value is string => Boolean(value)),
-              outputRevisionIds: [result.assetPlan.revisionId],
+              outputRevisionIds: [planning.assetPlan.revisionId],
             },
           },
         });
-      return { ...inputData, ...result };
+      return { ...inputData, ...planning };
     },
   });
   const approval = createStep({
@@ -666,9 +700,19 @@ export const failureFromUnknown = (error: unknown): WorkflowFailure => {
       );
     }
   }
+  const fallbackMessage = (() => {
+    if (error instanceof Error) return error.message;
+    if (error && typeof error === "object") {
+      try {
+        const serialized = JSON.stringify(error);
+        if (serialized !== undefined) return serialized.slice(0, 2_000);
+      } catch {}
+    }
+    return String(error).slice(0, 2_000);
+  })();
   return {
     code: "workflow-run-failed",
-    message: error instanceof Error ? error.message : String(error),
+    message: fallbackMessage,
     kind: "terminal",
     evidenceRevisionIds: [],
   };
@@ -696,10 +740,9 @@ const nodeForStage = (
 export class PostConceptGraphDriver {
   private readonly workflow;
   private readonly m2Workflow;
-  private readonly assetOrder = new Map<string, string[]>();
   private readonly activeRuns = new Map<
     string,
-    { workflowRunId: string; run: PostConceptRun; forEachIndex?: number }
+    { workflowRunId: string; run: PostConceptRun }
   >();
   private readonly inFlight = new Map<string, Promise<ProjectSnapshot>>();
 
@@ -710,18 +753,7 @@ export class PostConceptGraphDriver {
       slots?: M2MacroGraphSlots;
     } = {},
   ) {
-    const sourceSlots = options.slots ?? createM2MacroGraphSlots(repository);
-    const slots: M2MacroGraphSlots = {
-      ...sourceSlots,
-      assetPlanning: {
-        ensure: async (input) => {
-          const outcome = await sourceSlots.assetPlanning.ensure(input);
-          if (outcome.status === "ready")
-            this.assetOrder.set(input.projectId, outcome.value.orderedAssetIds);
-          return outcome;
-        },
-      },
-    };
+    const slots = options.slots ?? createM2MacroGraphSlots(repository);
     this.workflow = createPostConceptWorkflow(repository, {
       ...options,
       slots,
@@ -768,11 +800,11 @@ export class PostConceptGraphDriver {
     let active = this.activeRuns.get(projectId);
     let result;
     if (active && active.workflowRunId === state.workflowRunId) {
+      // Mastra 1.59 resumes every suspended foreach iteration when no
+      // forEachIndex is supplied. This keeps concurrent provider polls paired
+      // with their original asset inputs.
       result = await active.run.resume({
         resumeData: { trigger },
-        ...(active.forEachIndex !== undefined
-          ? { forEachIndex: active.forEachIndex }
-          : {}),
       });
     } else {
       const previousWorkflowRunId = state.workflowRunId;
@@ -846,19 +878,7 @@ export class PostConceptGraphDriver {
         },
       });
       this.activeRuns.delete(projectId);
-    } else if (result.status === "suspended") {
-      const assetId =
-        result.suspendPayload &&
-        typeof result.suspendPayload === "object" &&
-        "assetId" in result.suspendPayload &&
-        typeof result.suspendPayload.assetId === "string"
-          ? result.suspendPayload.assetId
-          : undefined;
-      if (assetId && active) {
-        const index = this.assetOrder.get(projectId)?.indexOf(assetId) ?? -1;
-        if (index >= 0) active.forEachIndex = index;
-      }
-    } else {
+    } else if (result.status !== "suspended") {
       this.activeRuns.delete(projectId);
     }
     return this.snapshot(projectId);
