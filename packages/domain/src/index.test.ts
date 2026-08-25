@@ -23,6 +23,7 @@ import {
   assetPlanGraphIssues,
   handlingForPlannedAsset,
   hasMeteredRoutes,
+  projectNeedsBudget,
 } from "./index.js";
 
 const brief =
@@ -807,6 +808,52 @@ describe("AssetPlanningInputSchema", () => {
 });
 
 describe("metered project routing", () => {
+  it("identifies every milestone and route combination that needs a budget", () => {
+    const subscriptionRoutes = {
+      orchestratorProvider: "openai" as const,
+      implementationProvider: "openai" as const,
+      imageProvider: "openai-subscription" as const,
+      soundProvider: "none" as const,
+    };
+
+    expect(
+      projectNeedsBudget({
+        ...subscriptionRoutes,
+        milestone: "m2",
+        mode: "live",
+      }),
+    ).toBe(true);
+    expect(
+      projectNeedsBudget({
+        ...subscriptionRoutes,
+        milestone: "m2",
+        mode: "replay",
+      }),
+    ).toBe(false);
+    expect(
+      projectNeedsBudget({
+        ...subscriptionRoutes,
+        milestone: "m1",
+        mode: "live",
+      }),
+    ).toBe(false);
+    expect(
+      projectNeedsBudget({
+        ...subscriptionRoutes,
+        milestone: "m1",
+        mode: "live",
+        imageProvider: "openai-gpt-image-2",
+      }),
+    ).toBe(true);
+    expect(
+      projectNeedsBudget({
+        ...subscriptionRoutes,
+        milestone: "m0",
+        mode: "replay",
+      }),
+    ).toBe(true);
+  });
+
   it("allows M1 subscription and replay projects to omit budgetUsd", () => {
     const subscription = CreateProjectInputSchema.parse({
       milestone: "m1",

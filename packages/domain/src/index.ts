@@ -40,6 +40,10 @@ export type ProjectRouting = {
   soundProvider: SoundProvider;
 };
 
+export type ProjectBudgetRouting = ProjectRouting & {
+  milestone: Milestone;
+};
+
 export const isMeteredExecutionProvider = (
   provider: ExecutionProvider,
 ): boolean => provider === "openai-api";
@@ -61,6 +65,11 @@ export const hasMeteredRoutes = (routing: ProjectRouting): boolean =>
     isMeteredExecutionProvider(routing.implementationProvider) ||
     isMeteredImageProvider(routing.imageProvider) ||
     isMeteredSoundProvider(routing.soundProvider));
+
+export const projectNeedsBudget = (project: ProjectBudgetRouting): boolean =>
+  project.milestone === "m0" ||
+  (project.milestone === "m2" && project.mode === "live") ||
+  hasMeteredRoutes(project);
 
 export const SOUND_PROMPT_MAX = 450;
 
@@ -1859,11 +1868,7 @@ export const CreateProjectInputSchema = z
         message: "M2 skips sound production; soundProvider must be none.",
       });
     }
-    const needsBudget =
-      value.milestone === "m0" ||
-      (value.milestone === "m2" && value.mode === "live") ||
-      hasMeteredRoutes(value);
-    if (needsBudget && value.budgetUsd === undefined) {
+    if (projectNeedsBudget(value) && value.budgetUsd === undefined) {
       context.addIssue({
         code: "custom",
         path: ["budgetUsd"],

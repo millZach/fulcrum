@@ -67,6 +67,7 @@ import {
   showsMeteredBudget,
   slotRevisionViews,
   soundRouteLabel,
+  studioCreateProjectInput,
   suggestedNextBudgetUsd,
   voxelPaletteFromTokens,
   voxelWorldView,
@@ -668,13 +669,12 @@ export function M1Studio({ milestone = "m1" }: { milestone?: "m1" | "m2" }) {
             ? soundProvider
             : ("none" as const),
     };
-    const input: CreateProjectInput = {
+    const input: CreateProjectInput = studioCreateProjectInput({
       milestone,
-      brief: brief.trim(),
+      brief,
+      budgetUsd,
       ...routing,
-      ...(showsMeteredBudget(routing) ? { budgetUsd } : {}),
-      rightsConfirmed: true,
-    };
+    });
     await mutate("create", () =>
       milestone === "m2"
         ? m1.createM2Project(input)
@@ -1615,7 +1615,7 @@ function HomeScreen({
           ? soundProvider
           : ("none" as const),
   };
-  const showBudget = showsMeteredBudget(routing);
+  const showBudget = showsMeteredBudget({ milestone, ...routing });
 
   return (
     <section className="vx-start">

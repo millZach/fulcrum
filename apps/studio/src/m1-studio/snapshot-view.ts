@@ -1,10 +1,12 @@
 import {
-  hasMeteredRoutes,
+  projectNeedsBudget,
   type ConceptSlot,
+  type CreateProjectInput,
   type InterrogationQuestion,
   type InterrogationRound,
   type M1ConceptDocument,
   type M1InFlightAction,
+  type ProjectBudgetRouting,
   type ProjectRouting,
   type ProjectSnapshot,
   type ProviderMode,
@@ -471,8 +473,22 @@ export const soundRouteLabel = (routing: {
     : "None · deterministic WAV";
 };
 
-export const showsMeteredBudget = (routing: ProjectRouting): boolean =>
-  hasMeteredRoutes(routing);
+export const showsMeteredBudget = (routing: ProjectBudgetRouting): boolean =>
+  routing.mode === "live" && projectNeedsBudget(routing);
+
+export const studioCreateProjectInput = ({
+  brief,
+  budgetUsd,
+  ...routing
+}: ProjectBudgetRouting & {
+  brief: string;
+  budgetUsd: number;
+}): CreateProjectInput => ({
+  ...routing,
+  brief: brief.trim(),
+  ...(showsMeteredBudget(routing) ? { budgetUsd } : {}),
+  rightsConfirmed: true,
+});
 
 export const suggestedNextBudgetUsd = (budgetUsd: number): number =>
   Math.round((budgetUsd + 1) * 100) / 100;

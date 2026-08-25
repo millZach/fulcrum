@@ -25,6 +25,7 @@ import {
   showsMeteredBudget,
   slotRevisionViews,
   soundRouteLabel,
+  studioCreateProjectInput,
   suggestedNextBudgetUsd,
   voxelPaletteFromTokens,
   voxelWorldView,
@@ -604,6 +605,7 @@ describe("M1 snapshot adapter", () => {
 
   it("describes budget and sound routes from the selected providers", () => {
     expect(showsMeteredBudget(baseState)).toBe(false);
+    expect(showsMeteredBudget({ ...baseState, milestone: "m0" })).toBe(false);
     expect(routingCostNote(baseState)).toBe(
       "Replay and local generators use no metered services.",
     );
@@ -613,6 +615,7 @@ describe("M1 snapshot adapter", () => {
       imageProvider: "openai-subscription" as const,
     };
     expect(showsMeteredBudget(subscription)).toBe(false);
+    expect(showsMeteredBudget({ ...subscription, milestone: "m2" })).toBe(true);
     expect(routingCostNote(subscription)).toBe(
       "Runs on your OpenAI subscription · no metered spend.",
     );
@@ -627,6 +630,34 @@ describe("M1 snapshot adapter", () => {
     expect(
       soundRouteLabel({ ...subscription, soundProvider: "elevenlabs" }),
     ).toBe("ElevenLabs · text-to-sound");
+  });
+
+  it("includes the required budget in a live M2 create payload", () => {
+    const brief =
+      "Create a compact lunar greenhouse stealth game with one readable escape route.";
+    const input = {
+      milestone: "m2" as const,
+      brief: `  ${brief}  `,
+      mode: "live" as const,
+      orchestratorProvider: "openai" as const,
+      implementationProvider: "openai" as const,
+      imageProvider: "openai-subscription" as const,
+      soundProvider: "none" as const,
+      budgetUsd: 2.5,
+    };
+
+    expect(showsMeteredBudget(input)).toBe(true);
+    expect(studioCreateProjectInput(input)).toEqual({
+      milestone: "m2",
+      brief,
+      mode: "live",
+      orchestratorProvider: "openai",
+      implementationProvider: "openai",
+      imageProvider: "openai-subscription",
+      soundProvider: "none",
+      budgetUsd: 2.5,
+      rightsConfirmed: true,
+    });
   });
 
   it("suggests a one-dollar raise and maps bible palettes onto voxel tints", () => {
