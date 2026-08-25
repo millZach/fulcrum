@@ -494,7 +494,8 @@ export const createM2MacroGraphSlots = (
             const validated =
               strategy.kind === "accept-best" &&
               best.qualityVector.hardGateFailures === 0 &&
-              best.qualityVector.criticalFindings === 0;
+              best.qualityVector.criticalFindings === 0 &&
+              best.qualityVector.semanticVerdict === "pass";
             return {
               status: "ready" as const,
               value: {

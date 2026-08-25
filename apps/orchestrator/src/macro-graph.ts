@@ -13,6 +13,7 @@ import {
   MultiviewNodeOutputSchema,
   RegenerationNodeOutputSchema,
   TurntableEvaluationNodeOutputSchema,
+  WorkflowFailureSchema,
   ProjectSnapshotSchema,
   type MacroPhase,
   type WorkflowFailure,
@@ -623,7 +624,15 @@ type PostConceptRun = Awaited<
   ReturnType<ReturnType<typeof createPostConceptWorkflow>["createRun"]>
 >;
 
-const failureFromUnknown = (error: unknown): WorkflowFailure => {
+export const failureFromUnknown = (error: unknown): WorkflowFailure => {
+  const parseFailure = (candidate: unknown): WorkflowFailure | undefined => {
+    try {
+      const result = WorkflowFailureSchema.safeParse(candidate);
+      return result.success ? result.data : undefined;
+    } catch {
+      return undefined;
+    }
+  };
   const candidates: unknown[] = [error];
   const seen = new Set<unknown>();
   while (candidates.length > 0) {
@@ -636,21 +645,18 @@ const failureFromUnknown = (error: unknown): WorkflowFailure => {
       const index = candidate.indexOf(marker);
       if (index >= 0) {
         try {
-          return JSON.parse(
-            candidate.slice(index + marker.length),
-          ) as WorkflowFailure;
+          const parsed = parseFailure(
+            JSON.parse(candidate.slice(index + marker.length)),
+          );
+          if (parsed) return parsed;
         } catch {}
       }
       continue;
     }
     if (candidate && typeof candidate === "object") {
       const record = candidate as Record<string, unknown>;
-      if (
-        typeof record.code === "string" &&
-        typeof record.message === "string" &&
-        typeof record.kind === "string"
-      )
-        return record as WorkflowFailure;
+      const parsed = parseFailure(record);
+      if (parsed) return parsed;
       candidates.push(
         record.failure,
         record.error,

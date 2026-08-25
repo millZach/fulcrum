@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import type { AssetBatchEntry } from "@fulcrum/domain";
 
+import { fetchArtifactJson } from "../api.js";
 import {
   createMultiviewViewLoader,
   multiviewLoading,
@@ -10,12 +11,7 @@ import {
   type MultiviewReady,
 } from "./multiview-view.js";
 
-const loadMultiview = createMultiviewViewLoader(async (uri) => {
-  const response = await fetch(uri);
-  if (!response.ok)
-    throw new Error(`Artifact request failed with ${response.status}.`);
-  return await response.json();
-});
+const loadMultiview = createMultiviewViewLoader(fetchArtifactJson);
 
 type ExpandedState =
   MultiviewLoading | MultiviewReady | { kind: "error"; message: string };

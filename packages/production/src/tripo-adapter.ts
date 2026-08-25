@@ -30,7 +30,7 @@ export const tripoMultiviewCapability = (
   TRIPO_MULTIVIEW_MODELS.has(modelVersion)
     ? {
         supported: true,
-        minViews: 2,
+        minViews: 4,
         maxViews: 4,
         primaryRole: "front",
         roles: CARDINAL_VIEW_ROLES,

@@ -153,6 +153,22 @@ export const visionRequestDigest = (input: VisionRequestDescriptor): string => {
   );
 };
 
+export const visionRequestScopeHash = (
+  input: VisionRequestDescriptor,
+): string => {
+  const descriptor = VisionRequestDescriptorSchema.parse(input);
+  return sha256(
+    JSON.stringify({
+      intendedUse: descriptor.intendedUse,
+      requiredFeatures: descriptor.requiredFeatures,
+      prohibitedFeatures: descriptor.prohibitedFeatures,
+      referenceArtifactHashes: descriptor.referenceArtifacts.map(
+        (artifact) => artifact.sha256,
+      ),
+    }),
+  );
+};
+
 const findingCategory = (
   criterionId: VisionFindingDraft["criterionId"],
 ): EvaluationFinding["category"] => {

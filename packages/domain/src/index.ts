@@ -907,21 +907,22 @@ export const EvaluationFindingSchema = z
     suggestedAction: z.string().min(1).max(1_000).optional(),
   })
   .superRefine((finding, context) => {
-    const canonicalArtifactIds = [
-      ...new Set(finding.evidence.map((item) => item.artifactId)),
-    ];
+    const citedArtifactIds = new Set(
+      finding.evidence.map((item) => item.artifactId),
+    );
+    const listedArtifactIds = new Set(finding.evidenceArtifactIds);
     if (
-      canonicalArtifactIds.length !== finding.evidenceArtifactIds.length ||
-      canonicalArtifactIds.some(
-        (artifactId, index) =>
-          finding.evidenceArtifactIds[index] !== artifactId,
+      listedArtifactIds.size !== finding.evidenceArtifactIds.length ||
+      listedArtifactIds.size !== citedArtifactIds.size ||
+      [...listedArtifactIds].some(
+        (artifactId) => !citedArtifactIds.has(artifactId),
       )
     ) {
       context.addIssue({
         code: "custom",
         path: ["evidenceArtifactIds"],
         message:
-          "Evidence artifact IDs must be the unique IDs in evidence order.",
+          "Evidence artifact IDs must be the unique cited evidence artifact IDs.",
       });
     }
 
@@ -1538,6 +1539,18 @@ export const AssetPlanningInputSchema = z
       .optional(),
   })
   .superRefine((input, context) => {
+    for (const [field, binding] of [
+      ["gameDesignSpec", input.gameDesignSpec],
+      ["conceptSet", input.conceptSet],
+    ] as const) {
+      if (binding.approval.projectId !== input.projectId) {
+        context.addIssue({
+          code: "custom",
+          path: [field, "approval", "projectId"],
+          message: "Approval belongs to a different project.",
+        });
+      }
+    }
     if (input.gameDesignSpec.approval.targetType !== "game-design") {
       context.addIssue({
         code: "custom",
@@ -1554,6 +1567,13 @@ export const AssetPlanningInputSchema = z
     }
     if (input.replan) {
       const { previousPlan, decision } = input.replan;
+      if (decision.projectId !== input.projectId) {
+        context.addIssue({
+          code: "custom",
+          path: ["replan", "decision", "projectId"],
+          message: "Replan decision belongs to a different project.",
+        });
+      }
       if (
         decision.targetType !== "asset-plan" ||
         decision.decision !== "changes-requested" ||

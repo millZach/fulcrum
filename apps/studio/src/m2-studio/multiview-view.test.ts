@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type {
-  AssetBatchEntry,
-  ConceptViewDocument,
-  ConceptViewRole,
-  MultiviewConceptSet,
+import {
+  ConceptViewDocumentSchema,
+  MultiviewConceptSetSchema,
+  type AssetBatchEntry,
+  type ConceptViewRole,
 } from "@fulcrum/domain";
 
 import {
@@ -22,7 +22,7 @@ const revision = (
   kind: "multiview-fixture",
   artifact: {
     artifactId: `artifact:${revisionId}`,
-    sha256: revisionId[0]!.repeat(64),
+    sha256: "a".repeat(64),
     mediaType: "application/json",
     byteLength: 12,
     uri,
@@ -33,13 +33,29 @@ const revision = (
 
 const multiviewRef = revision("multiview-r1", "/set.json");
 const roles: ConceptViewRole[] = ["right", "back", "front", "left"];
+const roleHashes: Record<ConceptViewRole, string> = {
+  front: "f".repeat(64),
+  left: "d".repeat(64),
+  back: "b".repeat(64),
+  right: "c".repeat(64),
+};
+const guidanceFor = (role: ConceptViewRole) => ({
+  role,
+  azimuthDegrees: { front: 0, left: 90, back: 180, right: 270 }[role],
+  elevationDegrees: 0,
+  projection: "orthographic",
+  framing: "full-subject-centered",
+  background: "neutral-studio",
+});
 const viewRefs = Object.fromEntries(
   roles.map((role) => [role, revision(`${role}-r1`, `/${role}.json`)]),
 ) as Record<ConceptViewRole, ReturnType<typeof revision>>;
 
-const set = {
+const set = MultiviewConceptSetSchema.parse({
   multiviewConceptSetId: "hero:views",
   assetId: "hero",
+  sourceAssetPlanRevisionId: "asset-plan-r1",
+  sourceConceptSetRevisionId: "concept-set-r1",
   anchorConcept: {
     revision: revision("concept-r1"),
     image: {
@@ -52,27 +68,53 @@ const set = {
   },
   views: roles.map((role) => ({
     role,
-    guidance: { role },
+    guidance: guidanceFor(role),
     revision: viewRefs[role],
     image: {
       artifactId: `${role}-image`,
-      sha256: role[0]!.repeat(64),
+      sha256: roleHashes[role],
       mediaType: "image/png",
       byteLength: 20,
       uri: `/api/artifacts/${role}-image`,
     },
   })),
-} as MultiviewConceptSet;
+  sourceRevisionIds: ["asset-plan-r1", "concept-set-r1", "concept-r1"],
+});
 
 const documentFor = (role: ConceptViewRole) =>
-  ({
+  ConceptViewDocumentSchema.parse({
     conceptViewId: `hero:${role}`,
     assetId: "hero",
-    guidance: { role },
+    guidance: guidanceFor(role),
+    attempt: 0,
     prompt: `Exact ${role} identity-preserving prompt`,
-    promptHash: role[0]!.repeat(64),
+    promptHash: roleHashes[role],
     image: set.views.find((view) => view.role === role)!.image,
-  }) as ConceptViewDocument;
+    provider: "fulcrum-replay",
+    model: "fixture-view-v1",
+    costUsd: 0,
+    sourceConceptRevisionId: "concept-r1",
+    sourceRevisionIds: ["asset-plan-r1", "concept-set-r1", "concept-r1"],
+    ancestors: [
+      {
+        revisionId: "asset-plan-r1",
+        sha256: "1".repeat(64),
+        kind: "asset-plan",
+      },
+      {
+        revisionId: "concept-set-r1",
+        sha256: "2".repeat(64),
+        kind: "concept-set",
+      },
+      {
+        revisionId: "concept-r1",
+        sha256: "3".repeat(64),
+        kind: "concept-document",
+      },
+    ],
+    referenceArtifactHashes: ["a".repeat(64)],
+    operation: "identity-preserving-concept-view",
+  });
 
 const entry = (withSet = true): AssetBatchEntry =>
   ({
@@ -131,5 +173,28 @@ describe("multiview concept disclosure", () => {
     });
     expect(first).not.toHaveProperty("approval");
     expect(first).not.toHaveProperty("actions");
+  });
+
+  it("rejects a malformed multiview-set artifact with a readable boundary error", async () => {
+    const load = createMultiviewViewLoader(async () => ({
+      views: "not-an-array",
+    }));
+
+    await expect(load(multiviewRef)).rejects.toThrow(
+      "Multiview concept set artifact at /set.json is invalid.",
+    );
+  });
+
+  it("rejects a malformed view-document artifact with a readable boundary error", async () => {
+    const load = createMultiviewViewLoader(async (uri) => {
+      if (uri === "/set.json") return set;
+      if (uri === "/right.json") return { prompt: 42 };
+      const role = uri.slice(1, -5) as ConceptViewRole;
+      return documentFor(role);
+    });
+
+    await expect(load(multiviewRef)).rejects.toThrow(
+      "Concept view artifact at /right.json is invalid.",
+    );
   });
 });

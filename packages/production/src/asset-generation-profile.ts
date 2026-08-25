@@ -23,6 +23,7 @@ const REPLAY_MODEL_PROFILES = {
 export type AssetGenerationProfile = {
   modelVersion: string;
   multiviewImageInput: MultiviewImageInputCapability;
+  promptInput: { supported: boolean };
 };
 
 export const resolveAssetGenerationProfile = (
@@ -37,6 +38,7 @@ export const resolveAssetGenerationProfile = (
         : (process.env.FULCRUM_TRIPO_MODEL_VERSION ?? "unconfigured");
   return {
     modelVersion,
+    promptInput: { supported: false },
     multiviewImageInput:
       provider === "meshy"
         ? meshyMultiviewCapability(modelVersion)

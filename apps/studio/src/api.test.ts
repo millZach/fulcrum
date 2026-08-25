@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { api, ApiError, isApiError } from "./api.js";
+import { api, ApiError, fetchArtifactJson, isApiError } from "./api.js";
 import {
   answerFrontier,
   approveConceptSet,
@@ -29,6 +29,32 @@ import type { ProjectSnapshot } from "@fulcrum/domain";
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Studio API client", () => {
+  it("loads artifact JSON through the transport module", async () => {
+    const artifact = { prompt: "Exact identity-preserving prompt" };
+    const fetchMock = vi.fn(async () => Response.json(artifact));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchArtifactJson("/api/artifacts/view-1")).resolves.toEqual(
+      artifact,
+    );
+    expect(fetchMock).toHaveBeenCalledWith("/api/artifacts/view-1");
+  });
+
+  it("preserves the artifact request error shown by the strip", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(null, { status: 404 })),
+    );
+
+    await expect(fetchArtifactJson("/api/artifacts/missing")).rejects.toEqual(
+      expect.objectContaining({
+        name: "ApiError",
+        message: "Artifact request failed with 404.",
+        status: 404,
+      }),
+    );
+  });
+
   it("does not advertise a JSON body for an empty POST", async () => {
     const fetchMock = vi.fn(async (_path: string, options?: RequestInit) => {
       expect(new Headers(options?.headers).has("Content-Type")).toBe(false);

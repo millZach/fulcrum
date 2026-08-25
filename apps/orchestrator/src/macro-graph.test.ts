@@ -1355,7 +1355,77 @@ describe("M2 macro slot contracts", () => {
     reconstructed.close();
   });
 
-  it("regressed_attempt_remains_current_but_not_best", async () => {
+  it("accept_best_strategy_does_not_validate_a_revise_verdict", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const fixture = m2Fixture(repository);
+    const quality = new AssetQuality(repository);
+    const slots = createM2MacroGraphSlots(
+      repository,
+      {
+        plan: async () => ({
+          status: "ready",
+          requestId: "fixture-plan",
+          value: fixture.assetPlan,
+        }),
+      },
+      {
+        assetQuality: {
+          inspect: quality.inspect.bind(quality),
+          ensureSemantic: quality.ensureSemantic.bind(quality),
+          selectRegeneration: async (input) => {
+            const selected = await quality.selectRegeneration(input);
+            return {
+              ...selected,
+              decision: {
+                ...selected.decision,
+                strategy: {
+                  kind: "accept-best" as const,
+                  rationale: "Forced accept-best fixture.",
+                  reasonFindingIds: [],
+                  assetRevisionId: input.currentAttempt.asset.revisionId,
+                },
+              },
+            };
+          },
+        },
+      },
+    );
+    repository.saveProject({
+      ...repository.getProject(fixture.projectId),
+      assetPlan: fixture.assetPlan,
+    });
+    approveFixturePlan(repository, fixture);
+    const multiview = await slots.multiviewConcepts.ensure({
+      projectId: fixture.projectId,
+      assetPlan: fixture.assetPlan,
+      assetId: "hero",
+    });
+    if (multiview.status !== "ready")
+      throw new Error("Replay fixture multiview set was not ready.");
+    const produced = await slots.assetProduction.ensure(multiview.value);
+    if (produced.status !== "ready")
+      throw new Error("Replay fixture asset was not ready.");
+    const inspected = await slots.deterministicQa.ensure(produced.value);
+    if (inspected.status !== "ready")
+      throw new Error("Replay fixture inspection was not ready.");
+    const evaluated = await slots.turntableEvaluation.ensure(inspected.value);
+    if (evaluated.status !== "ready")
+      throw new Error("Replay fixture semantic QA was not ready.");
+
+    const outcome = await slots.regeneration.ensure(evaluated.value);
+
+    expect(outcome).toMatchObject({
+      status: "ready",
+      value: {
+        attemptCount: 1,
+        disposition: "user-action-required",
+        validated: false,
+      },
+    });
+    repository.close();
+  });
+
+  it("semantically_rejected_best_attempt_is_not_validated", async () => {
     const repository = new ProjectRepository(temporaryRoot());
     const fixture = m2Fixture(repository);
     const replayVisionCatalog = {
@@ -1414,25 +1484,51 @@ describe("M2 macro slot contracts", () => {
       },
       { assetQuality: quality },
     );
-    const driver = new PostConceptGraphDriver(repository, { slots });
-    await driver.advance(fixture.projectId);
+    repository.saveProject({
+      ...repository.getProject(fixture.projectId),
+      assetPlan: fixture.assetPlan,
+    });
     approveFixturePlan(repository, fixture);
+    const multiview = await slots.multiviewConcepts.ensure({
+      projectId: fixture.projectId,
+      assetPlan: fixture.assetPlan,
+      assetId: "hero",
+    });
+    if (multiview.status !== "ready")
+      throw new Error("Replay fixture multiview set was not ready.");
+    const produced = await slots.assetProduction.ensure(multiview.value);
+    if (produced.status !== "ready")
+      throw new Error("Replay fixture asset was not ready.");
+    const inspected = await slots.deterministicQa.ensure(produced.value);
+    if (inspected.status !== "ready")
+      throw new Error("Replay fixture inspection was not ready.");
+    const evaluated = await slots.turntableEvaluation.ensure(inspected.value);
+    if (evaluated.status !== "ready")
+      throw new Error("Replay fixture semantic QA was not ready.");
 
-    const completed = await driver.advance(
-      fixture.projectId,
-      "approval-recorded",
+    const outcome = await slots.regeneration.ensure(evaluated.value);
+    if (outcome.status !== "ready")
+      throw new Error(
+        `Replay fixture regeneration was not ready: ${JSON.stringify(outcome)}`,
+      );
+    const selection = outcome.value;
+
+    expect(selection).toMatchObject({ attemptCount: 2, validated: false });
+    expect(selection.candidateAsset.revisionId).not.toBe(
+      selection.bestAsset.revisionId,
     );
-    const selection = completed.state.assetBatch?.hero;
-
-    expect(completed.state.stage).toBe("complete");
-    expect(selection).toMatchObject({ attemptCount: 3, validated: true });
-    expect(selection?.current.revisionId).not.toBe(selection?.best.revisionId);
     expect(
       repository
         .listEvents(fixture.projectId)
         .filter(({ type }) => type === "asset.best-revision-considered")
         .at(-1),
     ).toMatchObject({ payload: { result: "retained" } });
+    expect(
+      repository
+        .listEvents(fixture.projectId)
+        .filter(({ type }) => type === "asset.regeneration-strategy-selected")
+        .map(({ payload }) => payload.strategyKind),
+    ).toEqual(["change-views", "give-up-user"]);
     repository.close();
   });
 });

@@ -270,6 +270,7 @@ describe("Tripo and replay adapter contracts", () => {
     expect(tripoMultiviewCapability("v2.5-20250123")).toEqual(
       expect.objectContaining({
         supported: true,
+        minViews: 4,
         payloadShape: "cardinal-slots",
       }),
     );

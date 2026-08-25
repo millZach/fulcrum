@@ -29,6 +29,7 @@ import {
   VisionEvaluationError,
   materializeVisionReport,
   visionRequestDigest,
+  visionRequestScopeHash,
   type VisionFindings,
   type VisionRequestDescriptor,
 } from "./vision-evaluation.js";
@@ -259,6 +260,20 @@ const semanticRequest = (
   },
 });
 
+describe("visionRequestDigest", () => {
+  it("keeps_content_digest_stable_but_changes_scope_hash_when_required_features_change", () => {
+    const first = descriptor();
+    const second = descriptor({
+      requiredFeatures: ["cyan crystal core", "silver binding rings"],
+    });
+
+    expect(visionRequestDigest(second)).toBe(visionRequestDigest(first));
+    expect(visionRequestScopeHash(second)).not.toBe(
+      visionRequestScopeHash(first),
+    );
+  });
+});
+
 describe("materializeVisionReport", () => {
   it("maps_frame_indices_and_crops_to_real_artifact_ids", () => {
     const request = descriptor();
@@ -430,6 +445,58 @@ describe("ReplayVisionEvaluationPort", () => {
 });
 
 describe("AssetQuality.ensureSemantic", () => {
+  it("starts_a_fresh_replay_evaluation_when_request_scope_changes", async () => {
+    const fixture = await openSemanticProject(
+      {
+        async generateStructuredVision() {
+          throw new Error("Replay evaluation must not call live execution.");
+        },
+      },
+      "replay",
+    );
+    const firstRequest = {
+      ...semanticRequest(fixture),
+      mode: "replay" as const,
+    };
+    const secondRequest = {
+      ...firstRequest,
+      context: {
+        ...firstRequest.context,
+        requiredFeatures: ["cyan crystal core", "silver binding rings"],
+      },
+    };
+
+    const first = await fixture.quality.ensureSemantic(firstRequest);
+    const second = await fixture.quality.ensureSemantic(secondRequest);
+
+    expect(first).toMatchObject({ status: "ready" });
+    expect(second).toMatchObject({ status: "ready" });
+    if (first.status === "ready" && second.status === "ready") {
+      expect(second.value.report.requestDigest).toBe(
+        first.value.report.requestDigest,
+      );
+      expect(second.value.revision.revisionId).not.toBe(
+        first.value.revision.revisionId,
+      );
+    }
+    const semanticEvents = fixture.repository
+      .listEvents(fixture.projectId)
+      .filter(({ type }) => type.startsWith("asset.semantic-evaluation-"));
+    const submissions = semanticEvents.filter(
+      ({ type }) => type === "asset.semantic-evaluation-submitted",
+    );
+    expect(submissions).toHaveLength(2);
+    expect(
+      new Set(submissions.map(({ payload }) => payload.requestId)).size,
+    ).toBe(2);
+    expect(
+      semanticEvents.filter(
+        ({ type }) => type === "asset.semantic-evaluation-completed",
+      ),
+    ).toHaveLength(2);
+    fixture.repository.close();
+  });
+
   it("keeps_concurrent_replay_submissions_asset_scoped_for_identical_content", async () => {
     const fixture = await openSemanticProject(
       {
@@ -476,17 +543,17 @@ describe("AssetQuality.ensureSemantic", () => {
       deterministicReport: secondInspected.deterministicReport,
       turntable: secondInspected.turntable,
     };
-    const requestDigest = (
+    const requestDescriptor = (
       asset: RevisionRef,
       turntable: RevisionRef,
-    ): string => {
+    ): VisionRequestDescriptor => {
       const document = AssetDocumentSchema.parse(
         fixture.repository.resolveRevision(asset),
       );
       const manifest = TurntableManifestSchema.parse(
         fixture.repository.resolveRevision(turntable),
       );
-      return visionRequestDigest({
+      return {
         assetRevisionId: asset.revisionId,
         assetSha256: document.glb.sha256,
         policySha256: fixture.policy.artifact.sha256,
@@ -497,12 +564,20 @@ describe("AssetQuality.ensureSemantic", () => {
         referenceArtifacts: firstRequest.context.referenceArtifacts,
         frames: manifest.frames,
         rubric: ASSET_VISION_RUBRIC_V1,
-      });
+      };
     };
-    const firstDigest = requestDigest(fixture.asset, fixture.turntable);
-    const secondDigest = requestDigest(secondAsset, secondInspected.turntable);
+    const firstDescriptor = requestDescriptor(fixture.asset, fixture.turntable);
+    const secondDescriptor = requestDescriptor(
+      secondAsset,
+      secondInspected.turntable,
+    );
+    const firstDigest = visionRequestDigest(firstDescriptor);
+    const secondDigest = visionRequestDigest(secondDescriptor);
+    const firstScopeHash = visionRequestScopeHash(firstDescriptor);
+    const secondScopeHash = visionRequestScopeHash(secondDescriptor);
 
     expect(secondDigest).toBe(firstDigest);
+    expect(secondScopeHash).toBe(firstScopeHash);
     const [first, second] = await Promise.all([
       fixture.quality.ensureSemantic(firstRequest),
       fixture.quality.ensureSemantic(secondRequest),
@@ -514,8 +589,8 @@ describe("AssetQuality.ensureSemantic", () => {
       expect(first.value.report.assetId).toBe(firstAsset.assetId);
       expect(second.value.report.assetId).toBe(secondAssetId);
     }
-    const firstKey = `asset-semantic:${fixture.projectId}:${firstAsset.assetId}:replay:${firstDigest}`;
-    const secondKey = `asset-semantic:${fixture.projectId}:${secondAssetId}:replay:${secondDigest}`;
+    const firstKey = `asset-semantic:${fixture.projectId}:${firstAsset.assetId}:replay:${firstDigest}:${firstScopeHash}`;
+    const secondKey = `asset-semantic:${fixture.projectId}:${secondAssetId}:replay:${secondDigest}:${secondScopeHash}`;
     expect(secondKey).not.toBe(firstKey);
     const firstSubmission = fixture.repository.getSubmissionByKey(firstKey);
     const secondSubmission = fixture.repository.getSubmissionByKey(secondKey);

@@ -1,9 +1,9 @@
-import type {
-  AssetBatchEntry,
-  ConceptViewDocument,
-  ConceptViewRole,
-  MultiviewConceptSet,
-  RevisionRef,
+import {
+  ConceptViewDocumentSchema,
+  MultiviewConceptSetSchema,
+  type AssetBatchEntry,
+  type ConceptViewRole,
+  type RevisionRef,
 } from "@fulcrum/domain";
 
 const ROLE_ORDER: readonly ConceptViewRole[] = [
@@ -66,14 +66,27 @@ const materializeMultiview = async (
   revision: RevisionRef,
   fetchJson: FetchJson,
 ): Promise<MultiviewReady> => {
-  const set = (await fetchJson(revision.artifact.uri)) as MultiviewConceptSet;
+  const setResult = MultiviewConceptSetSchema.safeParse(
+    await fetchJson(revision.artifact.uri),
+  );
+  if (!setResult.success)
+    throw new Error(
+      `Multiview concept set artifact at ${revision.artifact.uri} is invalid.`,
+      { cause: setResult.error },
+    );
+  const set = setResult.data;
   const documents = await Promise.all(
-    set.views.map(async (view) => ({
-      view,
-      document: (await fetchJson(
-        view.revision.artifact.uri,
-      )) as ConceptViewDocument,
-    })),
+    set.views.map(async (view) => {
+      const documentResult = ConceptViewDocumentSchema.safeParse(
+        await fetchJson(view.revision.artifact.uri),
+      );
+      if (!documentResult.success)
+        throw new Error(
+          `Concept view artifact at ${view.revision.artifact.uri} is invalid.`,
+          { cause: documentResult.error },
+        );
+      return { view, document: documentResult.data };
+    }),
   );
   const byRole = new Map(documents.map((entry) => [entry.view.role, entry]));
 

@@ -85,6 +85,7 @@ import {
   VisionEvaluationError,
   VisionRequestDescriptorSchema,
   visionRequestDigest,
+  visionRequestScopeHash,
   type ReplayVisionCatalog,
   type VisionRequestDescriptor,
 } from "./vision-evaluation.js";
@@ -431,9 +432,7 @@ export class AssetProduction {
         multiviewSet !== undefined &&
         profile.multiviewImageInput.supported &&
         multiviewSet.views.length >= profile.multiviewImageInput.minViews &&
-        multiviewSet.views.length <= profile.multiviewImageInput.maxViews &&
-        (context.state.assetProvider !== "tripo" ||
-          multiviewSet.views.length === 4);
+        multiviewSet.views.length <= profile.multiviewImageInput.maxViews;
       const orderedViews = multiviewSet
         ? [...multiviewSet.views].sort(
             (left, right) =>
@@ -1544,7 +1543,8 @@ export class AssetQuality {
         rubric: ASSET_VISION_RUBRIC_V1,
       });
     const requestDigest = visionRequestDigest(descriptor);
-    const idempotencyKey = `asset-semantic:${input.projectId}:${asset.assetId}:${input.mode}:${requestDigest}`;
+    const scopeHash = visionRequestScopeHash(descriptor);
+    const idempotencyKey = `asset-semantic:${input.projectId}:${asset.assetId}:${input.mode}:${requestDigest}:${scopeHash}`;
     let submission = this.repository.getSubmissionByKey(idempotencyKey);
     if (submission?.status === "ready") {
       if (!submission.resultRevisionId)
@@ -1787,7 +1787,7 @@ export class AssetQuality {
       });
       const ensured = this.repository.ensureRevision({
         projectId: input.projectId,
-        operationKey: `m2.asset-semantic:${asset.assetId}:${requestDigest}`,
+        operationKey: `m2.asset-semantic:${asset.assetId}:${requestDigest}:${scopeHash}`,
         entityId: `${asset.assetId}:semantic-quality`,
         kind: "asset-semantic-report",
         runId: input.runId,
@@ -1910,10 +1910,10 @@ export class AssetQuality {
     );
     const best = bestRegenerationAttempt(attempts);
     const state = this.repository.getProject(input.projectId);
-    const multiviewCapability = resolveAssetGenerationProfile(
+    const generationProfile = resolveAssetGenerationProfile(
       state.assetProvider,
       state.mode,
-    ).multiviewImageInput;
+    );
     const strategy: RegenerationStrategy = decideRegeneration({
       assetId: input.assetId,
       currentAttempt: input.currentAttempt,
@@ -1927,7 +1927,9 @@ export class AssetQuality {
         .map((gate) => gate.id),
       priorStrategies,
       policy,
-      providerSupportsMultiview: multiviewCapability.supported,
+      providerSupportsMultiview:
+        generationProfile.multiviewImageInput.supported,
+      providerSupportsPromptChanges: generationProfile.promptInput.supported,
       permissibleClassifications: [policy.classification],
     });
     const sourceReportRevisionIds = [

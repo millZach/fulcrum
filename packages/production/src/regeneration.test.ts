@@ -81,6 +81,8 @@ const decide = (overrides: {
   failedGateIds?: string[];
   priorStrategies?: RegenerationStrategy[];
   policy?: AssetPolicy;
+  providerSupportsPromptChanges?: boolean;
+  permissibleClassifications?: AssetPolicy["classification"][];
 }) =>
   decideRegeneration({
     assetId: "asset",
@@ -93,7 +95,12 @@ const decide = (overrides: {
     priorStrategies: overrides.priorStrategies ?? [],
     policy: overrides.policy ?? DEFAULT_ASSET_POLICIES.hero,
     providerSupportsMultiview: true,
-    permissibleClassifications: ["hero", "kit"],
+    providerSupportsPromptChanges:
+      overrides.providerSupportsPromptChanges ?? true,
+    permissibleClassifications: overrides.permissibleClassifications ?? [
+      "hero",
+      "kit",
+    ],
   });
 
 describe("decideRegeneration", () => {
@@ -120,7 +127,10 @@ describe("decideRegeneration", () => {
       suggestedAction: "Restore the cyan crystal and remove gold filigree.",
     });
 
-    const strategy = decide({ currentFindings: [conceptFinding] });
+    const strategy = decide({
+      currentFindings: [conceptFinding],
+      providerSupportsPromptChanges: true,
+    });
 
     expect(strategy).toMatchObject({
       kind: "change-prompt",
@@ -132,6 +142,37 @@ describe("decideRegeneration", () => {
         },
       ],
     });
+  });
+
+  it("unsupported_prompt_changes_fall_through_to_kit_reclassification", () => {
+    const strategy = decide({
+      currentFindings: [
+        finding("concept-fidelity"),
+        finding("classification-fit", {
+          summary: "This repeated piece should use kit handling.",
+        }),
+      ],
+      policy: DEFAULT_ASSET_POLICIES.kit,
+      providerSupportsPromptChanges: false,
+      permissibleClassifications: ["hero", "kit"],
+    });
+
+    expect(strategy).toMatchObject({
+      kind: "reclassify",
+      from: "kit",
+      to: "hero",
+    });
+  });
+
+  it("unsupported_prompt_changes_give_up_for_procedural_assets", () => {
+    const strategy = decide({
+      currentFindings: [finding("concept-fidelity")],
+      policy: DEFAULT_ASSET_POLICIES.procedural,
+      providerSupportsPromptChanges: false,
+      permissibleClassifications: ["procedural"],
+    });
+
+    expect(strategy.kind).toBe("give-up-user");
   });
 
   it("claimed_texture_failure_retries_same_only_once", () => {
@@ -148,7 +189,7 @@ describe("decideRegeneration", () => {
   it("attempt_cap_accepts_viable_best_instead_of_latest", () => {
     const incumbent = attempt(
       0,
-      vector({ minorFindings: 1, semanticVerdict: "revise" }),
+      vector({ minorFindings: 1, semanticVerdict: "pass" }),
       "asset:best",
     );
     const latest = attempt(
@@ -166,6 +207,25 @@ describe("decideRegeneration", () => {
       kind: "accept-best",
       assetRevisionId: "asset:best",
     });
+  });
+
+  it("attempt_cap_gives_up_when_best_candidate_has_revise_verdict", () => {
+    const strategy = decide({
+      currentAttempt: attempt(
+        2,
+        vector({ majorFindings: 1, semanticVerdict: "revise" }),
+        "asset:latest",
+      ),
+      attemptHistory: [
+        attempt(
+          0,
+          vector({ minorFindings: 1, semanticVerdict: "revise" }),
+          "asset:best",
+        ),
+      ],
+    });
+
+    expect(strategy.kind).toBe("give-up-user");
   });
 
   it("attempt_cap_gives_up_when_every_candidate_has_hard_failures", () => {

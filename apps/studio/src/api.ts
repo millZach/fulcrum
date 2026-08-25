@@ -15,6 +15,16 @@ export class ApiError extends Error {
 export const isApiError = (error: unknown): error is ApiError =>
   error instanceof ApiError;
 
+export const fetchArtifactJson = async (uri: string): Promise<unknown> => {
+  const response = await fetch(uri);
+  if (!response.ok)
+    throw new ApiError(
+      `Artifact request failed with ${response.status}.`,
+      response.status,
+    );
+  return response.json();
+};
+
 export const api = async <T>(
   path: string,
   options?: RequestInit,

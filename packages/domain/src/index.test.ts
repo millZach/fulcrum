@@ -4,6 +4,7 @@ import {
   ASSET_CLASS_HANDLING_POLICIES_V1,
   AssetEvaluationSchema,
   AssetDocumentSchema,
+  AssetPlanningInputSchema,
   AssetPolicySchema,
   AssetPlanSchema,
   AssetBatchEntrySchema,
@@ -588,24 +589,29 @@ describe("D3 quality schemas", () => {
     ).toBe(false);
   });
 
-  it("rejects_finding_whose_evidence_ids_do_not_match_evidence", () => {
+  it("accepts_legacy_sorted_evidence_ids_and_rejects_set_mismatches", () => {
     const finding = {
       findingId: "finding-1",
       findingCode: "geometry.rear-silhouette",
       rubricVersion: "asset-turntable-v1",
       category: "geometry",
       summary: "The rear silhouette collapses into one flat mass.",
-      evidenceArtifactIds: ["frame-4", "frame-3"],
+      evidenceArtifactIds: ["a-frame", "m-frame", "z-frame"],
       evidence: [
         {
-          artifactId: "frame-3",
+          artifactId: "z-frame",
           kind: "turntable-frame",
           frameIndex: 3,
         },
         {
-          artifactId: "frame-4",
+          artifactId: "a-frame",
           kind: "turntable-frame",
           frameIndex: 4,
+        },
+        {
+          artifactId: "m-frame",
+          kind: "turntable-frame",
+          frameIndex: 5,
         },
       ],
       severity: "major",
@@ -613,19 +619,47 @@ describe("D3 quality schemas", () => {
       ownerModule: "asset-production",
     };
 
-    expect(EvaluationFindingSchema.safeParse(finding).success).toBe(false);
+    expect(EvaluationFindingSchema.safeParse(finding).success).toBe(true);
     expect(
       EvaluationFindingSchema.safeParse({
         ...finding,
-        evidenceArtifactIds: ["frame-3", "frame-4"],
+        evidenceArtifactIds: ["a-frame", "m-frame", "not-cited", "z-frame"],
+      }).success,
+    ).toBe(false);
+    expect(
+      EvaluationFindingSchema.safeParse({
+        ...finding,
+        evidenceArtifactIds: ["a-frame", "z-frame"],
+      }).success,
+    ).toBe(false);
+    expect(
+      EvaluationFindingSchema.safeParse({
+        ...finding,
+        evidenceArtifactIds: ["a-frame", "m-frame", "z-frame", "z-frame"],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects_non_turntable_evidence_with_frame_coordinates", () => {
+    expect(
+      EvaluationFindingSchema.safeParse({
+        findingId: "finding-1",
+        findingCode: "geometry.rear-silhouette",
+        rubricVersion: "asset-turntable-v1",
+        category: "geometry",
+        summary: "The rear silhouette collapses into one flat mass.",
+        evidenceArtifactIds: ["source-asset"],
         evidence: [
           {
-            artifactId: "frame-3",
+            artifactId: "source-asset",
             kind: "source-asset",
             frameIndex: 3,
             crop: { x: 0, y: 0, width: 0.5, height: 0.5 },
           },
         ],
+        severity: "major",
+        confidence: 0.92,
+        ownerModule: "asset-production",
       }).success,
     ).toBe(false);
   });
@@ -715,6 +749,60 @@ describe("D3 quality schemas", () => {
         brief: "Show the rear structure.",
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("AssetPlanningInputSchema", () => {
+  it("rejects_an_approval_binding_from_another_project", () => {
+    const gameDesign = revision(
+      "game-design",
+      "game-design-revision",
+      "a".repeat(64),
+    );
+    const conceptSet = revision(
+      "concept-set",
+      "concept-set-revision",
+      "b".repeat(64),
+    );
+    const approval = (
+      projectId: string,
+      targetType: "game-design" | "concept-set",
+      target: ReturnType<typeof revision>,
+    ) => ({
+      approvalId: `${targetType}-approval`,
+      projectId,
+      targetType,
+      targetRevisionId: target.revisionId,
+      targetSha256: target.artifact.sha256,
+      decision: "approved" as const,
+      decidedBy: "test",
+      decidedAt: "2026-08-24T12:00:00.000Z",
+    });
+
+    const parsed = AssetPlanningInputSchema.safeParse({
+      projectId: "project-y",
+      runId: "run-1",
+      mode: "replay",
+      orchestratorProvider: "openai",
+      gameDesignSpec: {
+        revision: gameDesign,
+        approval: approval("project-x", "game-design", gameDesign),
+      },
+      conceptSet: {
+        revision: conceptSet,
+        approval: approval("project-y", "concept-set", conceptSet),
+      },
+    });
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success)
+      expect(parsed.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: ["gameDesignSpec", "approval", "projectId"],
+          }),
+        ]),
+      );
   });
 });
 

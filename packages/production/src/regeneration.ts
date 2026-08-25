@@ -73,6 +73,7 @@ export type DecideRegenerationInput = {
   priorStrategies: RegenerationStrategy[];
   policy: AssetPolicy;
   providerSupportsMultiview: boolean;
+  providerSupportsPromptChanges: boolean;
   permissibleClassifications: AssetClassification[];
   failureCode?: string;
 };
@@ -115,7 +116,8 @@ export const decideRegeneration = (
   if (atAttemptCap) {
     const viable =
       best.qualityVector.hardGateFailures === 0 &&
-      best.qualityVector.criticalFindings === 0;
+      best.qualityVector.criticalFindings === 0 &&
+      best.qualityVector.semanticVerdict === "pass";
     return viable
       ? RegenerationStrategySchema.parse({
           kind: "accept-best",
@@ -129,12 +131,12 @@ export const decideRegeneration = (
       : RegenerationStrategySchema.parse({
           kind: "give-up-user",
           rationale:
-            "The attempt cap was reached without a revision that clears hard gates.",
+            "The attempt cap was reached without a revision that passes all required quality checks.",
           reasonFindingIds: input.currentFindings.map(
             (finding) => finding.findingId,
           ),
           message:
-            "Every attempted asset has a hard gate failure or critical finding. User direction is required.",
+            "Every attempted asset has a hard gate failure, critical finding, or rejected semantic verdict. User direction is required.",
         });
   }
 
@@ -178,6 +180,7 @@ export const decideRegeneration = (
     .slice(0, 3);
   if (
     promptFindings.length > 0 &&
+    input.providerSupportsPromptChanges &&
     input.policy.regeneration.allowedStrategies.includes("change-prompt")
   )
     return RegenerationStrategySchema.parse({

@@ -19,7 +19,7 @@ export type MultiviewImageInputCapability =
   | { supported: false; reason: string }
   | {
       supported: true;
-      minViews: 2;
+      minViews: 2 | 4;
       maxViews: 4;
       primaryRole: "front";
       roles: readonly ["front", "left", "back", "right"];
