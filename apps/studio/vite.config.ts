@@ -8,8 +8,7 @@ export default defineConfig({
     port: 4311,
     allowedHosts: [".ts.net"],
     proxy: {
-      "/api":
-        process.env.FULCRUM_ORCHESTRATOR_URL ?? "http://localhost:4310",
+      "/api": process.env.FULCRUM_ORCHESTRATOR_URL ?? "http://localhost:4310",
     },
   },
 });

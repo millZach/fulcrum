@@ -214,7 +214,7 @@ export const materializeVisionReport = (
     });
     const evidenceArtifactIds = [
       ...new Set(evidence.map((item) => item.artifactId)),
-    ].sort();
+    ];
     const findingId = `finding-${sha256(
       JSON.stringify([
         requestDigest,

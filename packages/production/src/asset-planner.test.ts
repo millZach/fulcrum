@@ -341,6 +341,22 @@ const initialReplayPlan = () => {
 };
 
 describe("replay asset-plan derivation and materialization", () => {
+  it("keeps parent lineage in semantic input order instead of UUID order", () => {
+    const { inputs, plan } = initialReplayPlan();
+
+    expect(plan.provenance.parentRevisionIds).toEqual([
+      inputs.gameDesignSpec.revision.revisionId,
+      inputs.conceptSet.revision.revisionId,
+      inputs.conceptSetDocument.slots[0]!.selectedRevisionId,
+    ]);
+    expect(plan.provenance.sourceArtifactHashes).toEqual([
+      inputs.gameDesignSpec.revision.artifact.sha256,
+      inputs.conceptSet.revision.artifact.sha256,
+      inputs.conceptSetDocument.slots[0]!.revisions[0]!.revision.artifact
+        .sha256,
+    ]);
+  });
+
   it("replay_planner_is_deterministic_for_identical_approved_inputs", () => {
     const first = initialReplayPlan().plan;
     const second = initialReplayPlan().plan;

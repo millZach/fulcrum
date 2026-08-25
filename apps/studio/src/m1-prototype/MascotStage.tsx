@@ -43,8 +43,7 @@ const mascotModelUrl = "/m1-prototype/rusty-rover.glb";
 /** R3F's delta comes from its clock, so it includes wall time lost while the
  *  browser throttles animation frames. Keep that time instead of turning a
  *  hidden 12-second interval into one 60 ms frame. */
-export const mascotFrameSeconds = (delta: number): number =>
-  Math.max(delta, 0);
+export const mascotFrameSeconds = (delta: number): number => Math.max(delta, 0);
 
 /* The contract is written in Blender metres; three.js gets (x, y, z) →
    (x, z, -y). Park him at `stand` while Poof and Wave play and at `seat` for

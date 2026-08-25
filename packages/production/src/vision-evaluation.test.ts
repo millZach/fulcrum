@@ -261,30 +261,34 @@ const semanticRequest = (
 
 describe("materializeVisionReport", () => {
   it("maps_frame_indices_and_crops_to_real_artifact_ids", () => {
-    const report = materializeVisionReport(descriptor(), rearFinding());
+    const request = descriptor();
+    request.frames[3]!.artifact = artifact("z-frame-3");
+    request.frames[4]!.artifact = artifact("a-frame-4");
+    request.frames[5]!.artifact = artifact("m-frame-5");
+    const report = materializeVisionReport(request, rearFinding());
 
     expect(report.findings[0]?.evidence).toEqual([
       {
-        artifactId: "frame-3",
+        artifactId: "z-frame-3",
         kind: "turntable-frame",
         frameIndex: 3,
       },
       {
-        artifactId: "frame-4",
+        artifactId: "a-frame-4",
         kind: "turntable-frame",
         frameIndex: 4,
         crop: { x: 0.28, y: 0.2, width: 0.44, height: 0.62 },
       },
       {
-        artifactId: "frame-5",
+        artifactId: "m-frame-5",
         kind: "turntable-frame",
         frameIndex: 5,
       },
     ]);
     expect(report.findings[0]?.evidenceArtifactIds).toEqual([
-      "frame-3",
-      "frame-4",
-      "frame-5",
+      "z-frame-3",
+      "a-frame-4",
+      "m-frame-5",
     ]);
   });
 

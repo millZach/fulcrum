@@ -909,7 +909,7 @@ export const EvaluationFindingSchema = z
   .superRefine((finding, context) => {
     const canonicalArtifactIds = [
       ...new Set(finding.evidence.map((item) => item.artifactId)),
-    ].sort();
+    ];
     if (
       canonicalArtifactIds.length !== finding.evidenceArtifactIds.length ||
       canonicalArtifactIds.some(
@@ -921,7 +921,7 @@ export const EvaluationFindingSchema = z
         code: "custom",
         path: ["evidenceArtifactIds"],
         message:
-          "Evidence artifact IDs must be the sorted unique IDs from evidence.",
+          "Evidence artifact IDs must be the unique IDs in evidence order.",
       });
     }
 

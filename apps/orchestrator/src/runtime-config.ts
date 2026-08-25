@@ -22,10 +22,7 @@ export const loadRuntimeEnvironment = (
 ): { repositoryRoot: string; workspaceRoot: string } => {
   const repositoryRoot = findRepositoryRoot(startDirectory);
   const environmentPath = path.join(repositoryRoot, ".env");
-  if (
-    environment.FULCRUM_SKIP_DOTENV !== "true" &&
-    existsSync(environmentPath)
-  )
+  if (environment.FULCRUM_SKIP_DOTENV !== "true" && existsSync(environmentPath))
     config({ path: environmentPath, processEnv: environment, quiet: true });
   const workspaceRoot = path.resolve(
     repositoryRoot,

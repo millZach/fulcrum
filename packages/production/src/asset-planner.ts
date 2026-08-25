@@ -478,8 +478,8 @@ export const materializeAssetPlan = (
       : {}),
     provenance: {
       revisionId: context.revisionId,
-      parentRevisionIds: [...new Set(parentRevisionIds)].sort(),
-      sourceArtifactHashes: [...new Set(sourceArtifactHashes)].sort(),
+      parentRevisionIds: [...new Set(parentRevisionIds)],
+      sourceArtifactHashes: [...new Set(sourceArtifactHashes)],
       runId: context.runId,
       operation: context.operation,
       ...(context.provider ? { provider: context.provider } : {}),

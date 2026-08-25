@@ -8,6 +8,7 @@ import {
 } from "@fulcrum/creative";
 import {
   M0_FIXTURE_BRIEF,
+  MultiviewConceptSetSchema,
   ProviderPreflightError,
   ProviderUsageError,
   type ProjectSnapshot,
@@ -16,6 +17,7 @@ import { ProjectRepository } from "@fulcrum/project";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ProjectCoordinator } from "./project-coordinator.js";
+import { replayDeterminismRecord } from "./replay-determinism.test-support.js";
 
 const PNG_1x1 = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
@@ -187,6 +189,148 @@ const reachM2ConceptApproval = async (
   return project;
 };
 
+const runM2ReplayAcceptance = async () => {
+  const repository = new ProjectRepository(temporaryRoot());
+  const coordinator = new ProjectCoordinator(repository);
+  let project = keepEveryGeneratedConcept(
+    coordinator,
+    await reachM2ConceptApproval(coordinator),
+  );
+
+  project = await coordinator.approveConceptSet(project.state.projectId, {
+    decision: "approved",
+    targetRevisionId: project.state.conceptSet!.revisionId,
+    targetSha256: project.state.conceptSet!.artifact.sha256,
+  });
+
+  expect(project.state).toMatchObject({
+    stage: "asset-plan-approval",
+    status: "awaiting-approval",
+  });
+  expect(project.state.assetBatch).toBeUndefined();
+  expect(
+    repository
+      .listEvents(project.state.projectId)
+      .filter(({ type }) => type === "asset.completed"),
+  ).toHaveLength(0);
+  expect(
+    project.assetPlan?.assets.map((asset) => asset.classification),
+  ).toEqual(
+    expect.arrayContaining(["hero", "kit", "procedural", "functional"]),
+  );
+
+  project = await coordinator.decideAssetPlan(project.state.projectId, {
+    targetType: "asset-plan",
+    targetRevisionId: project.state.assetPlan!.revisionId,
+    targetSha256: project.state.assetPlan!.artifact.sha256,
+    decision: "approved",
+  });
+
+  expect(project.state.stage).toBe("complete");
+  expect(project.state.assetPlanApproval).toMatchObject({
+    decision: "approved",
+    targetRevisionId: project.state.assetPlan!.revisionId,
+  });
+  expect(Object.keys(project.state.assetBatch ?? {})).toHaveLength(
+    project.assetPlan!.assets.length,
+  );
+  expect(
+    Object.values(project.state.assetBatch ?? {}).every(
+      ({ validated, deterministicReport }) =>
+        validated && deterministicReport !== undefined,
+    ),
+  ).toBe(true);
+
+  for (const asset of project.assetPlan!.assets) {
+    const entry = project.state.assetBatch?.[asset.assetId];
+    const report =
+      project.assetQualityEvidence?.[asset.assetId]?.deterministicReports.at(
+        -1,
+      );
+    expect(entry).toMatchObject({
+      assetId: asset.assetId,
+      classification: asset.classification,
+      validated: true,
+    });
+    expect(report?.measurements).toEqual(
+      expect.objectContaining({
+        mesh: expect.any(Object),
+        material: expect.any(Object),
+        texture: expect.any(Object),
+        topology: expect.any(Object),
+      }),
+    );
+  }
+
+  const heroAssetId = project.assetPlan!.assets.find(
+    ({ classification }) => classification === "hero",
+  )!.assetId;
+  const hero = project.state.assetBatch![heroAssetId]!;
+  const heroEvidence = project.assetQualityEvidence![heroAssetId]!;
+  expect(hero).toMatchObject({
+    attemptCount: 2,
+    validated: true,
+    multiviewConceptSet: expect.any(Object),
+  });
+  expect(hero.best.revisionId).toBe(hero.current.revisionId);
+  expect(heroEvidence.turntables).toHaveLength(2);
+  expect(heroEvidence.semanticReports).toHaveLength(2);
+  expect(heroEvidence.semanticReports[0]?.findings[0]?.evidence).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ frameIndex: 3 }),
+      expect.objectContaining({ frameIndex: 4, crop: expect.any(Object) }),
+      expect.objectContaining({ frameIndex: 5 }),
+    ]),
+  );
+
+  const events = repository.listEvents(project.state.projectId);
+  const strategyEvents = events.filter(
+    ({ type, payload }) =>
+      type === "asset.regeneration-strategy-selected" &&
+      payload.assetId === heroAssetId,
+  );
+  expect(strategyEvents.map(({ payload }) => payload.strategyKind)).toEqual([
+    "change-views",
+    "accept-best",
+  ]);
+  const changeViewsRevision = repository.getRevision(
+    strategyEvents[0]!.payload.decisionRevisionId as string,
+  );
+  expect(repository.resolveRevision(changeViewsRevision)).toMatchObject({
+    strategy: {
+      kind: "change-views",
+      roles: ["back", "left", "right"],
+      operation: "add",
+    },
+  });
+  const bestRevisionEvents = events.filter(
+    ({ type, payload }) =>
+      type === "asset.best-revision-considered" &&
+      payload.assetId === heroAssetId,
+  );
+  expect(bestRevisionEvents.map(({ payload }) => payload.result)).toEqual([
+    "updated",
+    "updated",
+  ]);
+
+  const multiview = MultiviewConceptSetSchema.parse(
+    repository.resolveRevision(hero.multiviewConceptSet!),
+  );
+  expect(multiview.views.map(({ role }) => role)).toEqual([
+    "front",
+    "left",
+    "back",
+    "right",
+  ]);
+  const determinism = replayDeterminismRecord(repository, [
+    project,
+    ...strategyEvents,
+    ...bestRevisionEvents,
+  ]);
+  repository.close();
+  return determinism;
+};
+
 describe("CreativeFrontCoordinator M2 handoff", () => {
   it("m2_concept_approval_enters_asset_planning_without_sound_artifacts", async () => {
     const repository = new ProjectRepository(temporaryRoot());
@@ -274,51 +418,25 @@ describe("CreativeFrontCoordinator M2 handoff", () => {
     repository.close();
   });
 
-  it("m2_advance_routes_to_macro_only_after_concept_approval", async () => {
-    const repository = new ProjectRepository(temporaryRoot());
-    const coordinator = new ProjectCoordinator(repository);
-    let project = keepEveryGeneratedConcept(
-      coordinator,
-      await reachM2ConceptApproval(coordinator),
-    );
+  it("m2_replay_acceptance_is_byte_and_lineage_deterministic", async () => {
+    const first = await runM2ReplayAcceptance();
+    const second = await runM2ReplayAcceptance();
 
-    project = await coordinator.approveConceptSet(project.state.projectId, {
-      decision: "approved",
-      targetRevisionId: project.state.conceptSet!.revisionId,
-      targetSha256: project.state.conceptSet!.artifact.sha256,
-    });
-
-    expect(project.state).toMatchObject({
-      stage: "asset-plan-approval",
-      status: "awaiting-approval",
-    });
     expect(
-      project.assetPlan?.assets.map((asset) => asset.classification),
+      second.rawArtifacts.map(({ mediaType, sha256, byteLength }) => ({
+        mediaType,
+        sha256,
+        byteLength,
+      })),
     ).toEqual(
-      expect.arrayContaining(["hero", "kit", "procedural", "functional"]),
+      first.rawArtifacts.map(({ mediaType, sha256, byteLength }) => ({
+        mediaType,
+        sha256,
+        byteLength,
+      })),
     );
-
-    project = await coordinator.decideAssetPlan(project.state.projectId, {
-      targetType: "asset-plan",
-      targetRevisionId: project.state.assetPlan!.revisionId,
-      targetSha256: project.state.assetPlan!.artifact.sha256,
-      decision: "approved",
-    });
-
-    expect(project.state.stage).toBe("complete");
-    expect(Object.keys(project.state.assetBatch ?? {})).toHaveLength(
-      project.assetPlan!.assets.length,
-    );
-    const heroAssetId = project.assetPlan!.assets.find(
-      ({ classification }) => classification === "hero",
-    )!.assetId;
-    const heroEvidence = project.assetQualityEvidence?.[heroAssetId];
-    expect(heroEvidence?.turntables).toHaveLength(2);
-    expect(heroEvidence?.semanticReports.length).toBeGreaterThanOrEqual(1);
-    expect(
-      heroEvidence?.decisions.map(({ report }) => report.strategy.kind),
-    ).toEqual(["change-views", "accept-best"]);
-    repository.close();
+    expect(second.rawArtifacts).toEqual(first.rawArtifacts);
+    expect(second.canonicalLineage).toBe(first.canonicalLineage);
   });
 });
 

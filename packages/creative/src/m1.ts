@@ -2768,9 +2768,7 @@ export class M1CreativeDevelopment {
         );
         const previewArtifact = this.repository.putArtifact(
           context.projectId,
-          await sharp(
-            Buffer.from(previewSvg(changed, bibleRevision.revisionId)),
-          )
+          await sharp(Buffer.from(previewSvg(changed, JSON.stringify(changed))))
             .png()
             .toBuffer(),
           "image/png",
@@ -2863,7 +2861,7 @@ export class M1CreativeDevelopment {
     );
     const artifact = this.repository.putArtifact(
       context.projectId,
-      await sharp(Buffer.from(previewSvg(bible, bibleRevision.revisionId)))
+      await sharp(Buffer.from(previewSvg(bible, JSON.stringify(bible))))
         .png()
         .toBuffer(),
       "image/png",

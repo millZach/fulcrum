@@ -333,6 +333,36 @@ describe("M1CreativeDevelopment interrogation", () => {
 });
 
 describe("M1CreativeDevelopment visual direction", () => {
+  it("renders identical replay previews for identical intent in fresh projects", async () => {
+    const renderFreshPreviews = async () => {
+      const { repository, creative, context } = createHarness();
+      const intent = await createApprovedIntent(
+        repository,
+        creative,
+        context,
+        CONSTRAINT_BRIEF,
+      );
+      const directionSet = await creative.generateVisualDirections({
+        ...context,
+        gameDesignSpec: intent.gameDesignSpec,
+      });
+      return VisualDirectionSetSchema.parse(
+        repository.resolveRevision(directionSet),
+      ).directions.map(({ preview }) => ({
+        sha256: preview.artifact.sha256,
+        bytes: repository.readArtifact(preview.artifact),
+      }));
+    };
+
+    const first = await renderFreshPreviews();
+    const second = await renderFreshPreviews();
+
+    expect(second.map(({ sha256 }) => sha256)).toEqual(
+      first.map(({ sha256 }) => sha256),
+    );
+    expect(second).toEqual(first);
+  });
+
   it("treats pin ordering, whitespace, and casing as non-material", () => {
     const beforePalette = JSON.stringify([
       { name: "Deep Pine", hex: "#173B36", role: "primary mass" },
