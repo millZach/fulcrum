@@ -10,6 +10,7 @@ import {
   type RevisionRef,
 } from "@fulcrum/domain";
 import {
+  assertStrictCompatibleJsonSchema,
   type ExecutionProviderStatus,
   type StructuredVisionExecution,
   type VisionFrameInput,
@@ -27,10 +28,13 @@ import {
   REPLAY_VISION_CATALOG,
   ReplayVisionEvaluationPort,
   VisionEvaluationError,
+  VisionFindingsWireSchema,
+  mapVisionFindingsWire,
   materializeVisionReport,
   visionRequestDigest,
   visionRequestScopeHash,
   type VisionFindings,
+  type VisionFindingsWire,
   type VisionRequestDescriptor,
 } from "./vision-evaluation.js";
 
@@ -113,6 +117,80 @@ const passingVision = (): VisionFindings => ({
     "classification-fit": 0.95,
   },
   findings: [],
+});
+
+const visionWireFromDomain = (
+  findings: VisionFindings,
+): VisionFindingsWire => ({
+  verdict: findings.verdict,
+  dimensionScores: Object.entries(findings.dimensionScores).map(
+    ([dimension, score]) => ({ dimension, score }),
+  ),
+  findings: findings.findings.map((finding) => ({
+    ...finding,
+    evidence: finding.evidence.map((item) => ({
+      ...item,
+      crop: item.crop ?? null,
+    })),
+    suggestedAction: finding.suggestedAction ?? null,
+  })),
+});
+
+const passingVisionWire = (): VisionFindingsWire =>
+  visionWireFromDomain(passingVision());
+
+describe("vision findings live JSON Schema", () => {
+  it("VisionFindingsWireSchema is OpenAI strict-compatible", () => {
+    expect(() =>
+      assertStrictCompatibleJsonSchema(
+        z.toJSONSchema(VisionFindingsWireSchema),
+      ),
+    ).not.toThrow();
+  });
+});
+
+describe("mapVisionFindingsWire", () => {
+  it("folds dimension entries into the domain record", () => {
+    const domain = rearFinding();
+
+    expect(
+      mapVisionFindingsWire(
+        VisionFindingsWireSchema.parse(visionWireFromDomain(domain)),
+      ),
+    ).toEqual(domain);
+  });
+
+  it("omits null crops and suggested actions from domain findings", () => {
+    const wire = visionWireFromDomain(rearFinding());
+    wire.findings[0]!.suggestedAction = null;
+
+    const mapped = mapVisionFindingsWire(wire);
+
+    expect(mapped.findings[0]).not.toHaveProperty("suggestedAction");
+    expect(mapped.findings[0]?.evidence[0]).not.toHaveProperty("crop");
+    expect(mapped.findings[0]?.evidence[1]).toHaveProperty("crop");
+  });
+
+  it("rejects duplicate dimensions with their wire issue path", () => {
+    const wire = passingVisionWire();
+    wire.dimensionScores.push({
+      ...wire.dimensionScores[0]!,
+      score: 0.1,
+    });
+
+    try {
+      mapVisionFindingsWire(wire);
+      throw new Error("Expected duplicate dimensions to be rejected.");
+    } catch (error) {
+      expect(error).toBeInstanceOf(z.ZodError);
+      expect((error as z.ZodError).issues).toEqual([
+        expect.objectContaining({
+          path: ["dimensionScores", 5, "dimension"],
+          message: "Duplicate vision score dimension: silhouette-readability.",
+        }),
+      ]);
+    }
+  });
 });
 
 const apiOnlyStatuses: ExecutionProviderStatus[] = [
@@ -693,8 +771,9 @@ describe("AssetQuality.ensureSemantic", () => {
         expect(submission?.payload.providerCallStartedAt).toEqual(
           expect.any(String),
         );
+        expect(input.schema).toBe(VisionFindingsWireSchema);
         return {
-          value: passingVision() as T,
+          value: passingVisionWire() as T,
           provider: input.provider,
           model: "vision-fixture-v1",
         };
@@ -785,6 +864,44 @@ describe("AssetQuality.ensureSemantic", () => {
     fixture.repository.close();
   });
 
+  it("routes_duplicate_dimensions_through_submission_unknown", async () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    const duplicate = passingVisionWire();
+    duplicate.dimensionScores.push({
+      ...duplicate.dimensionScores[0]!,
+      score: 0.1,
+    });
+    const fixture = await openSemanticProject({
+      async generateStructuredVision<T>(input: VisionExecutionInput<T>) {
+        return {
+          value: duplicate as T,
+          provider: input.provider,
+          model: "vision-fixture-v1",
+        };
+      },
+    });
+
+    const outcome = await fixture.quality.ensureSemantic(
+      semanticRequest(fixture),
+    );
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "submission-unknown",
+        failureKind: "user-action-required",
+      },
+    });
+    expect(
+      fixture.repository
+        .listEvents(fixture.projectId)
+        .filter(
+          ({ type }) => type === "asset.semantic-evaluation-submission-unknown",
+        ),
+    ).toHaveLength(1);
+    fixture.repository.close();
+  });
+
   it("returns_ready_revision_without_reinvoking_provider", async () => {
     process.env.OPENAI_API_KEY = "test-key";
     const call = vi.fn();
@@ -792,7 +909,7 @@ describe("AssetQuality.ensureSemantic", () => {
       async generateStructuredVision<T>(input: VisionExecutionInput<T>) {
         call(input);
         return {
-          value: passingVision() as T,
+          value: passingVisionWire() as T,
           provider: input.provider,
           model: "vision-fixture-v1",
         };
@@ -820,7 +937,7 @@ describe("AssetQuality.ensureSemantic", () => {
     const fixture = await openSemanticProject({
       async generateStructuredVision<T>(input: VisionExecutionInput<T>) {
         return {
-          value: passingVision() as T,
+          value: passingVisionWire() as T,
           provider: input.provider,
           model: "vision-fixture-v1",
         };

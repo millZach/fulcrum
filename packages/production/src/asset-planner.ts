@@ -155,6 +155,72 @@ export const AssetPlanDraftSchema = z
   });
 export type AssetPlanDraft = z.infer<typeof AssetPlanDraftSchema>;
 
+const AssetPlanDraftProcedureWireSchema = z.object({
+  generatorId: PlannedAssetProcedureSchema.shape.generatorId,
+  parameters: z
+    .array(
+      z.object({
+        name: z.string().min(1),
+        value: z.union([z.string(), z.number(), z.boolean()]),
+      }),
+    )
+    .min(1),
+});
+
+export const AssetPlanDraftAssetWireSchema = z.object({
+  ...AssetPlanDraftAssetSchema.shape,
+  procedure: AssetPlanDraftProcedureWireSchema.nullable(),
+});
+
+export const AssetPlanDraftWireSchema = z.object({
+  assets: z
+    .array(AssetPlanDraftAssetWireSchema)
+    .min(1)
+    .max(ASSET_PLAN_MAX_ASSETS),
+});
+export type AssetPlanDraftWire = z.infer<typeof AssetPlanDraftWireSchema>;
+
+export const mapAssetPlanDraftWire = (
+  draft: AssetPlanDraftWire,
+): AssetPlanDraft => ({
+  assets: draft.assets.map((asset, assetIndex) => {
+    const { procedure, ...assetFields } = asset;
+    if (procedure === null) return assetFields;
+
+    const names = new Set<string>();
+    for (const [parameterIndex, parameter] of procedure.parameters.entries()) {
+      if (names.has(parameter.name)) {
+        throw new z.ZodError([
+          {
+            code: "custom",
+            input: parameter.name,
+            path: [
+              "assets",
+              assetIndex,
+              "procedure",
+              "parameters",
+              parameterIndex,
+              "name",
+            ],
+            message: `Duplicate procedure parameter name: ${parameter.name}.`,
+          },
+        ]);
+      }
+      names.add(parameter.name);
+    }
+
+    return {
+      ...assetFields,
+      procedure: {
+        generatorId: procedure.generatorId,
+        parameters: Object.fromEntries(
+          procedure.parameters.map(({ name, value }) => [name, value]),
+        ),
+      },
+    };
+  }),
+});
+
 export type AssetPlanDerivationInputs = AssetPlanValidationInputs & {
   gameDesignSpecDocument: GameDesignSpec;
   previousPlanDocument?: AssetPlan;
@@ -1196,9 +1262,27 @@ class AssetPlannerImplementation implements AssetPlanning {
               }
             : {}),
         }),
-        schema: AssetPlanDraftSchema,
+        schema: AssetPlanDraftWireSchema,
       });
-      const parsed = AssetPlanDraftSchema.safeParse(generated.value);
+      let mapped: AssetPlanDraft;
+      try {
+        mapped = mapAssetPlanDraftWire(generated.value);
+      } catch (caught) {
+        if (caught instanceof z.ZodError) {
+          return {
+            status: "failed",
+            outcome: this.failOutput(
+              input,
+              submission.requestId,
+              pending.payload,
+              "The orchestrator returned an invalid asset-plan draft.",
+              zodIssues(caught),
+            ),
+          };
+        }
+        throw caught;
+      }
+      const parsed = AssetPlanDraftSchema.safeParse(mapped);
       if (!parsed.success) {
         return {
           status: "failed",

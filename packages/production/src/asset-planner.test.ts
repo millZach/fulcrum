@@ -15,9 +15,16 @@ import {
   type M1ConceptDocument,
   type RevisionRef,
 } from "@fulcrum/domain";
+import { assertStrictCompatibleJsonSchema } from "@fulcrum/execution";
 import { ProjectRepository } from "@fulcrum/project";
+import { z } from "zod";
 
 import {
+  AssetPlanDraftSchema,
+  AssetPlanDraftWireSchema,
+  mapAssetPlanDraftWire,
+  type AssetPlanDraft,
+  type AssetPlanDraftWire,
   type AssetPlanValidationInputs,
   type StructuredModelExecution,
   assetPlanIdempotencyKey,
@@ -27,8 +34,90 @@ import {
   validateAssetPlanAgainstApprovedInputs,
 } from "./asset-planner.js";
 
+describe("asset-plan live JSON Schema", () => {
+  it("AssetPlanDraftWireSchema is OpenAI strict-compatible", () => {
+    expect(() =>
+      assertStrictCompatibleJsonSchema(
+        z.toJSONSchema(AssetPlanDraftWireSchema),
+      ),
+    ).not.toThrow();
+  });
+});
+
 const timestamp = "2026-08-24T12:00:00.000Z";
 const roots: string[] = [];
+
+const proceduralWireDraft = (
+  parameters: NonNullable<
+    AssetPlanDraftWire["assets"][number]["procedure"]
+  >["parameters"] = [
+    { name: "segments", value: 12 },
+    { name: "capped", value: true },
+  ],
+): AssetPlanDraftWire => ({
+  assets: [
+    {
+      assetKey: "arena-columns",
+      name: "Arena Columns",
+      classification: "procedural",
+      rationale: "Repeated columns are generated from one approved profile.",
+      sourceConceptSlotIds: ["gameplay-anchor"],
+      dependsOnAssetKeys: [],
+      procedure: {
+        generatorId: "radial-columns-v1",
+        parameters,
+      },
+      acceptanceCriteria: ["Columns preserve the approved profile."],
+    },
+  ],
+});
+
+describe("mapAssetPlanDraftWire", () => {
+  it("folds wire parameter entries into the domain record", () => {
+    const mapped = mapAssetPlanDraftWire(
+      AssetPlanDraftWireSchema.parse(proceduralWireDraft()),
+    );
+
+    expect(mapped.assets[0]?.procedure).toEqual({
+      generatorId: "radial-columns-v1",
+      parameters: { segments: 12, capped: true },
+    });
+    expect(AssetPlanDraftSchema.parse(mapped)).toEqual(mapped);
+  });
+
+  it("omits a null wire procedure from the domain asset", () => {
+    const wire = proceduralWireDraft();
+    wire.assets[0] = {
+      ...wire.assets[0]!,
+      classification: "hero",
+      procedure: null,
+    };
+
+    expect(mapAssetPlanDraftWire(wire).assets[0]).not.toHaveProperty(
+      "procedure",
+    );
+  });
+
+  it("rejects duplicate parameter names with their wire issue path", () => {
+    const wire = proceduralWireDraft([
+      { name: "segments", value: 12 },
+      { name: "segments", value: 16 },
+    ]);
+
+    try {
+      mapAssetPlanDraftWire(wire);
+      throw new Error("Expected duplicate parameters to be rejected.");
+    } catch (error) {
+      expect(error).toBeInstanceOf(z.ZodError);
+      expect((error as z.ZodError).issues).toEqual([
+        expect.objectContaining({
+          path: ["assets", 0, "procedure", "parameters", 1, "name"],
+          message: "Duplicate procedure parameter name: segments.",
+        }),
+      ]);
+    }
+  });
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -630,6 +719,20 @@ const executionReturning = (value: unknown): StructuredModelExecution => ({
   })) as StructuredModelExecution["generateStructured"],
 });
 
+const wireDraftFromDomain = (draft: AssetPlanDraft): AssetPlanDraftWire => ({
+  assets: draft.assets.map((asset) => ({
+    ...asset,
+    procedure: asset.procedure
+      ? {
+          generatorId: asset.procedure.generatorId,
+          parameters: Object.entries(asset.procedure.parameters).map(
+            ([name, value]) => ({ name, value }),
+          ),
+        }
+      : null,
+  })),
+});
+
 describe("AssetPlanner.plan", () => {
   it("replay_planning_never_calls_structured_execution", async () => {
     const fixture = plannerFixture();
@@ -671,18 +774,23 @@ describe("AssetPlanner.plan", () => {
     const fixture = plannerFixture("live");
     const key = assetPlanIdempotencyKey(fixture.input);
     const execution = executionReturning(
-      deriveReplayAssetPlanDraft(fixture.resolved),
+      wireDraftFromDomain(deriveReplayAssetPlanDraft(fixture.resolved)),
     );
-    vi.mocked(execution.generateStructured).mockImplementationOnce(async () => {
-      expect(fixture.repository.getSubmissionByKey(key)?.status).toBe(
-        "pending",
-      );
-      return {
-        value: deriveReplayAssetPlanDraft(fixture.resolved),
-        provider: "openai",
-        model: "planner-model",
-      };
-    });
+    vi.mocked(execution.generateStructured).mockImplementationOnce(
+      async (input) => {
+        expect(fixture.repository.getSubmissionByKey(key)?.status).toBe(
+          "pending",
+        );
+        expect(input.schema).toBe(AssetPlanDraftWireSchema);
+        return {
+          value: wireDraftFromDomain(
+            deriveReplayAssetPlanDraft(fixture.resolved),
+          ),
+          provider: "openai",
+          model: "planner-model",
+        };
+      },
+    );
     const planner = createAssetPlannerForTest(fixture.repository, {
       execution,
       now: () => timestamp,
@@ -696,14 +804,16 @@ describe("AssetPlanner.plan", () => {
   it("openai_api_planning_reserves_budget_before_the_call", async () => {
     const fixture = plannerFixture("live", "openai-api");
     const execution = executionReturning(
-      deriveReplayAssetPlanDraft(fixture.resolved),
+      wireDraftFromDomain(deriveReplayAssetPlanDraft(fixture.resolved)),
     );
     vi.mocked(execution.generateStructured).mockImplementationOnce(async () => {
       expect(
         fixture.repository.getProject(fixture.input.projectId).spentUsd,
       ).toBe(0.25);
       return {
-        value: deriveReplayAssetPlanDraft(fixture.resolved),
+        value: wireDraftFromDomain(
+          deriveReplayAssetPlanDraft(fixture.resolved),
+        ),
         provider: "openai-api",
         model: "planner-model",
       };
@@ -721,7 +831,7 @@ describe("AssetPlanner.plan", () => {
   it("budget_refusal_does_not_call_the_model_or_poison_the_key", async () => {
     const fixture = plannerFixture("live", "openai-api", 0);
     const execution = executionReturning(
-      deriveReplayAssetPlanDraft(fixture.resolved),
+      wireDraftFromDomain(deriveReplayAssetPlanDraft(fixture.resolved)),
     );
     const planner = createAssetPlannerForTest(fixture.repository, {
       execution,
@@ -771,6 +881,39 @@ describe("AssetPlanner.plan", () => {
     fixture.repository.close();
   });
 
+  it("duplicate_wire_parameter_returns_the_invalid_draft_failure", async () => {
+    const fixture = plannerFixture("live");
+    const planner = createAssetPlannerForTest(fixture.repository, {
+      execution: executionReturning(
+        proceduralWireDraft([
+          { name: "segments", value: 12 },
+          { name: "segments", value: 16 },
+        ]),
+      ),
+      now: () => timestamp,
+      revisionId: () => "plan-revision-1",
+    });
+
+    const outcome = await planner.plan(fixture.input);
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "asset-plan-invalid-output",
+        kind: "strategy-changing",
+        message: "The orchestrator returned an invalid asset-plan draft.",
+        issues: [
+          {
+            code: "invalid-structured-output",
+            path: ["assets", 0, "procedure", "parameters", 1, "name"],
+            message: "Duplicate procedure parameter name: segments.",
+          },
+        ],
+      },
+    });
+    fixture.repository.close();
+  });
+
   it("interrupted_live_planning_becomes_submission_unknown_without_respend", async () => {
     const fixture = plannerFixture("live", "openai-api");
     const execution = executionReturning({});
@@ -804,7 +947,7 @@ describe("AssetPlanner.plan", () => {
   it("ready_live_submission_replays_without_a_second_model_call", async () => {
     const fixture = plannerFixture("live");
     const execution = executionReturning(
-      deriveReplayAssetPlanDraft(fixture.resolved),
+      wireDraftFromDomain(deriveReplayAssetPlanDraft(fixture.resolved)),
     );
     const planner = createAssetPlannerForTest(fixture.repository, {
       execution,

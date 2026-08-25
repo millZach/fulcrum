@@ -109,6 +109,74 @@ export const VisionFindingsSchema = z.object({
 });
 export type VisionFindings = z.infer<typeof VisionFindingsSchema>;
 
+const VisionFindingDraftWireSchema = z.object({
+  ...VisionFindingDraftSchema.shape,
+  evidence: z
+    .array(
+      z.object({
+        frameIndex:
+          VisionFindingDraftSchema.shape.evidence.element.shape.frameIndex,
+        crop: NormalizedCropSchema.nullable(),
+      }),
+    )
+    .min(1),
+  suggestedAction: VisionFindingDraftSchema.shape.suggestedAction
+    .unwrap()
+    .nullable(),
+});
+
+export const VisionFindingsWireSchema = z.object({
+  verdict: VisionFindingsSchema.shape.verdict,
+  dimensionScores: z.array(
+    z.object({
+      dimension: z.string().min(1),
+      score: z.number().min(0).max(1),
+    }),
+  ),
+  findings: z.array(VisionFindingDraftWireSchema),
+});
+export type VisionFindingsWire = z.infer<typeof VisionFindingsWireSchema>;
+
+export const mapVisionFindingsWire = (
+  findings: VisionFindingsWire,
+): VisionFindings => {
+  const dimensions = new Set<string>();
+  for (const [scoreIndex, entry] of findings.dimensionScores.entries()) {
+    if (dimensions.has(entry.dimension)) {
+      throw new z.ZodError([
+        {
+          code: "custom",
+          input: entry.dimension,
+          path: ["dimensionScores", scoreIndex, "dimension"],
+          message: `Duplicate vision score dimension: ${entry.dimension}.`,
+        },
+      ]);
+    }
+    dimensions.add(entry.dimension);
+  }
+
+  return {
+    verdict: findings.verdict,
+    dimensionScores: Object.fromEntries(
+      findings.dimensionScores.map(({ dimension, score }) => [
+        dimension,
+        score,
+      ]),
+    ),
+    findings: findings.findings.map((finding) => {
+      const { suggestedAction, ...findingFields } = finding;
+      return {
+        ...findingFields,
+        evidence: finding.evidence.map((item) => {
+          const { crop, ...evidenceFields } = item;
+          return crop === null ? evidenceFields : { ...evidenceFields, crop };
+        }),
+        ...(suggestedAction === null ? {} : { suggestedAction }),
+      };
+    }),
+  };
+};
+
 export const ReplayVisionCatalogSchema = z.object({
   schema: z.literal("fulcrum.replay-vision-catalog"),
   version: z.literal(1),
@@ -367,11 +435,14 @@ export class LiveVisionEvaluationPort implements VisionEvaluationPort {
         mediaType: "image/png" as const,
         bytes: request.frameBytes[index]!,
       })),
-      schema: VisionFindingsSchema,
+      schema: VisionFindingsWireSchema,
       idempotencyKey,
     });
+    const findings = VisionFindingsSchema.parse(
+      mapVisionFindingsWire(result.value),
+    );
     return {
-      findings: result.value,
+      findings,
       provider: result.provider,
       model: result.model,
       costUsd: 0,

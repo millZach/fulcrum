@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import {
+  assertStrictCompatibleJsonSchema,
   createCodexSubscriptionImageRunner,
   DEFAULT_OPENAI_API_MODEL,
   ModelExecution,
@@ -17,6 +18,88 @@ import {
 } from "./index.js";
 
 const ResultSchema = z.object({ name: z.string(), count: z.number().int() });
+
+describe("OpenAI strict JSON Schema guard", () => {
+  it("rejects z.record output", () => {
+    expect(() =>
+      assertStrictCompatibleJsonSchema(
+        z.toJSONSchema(z.record(z.string(), z.string())),
+      ),
+    ).toThrow(/\$\.propertyNames: propertyNames is not permitted/);
+  });
+
+  it("rejects map-like output after propertyNames is removed", () => {
+    const schema = z.toJSONSchema(z.record(z.string(), z.string()));
+    delete schema.propertyNames;
+
+    expect(() => assertStrictCompatibleJsonSchema(schema)).toThrow(
+      /\$\.additionalProperties: map-like objects/,
+    );
+  });
+
+  it("rejects an object with an optional field", () => {
+    expect(() =>
+      assertStrictCompatibleJsonSchema(
+        z.toJSONSchema(z.object({ note: z.string().optional() })),
+      ),
+    ).toThrow(
+      /\$\.required: every object with properties must supply required/,
+    );
+  });
+
+  it("accepts nullable fields in place of optional fields", () => {
+    expect(() =>
+      assertStrictCompatibleJsonSchema(
+        z.toJSONSchema(z.object({ note: z.string().nullable() })),
+      ),
+    ).not.toThrow();
+  });
+
+  it.each(["openai", "openai-api"] as const)(
+    "fast-fails invalid %s schemas before provider execution",
+    async (provider) => {
+      const runner: CommandRunner = vi.fn();
+      const api = vi.fn();
+
+      await expect(
+        new ModelExecution(runner, api).generateStructured({
+          provider,
+          cwd: process.cwd(),
+          systemPrompt: "Return a note.",
+          prompt: "A note is optional.",
+          schema: z.object({ note: z.string().optional() }),
+        }),
+      ).rejects.toThrow(/OpenAI strict JSON Schema violation/);
+      expect(runner).not.toHaveBeenCalled();
+      expect(api).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["claude", "grok", "opencode"] as const)(
+    "does not apply the OpenAI guard to %s",
+    async (provider) => {
+      const runner: CommandRunner = vi.fn(async ({ command }) => ({
+        status: 0,
+        stdout:
+          command === "claude"
+            ? JSON.stringify({ structured_output: {} })
+            : JSON.stringify({}),
+        stderr: "",
+      }));
+
+      await expect(
+        new ModelExecution(runner).generateStructured({
+          provider,
+          cwd: process.cwd(),
+          systemPrompt: "Return a note.",
+          prompt: "A note is optional.",
+          schema: z.object({ note: z.string().optional() }),
+        }),
+      ).resolves.toMatchObject({ value: {} });
+      expect(runner).toHaveBeenCalledOnce();
+    },
+  );
+});
 
 const status = (
   provider: ExecutionProviderStatus["provider"],

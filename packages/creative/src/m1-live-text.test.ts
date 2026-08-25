@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
+import { CreativeOutputSchema } from "@fulcrum/domain";
+import { assertStrictCompatibleJsonSchema } from "@fulcrum/execution";
+
 import {
   LiveDirectionSetOutputSchema,
   LiveDirectionTemplateSchema,
@@ -11,6 +14,7 @@ import {
 } from "./m1-live-text.js";
 
 const liveOutputSchemas = {
+  CreativeOutputSchema,
   LiveInterrogationFirstRoundSchema,
   LiveInterrogationNextRoundSchema,
   LiveGameDesignSpecOutputSchema,
@@ -19,51 +23,17 @@ const liveOutputSchemas = {
   LiveFocusedDirectionOutputSchema,
 } as const;
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  Boolean(value) && typeof value === "object";
-
-const assertStrictObjectNodes = (node: unknown, path: string): void => {
-  if (!isRecord(node)) return;
-  if (Array.isArray(node)) {
-    node.forEach((item, index) =>
-      assertStrictObjectNodes(item, `${path}[${index}]`),
-    );
-    return;
-  }
-  const isObjectSchema =
-    node.type === "object" ||
-    (isRecord(node.properties) && !Array.isArray(node.properties));
-  if (isObjectSchema) {
-    const properties = isRecord(node.properties)
-      ? Object.keys(node.properties)
-      : [];
-    expect(node.required, `${path}.required`).toBeInstanceOf(Array);
-    const required = node.required as string[];
-    for (const key of properties) {
-      expect(required, `${path}.required`).toContain(key);
-    }
-    expect(node.additionalProperties, `${path}.additionalProperties`).toBe(
-      false,
-    );
-  }
-  for (const [key, value] of Object.entries(node)) {
-    if (value && typeof value === "object") {
-      assertStrictObjectNodes(value, `${path}.${key}`);
-    }
-  }
-};
-
 describe("M1 live text JSON Schema", () => {
-  it("strict-schema-compat", () => {
-    for (const [name, schema] of Object.entries(liveOutputSchemas)) {
-      let json: Record<string, unknown> | undefined;
-      expect(() => {
-        json = z.toJSONSchema(schema) as Record<string, unknown>;
-      }, name).not.toThrow();
-      expect(json, name).toBeDefined();
-      assertStrictObjectNodes(json, name);
-    }
+  it.each(Object.entries(liveOutputSchemas))(
+    "%s is OpenAI strict-compatible",
+    (_name, schema) => {
+      expect(() =>
+        assertStrictCompatibleJsonSchema(z.toJSONSchema(schema)),
+      ).not.toThrow();
+    },
+  );
 
+  it("emits a fixed-length directions array without tuple prefixItems", () => {
     const directions = z.toJSONSchema(LiveDirectionSetOutputSchema) as {
       properties?: { directions?: Record<string, unknown> };
     };

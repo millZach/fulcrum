@@ -526,6 +526,106 @@ const parseStructured = <T>(raw: string, schema: z.ZodType<T>): T => {
   );
 };
 
+const isJsonSchemaObject = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+const jsonPath = (parent: string, segment: string | number): string =>
+  typeof segment === "number"
+    ? `${parent}[${segment}]`
+    : /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(segment)
+      ? `${parent}.${segment}`
+      : `${parent}[${JSON.stringify(segment)}]`;
+
+const strictSchemaError = (path: string, rule: string): never => {
+  throw new Error(`OpenAI strict JSON Schema violation at ${path}: ${rule}`);
+};
+
+export const assertStrictCompatibleJsonSchema = (schema: unknown): void => {
+  const walkSchema = (node: unknown, path: string): void => {
+    if (!isJsonSchemaObject(node)) return;
+    if (Object.prototype.hasOwnProperty.call(node, "propertyNames")) {
+      strictSchemaError(
+        jsonPath(path, "propertyNames"),
+        "propertyNames is not permitted.",
+      );
+    }
+
+    const properties = node.properties;
+    if (isJsonSchemaObject(properties)) {
+      const propertyKeys = Object.keys(properties);
+      const required = node.required;
+      if (Array.isArray(required)) {
+        const requiredKeys = required.filter(
+          (key: unknown): key is string => typeof key === "string",
+        );
+        const missing = propertyKeys.filter(
+          (key) => !requiredKeys.includes(key),
+        );
+        const extra = requiredKeys.filter((key) => !propertyKeys.includes(key));
+        if (missing.length > 0 || extra.length > 0) {
+          const details = [
+            ...(missing.length > 0 ? [`missing ${missing.join(", ")}`] : []),
+            ...(extra.length > 0 ? [`extra ${extra.join(", ")}`] : []),
+          ].join("; ");
+          strictSchemaError(
+            jsonPath(path, "required"),
+            `required must contain exactly every property key (${details}).`,
+          );
+        }
+      } else {
+        strictSchemaError(
+          jsonPath(path, "required"),
+          "every object with properties must supply required containing every property key.",
+        );
+      }
+    }
+
+    if (
+      node.type === "object" &&
+      (!isJsonSchemaObject(properties) ||
+        Object.keys(properties).length === 0) &&
+      isJsonSchemaObject(node.additionalProperties)
+    ) {
+      strictSchemaError(
+        jsonPath(path, "additionalProperties"),
+        "map-like objects with value-typed additionalProperties cannot be expressed.",
+      );
+    }
+
+    if (isJsonSchemaObject(properties)) {
+      for (const [key, propertySchema] of Object.entries(properties)) {
+        walkSchema(propertySchema, jsonPath(jsonPath(path, "properties"), key));
+      }
+    }
+    if (isJsonSchemaObject(node.additionalProperties)) {
+      walkSchema(
+        node.additionalProperties,
+        jsonPath(path, "additionalProperties"),
+      );
+    }
+    const walkChild = (key: string): void => {
+      const child = node[key];
+      if (Array.isArray(child)) {
+        child.forEach((item, index) =>
+          walkSchema(item, jsonPath(jsonPath(path, key), index)),
+        );
+      } else {
+        walkSchema(child, jsonPath(path, key));
+      }
+    };
+    for (const key of ["items", "prefixItems", "anyOf", "oneOf", "allOf"]) {
+      walkChild(key);
+    }
+    if (isJsonSchemaObject(node.$defs)) {
+      for (const [key, definition] of Object.entries(node.$defs)) {
+        walkSchema(definition, jsonPath(jsonPath(path, "$defs"), key));
+      }
+    }
+  };
+
+  walkSchema(schema, "$");
+};
+
 export class ModelExecution implements StructuredVisionExecution {
   constructor(
     private readonly runner: CommandRunner = runCommand,
@@ -546,6 +646,8 @@ export class ModelExecution implements StructuredVisionExecution {
         "Execution model identifiers contain invalid characters.",
       );
     const jsonSchema = z.toJSONSchema(input.schema);
+    if (provider === "openai" || provider === "openai-api")
+      assertStrictCompatibleJsonSchema(jsonSchema);
     const prompt = [
       input.systemPrompt,
       input.prompt,
@@ -696,6 +798,7 @@ export class ModelExecution implements StructuredVisionExecution {
         "Structured vision execution requires at least one frame.",
       );
     const jsonSchema = z.toJSONSchema(input.schema);
+    assertStrictCompatibleJsonSchema(jsonSchema);
     if (input.provider === "openai-api") {
       const apiKey = process.env.OPENAI_API_KEY;
       const model =
