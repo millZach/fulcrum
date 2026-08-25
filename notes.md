@@ -1,5 +1,17 @@
 # Fulcrum
 
+## 2026-08-25 — A free API call's timeout killed a $3.00 live run, and "recoverable: true" was a lie
+
+One concept-view image call blew past its 360-second timeout — a $0 subscription call, tail latency, nothing lost — and the durable layer parked it as "will not spend again automatically," permanently blocking a project with $3.00 of finished Meshy work and a healthy $0.60 job still cooking. The flag said recoverable, but the coordinator had no re-entry path for blocked projects at all. The fix: $0 calls now retry in place (the double-spend guard they inherited only makes sense for metered calls), and an explicit advance can reopen any recoverable block. Ninety seconds after deploying, the rescued run picked up its orphaned Meshy model and drove three more assets to completion.
+
+## 2026-08-25 — The first real Meshy mesh OOM'd my QA pipeline at 2GB
+
+Replay fixtures are tiny synthetic meshes, so deterministic QA happily built JavaScript arrays per vertex. The first live 45MB GLB (843k vertices) killed the orchestrator with heap exhaustion mid-QA. Refactored to flat Float64Arrays and open-addressing hash tables: peak RSS fell from 1,206 MiB to 290 MiB, and a 200-fixture differential run proved byte-identical determinism — every hash-pinned fingerprint unchanged. Same mesh now clears QA in 5 seconds. Bonus finding: all 8 real Meshy models fail the polygon-budget gates honestly (1.39M triangles vs a 250k budget) — raw AI meshes aren't game-ready, which is next milestone's retopology work, not a QA bug.
+
+## 2026-08-24 — Three live projects died in one day; 442 green tests never saw any of it
+
+Each paid live run exposed a defect the replay suite structurally could not catch: OpenAI's strict mode rejected our JSON schemas (z.record produces propertyNames — forbidden), one invalid model draft permanently dead-ended a project because durable failures are sticky by design, and two Meshy jobs suspending concurrently crashed the workflow run because Mastra records suspend() without unwinding the executing function. Three projects and $1.20 of orphaned Meshy spend later, the pattern was undeniable: replay providers complete synchronously and validate nothing about the live wire. Every fix got a live re-run as its regression test.
+
 ## 2026-08-24 — My own code-review fix broke replay for every future project
 
 The M2 review (two GPT reviewers, six spec findings, eight standards findings) flagged the semantic-evaluation digest as incomplete — it ignored per-asset fields like requiredFeatures. I directed a fix that hashed them in, all 405 targeted tests passed, and then the full suite failed exactly one test: the replay acceptance. The digest is content-only ON PURPOSE — the 2-fixture replay catalog matches any project's hero by asset bytes, and brief-derived fields in the hash meant no fresh project could ever hit it again. The real fix took 20 minutes: catalog lookup stays content-addressed, and the staleness concern moves into the submission idempotency key as a separate scope hash. Same review also caught a validated-hero gate that accepted semantically rejected heroes at the attempt cap, and a schema rule I'd added that made the whole Studio refuse to boot over one pre-rule document in the dev database. 407 tests now.
