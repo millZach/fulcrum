@@ -285,12 +285,13 @@ export class M0Coordinator {
         );
       }
     } else if (
-      ["asset-production", "asset-quality", "scene-composition"].includes(
+      (["asset-production", "asset-quality", "scene-composition"].includes(
         state.stage,
       ) &&
-      state.status === "active"
+        state.status === "active") ||
+      (state.status === "blocked" && state.blockedReason?.recoverable === true)
     ) {
-      await this.macro.advance(projectId);
+      await this.macro.advance(projectId, "explicit-advance");
     }
     return this.snapshot(projectId);
   }

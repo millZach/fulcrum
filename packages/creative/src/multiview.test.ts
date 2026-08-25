@@ -535,6 +535,37 @@ describe("MultiviewConceptProduction", () => {
     fixture.repository.close();
   });
 
+  it("exhausted_live_subscription_views_require_user_action", async () => {
+    const fixture = creativeFixture();
+    fixture.repository.saveProject({
+      ...fixture.repository.getProject(fixture.projectId),
+      mode: "live",
+    });
+    const runner = vi.fn(async () => {
+      throw new Error("codex timed out.");
+    });
+    const production = new MultiviewConceptProduction(fixture.repository, {
+      runnerForRole: () => runner,
+    });
+
+    const outcome = await production.ensure({
+      ...request(fixture),
+      mode: "live",
+    });
+
+    expect(outcome).toEqual(
+      expect.objectContaining({
+        status: "failed",
+        error: expect.objectContaining({
+          code: "concept-generation-failed",
+          kind: "user-action-required",
+        }),
+      }),
+    );
+    expect(runner).toHaveBeenCalledTimes(2);
+    fixture.repository.close();
+  });
+
   it("strategy_regeneration_reuses_untouched_views", async () => {
     const fixture = creativeFixture();
     const first = await readySet(

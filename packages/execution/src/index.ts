@@ -86,6 +86,7 @@ export type SubscriptionImageResult = {
 
 export type SubscriptionImageRunner = (input: {
   prompt: string;
+  timeoutMs?: number;
   referenceImages?: Array<{
     bytes: Uint8Array;
     mediaType: "image/png" | "image/jpeg" | "image/webp";
@@ -352,7 +353,7 @@ const imageBytesFromOutput = (output: string): Uint8Array | undefined => {
 
 export const createCodexSubscriptionImageRunner =
   (runner: CommandRunner = runCommand): SubscriptionImageRunner =>
-  async ({ prompt, referenceImages = [] }) => {
+  async ({ prompt, timeoutMs = 360_000, referenceImages = [] }) => {
     const temporary = mkdtempSync(path.join(tmpdir(), "fulcrum-imagegen-"));
     const outputPath = path.join(temporary, "concept.png");
     try {
@@ -386,7 +387,7 @@ export const createCodexSubscriptionImageRunner =
           "-",
         ],
         cwd: temporary,
-        timeoutMs: 360_000,
+        timeoutMs,
         stdin: [
           "Use the installed $imagegen skill and its ImageGen tool.",
           referencePaths.length > 0

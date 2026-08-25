@@ -11,6 +11,7 @@ import {
   MacroGraphResumeSchema,
   MacroGraphSuspendSchema,
   MultiviewNodeOutputSchema,
+  ProjectStageSchema,
   RegenerationNodeOutputSchema,
   TurntableEvaluationNodeOutputSchema,
   WorkflowFailureSchema,
@@ -737,6 +738,30 @@ const nodeForStage = (
   return nodes[stage] ?? "post-concept.route";
 };
 
+const recoverableResumeStage = (
+  repository: ProjectRepository,
+  state: ProjectSnapshot["state"],
+): z.infer<typeof ProjectStageSchema> | undefined => {
+  const stored = state.blockedReason?.resumeStage;
+  if (stored && stored !== "blocked" && stored !== "complete") return stored;
+  const failedEvent = repository
+    .listEvents(state.projectId)
+    .findLast(({ type, payload }) => {
+      if (type !== "workflow.node.failed") return false;
+      if (payload.code !== state.blockedReason?.code) return false;
+      const stage = ProjectStageSchema.safeParse(payload.stage);
+      return (
+        stage.success && stage.data !== "blocked" && stage.data !== "complete"
+      );
+    });
+  const parsed = ProjectStageSchema.safeParse(failedEvent?.payload.stage);
+  return parsed.success &&
+    parsed.data !== "blocked" &&
+    parsed.data !== "complete"
+    ? parsed.data
+    : undefined;
+};
+
 export class PostConceptGraphDriver {
   private readonly workflow;
   private readonly m2Workflow;
@@ -792,8 +817,22 @@ export class PostConceptGraphDriver {
     let state = this.repository.getProject(projectId);
     if (state.milestone !== "m0" && state.milestone !== "m2")
       throw new Error(`Project ${projectId} has no post-concept graph.`);
-    if (state.status === "blocked" || state.status === "complete")
-      return this.snapshot(projectId);
+    if (state.status === "complete") return this.snapshot(projectId);
+    if (state.status === "blocked") {
+      if (
+        trigger !== "explicit-advance" ||
+        state.blockedReason?.recoverable !== true
+      )
+        return this.snapshot(projectId);
+      const resumeStage = recoverableResumeStage(this.repository, state);
+      if (!resumeStage) return this.snapshot(projectId);
+      state = this.repository.saveProject({
+        ...state,
+        status: "active",
+        stage: resumeStage,
+        blockedReason: undefined,
+      });
+    }
     if (state.status === "awaiting-approval" && trigger === "http-poll")
       return this.snapshot(projectId);
 
@@ -875,6 +914,7 @@ export class PostConceptGraphDriver {
             failure.kind === "retryable" ||
             failure.kind === "user-action-required",
           failureKind: failure.kind,
+          resumeStage: currentState.stage,
         },
       });
       this.activeRuns.delete(projectId);

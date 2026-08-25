@@ -150,7 +150,7 @@ describe("durable multiview image generation", () => {
     context.repository.close();
   });
 
-  it("live_view_throw_becomes_submission_unknown_and_never_auto_retries", async () => {
+  it("live_view_throw_exhausts_subscription_retries_then_requires_user_action", async () => {
     const context = fixture("live");
     const runner = vi.fn(async () => {
       throw new Error("runner disconnected");
@@ -168,11 +168,18 @@ describe("durable multiview image generation", () => {
     const second = await ensureDurableSubscriptionImage(input);
 
     expect(first.status).toBe("failed");
+    if (first.status === "failed") {
+      expect(first.error).toMatchObject({
+        code: "concept-generation-failed",
+        failureKind: "user-action-required",
+      });
+      expect(first.error.message).toMatch(/subscription-covered.*spend-safe/i);
+    }
     expect(second.status).toBe("failed");
     expect(
       context.repository.getSubmissionByKey(context.idempotencyKey)?.status,
-    ).toBe("submission-unknown");
-    expect(runner).toHaveBeenCalledOnce();
+    ).toBe("failed");
+    expect(runner).toHaveBeenCalledTimes(2);
     context.repository.close();
   });
 

@@ -24,6 +24,7 @@ export const M1_IMAGE_TIMEOUT_MS_ENV = "FULCRUM_M1_IMAGE_TIMEOUT_MS";
 
 const DEFAULT_RETRY_LIMIT = 2;
 const DEFAULT_TIMEOUT_MS = 360_000;
+const LIVE_TIMEOUT_BACKSTOP_GRACE_MS = 1_000;
 
 const DurableImageJobSchema = z.object({
   projectId: z.string().min(1),
@@ -144,6 +145,11 @@ const retryableSubscriptionQuota = (
   submission?.status === "failed" &&
   submission.payload.usageCode === "subscription-quota";
 
+const retryableSubscriptionUnknown = (
+  submission: SubmissionRecord | undefined,
+): submission is SubmissionRecord =>
+  submission?.status === "submission-unknown";
+
 export const ensureDurableSubscriptionImage = async (
   input: {
     repository: ProjectRepository;
@@ -185,9 +191,14 @@ export const ensureDurableSubscriptionImage = async (
     };
   }
 
-  const decision = retryableSubscriptionQuota(prior)
-    ? ({ kind: "proceed", submission: prior } as const)
-    : decideDurableSubmission(prior, job.mode);
+  const durableDecision =
+    retryableSubscriptionQuota(prior) || retryableSubscriptionUnknown(prior)
+      ? ({ kind: "proceed", submission: prior } as const)
+      : decideDurableSubmission(prior, job.mode);
+  const decision =
+    durableDecision.kind === "unknown-interruption"
+      ? ({ kind: "proceed", submission: durableDecision.submission } as const)
+      : durableDecision;
   if (decision.kind === "ready") {
     return {
       status: "failed",
@@ -214,21 +225,9 @@ export const ensureDurableSubscriptionImage = async (
             ? "The live concept request may have reached OpenAI before interruption; Fulcrum will not spend again automatically."
             : "The previous concept image job failed and requires user-directed regeneration.",
         recoverable: true,
-      },
-    };
-  }
-  if (decision.kind === "unknown-interruption") {
-    input.repository.updateSubmission(decision.submission.requestId, {
-      status: "submission-unknown",
-    });
-    return {
-      status: "failed",
-      requestId: decision.submission.requestId,
-      error: {
-        code: "submission-unknown",
-        message:
-          "The live concept request may have reached OpenAI before interruption; Fulcrum will not spend again automatically.",
-        recoverable: true,
+        ...(decision.submission.status === "failed"
+          ? { failureKind: "user-action-required" as const }
+          : {}),
       },
     };
   }
@@ -284,25 +283,11 @@ export const ensureDurableSubscriptionImage = async (
         `ImageGen retry limit of ${storedRetryLimit} has been reached for this idempotency key.`,
       );
     }
-    const {
-      preflightCode: _preflightCode,
-      error: _preflightError,
-      usageCode: _usageCode,
-      ...intentPayload
-    } = submission.payload;
-    const storedTimeoutMs = Number(intentPayload.timeoutMs ?? timeoutMs);
-    input.repository.updateSubmission(submission.requestId, {
-      status: "pending",
-      payload: {
-        ...intentPayload,
-        retryLimit: storedRetryLimit,
-        timeoutMs: Number.isFinite(storedTimeoutMs)
-          ? storedTimeoutMs
-          : timeoutMs,
-        providerAttemptCount: attempts + 1,
-        providerCallStartedAt: new Date().toISOString(),
-      },
-    });
+    const storedTimeoutMs = Number(submission.payload.timeoutMs ?? timeoutMs);
+    const resolvedTimeoutMs =
+      Number.isFinite(storedTimeoutMs) && storedTimeoutMs > 0
+        ? storedTimeoutMs
+        : timeoutMs;
 
     const referenceImages: Array<{
       bytes: Uint8Array;
@@ -325,64 +310,106 @@ export const ensureDurableSubscriptionImage = async (
       };
     });
 
-    let generated;
-    try {
-      generated = await withElapsedLimit(
-        input.runner({
-          prompt: job.prompt,
-          ...(referenceImages.length > 0 ? { referenceImages } : {}),
-        }),
-        Number.isFinite(storedTimeoutMs) ? storedTimeoutMs : timeoutMs,
-      );
-    } catch (error) {
-      const quota = subscriptionQuotaError(error, "OpenAI");
+    let generated: Awaited<ReturnType<SubscriptionImageRunner>>;
+    while (true) {
       const current =
         input.repository.getSubmissionByKey(job.idempotencyKey) ?? submission;
-      if (quota) {
-        input.repository.updateSubmission(submission.requestId, {
-          status: "failed",
-          payload: {
-            ...current.payload,
-            usageCode: quota.code,
-            error: quota.message,
-          },
-        });
-        return {
-          status: "failed",
-          requestId: submission.requestId,
-          error: {
-            code: quota.code,
-            message: quota.message,
-            recoverable: true,
-          },
-        };
+      const currentAttempts = Number(current.payload.providerAttemptCount ?? 0);
+      if (currentAttempts >= storedRetryLimit) {
+        throw new ProviderPreflightError(
+          "payload-invalid",
+          `ImageGen retry limit of ${storedRetryLimit} has been reached for this idempotency key.`,
+        );
       }
-      const message = error instanceof Error ? error.message : String(error);
-      if (job.mode === "replay") {
+      const {
+        preflightCode: _preflightCode,
+        error: _preflightError,
+        usageCode: _usageCode,
+        ...intentPayload
+      } = current.payload;
+      input.repository.updateSubmission(submission.requestId, {
+        status: "pending",
+        payload: {
+          ...intentPayload,
+          retryLimit: storedRetryLimit,
+          timeoutMs: resolvedTimeoutMs,
+          providerAttemptCount: currentAttempts + 1,
+          providerCallStartedAt: new Date().toISOString(),
+        },
+      });
+
+      try {
+        generated = await withElapsedLimit(
+          input.runner({
+            prompt: job.prompt,
+            ...(job.mode === "live" ? { timeoutMs: resolvedTimeoutMs } : {}),
+            ...(referenceImages.length > 0 ? { referenceImages } : {}),
+          }),
+          resolvedTimeoutMs +
+            (job.mode === "live" ? LIVE_TIMEOUT_BACKSTOP_GRACE_MS : 0),
+        );
+        break;
+      } catch (error) {
+        const quota = subscriptionQuotaError(error, "OpenAI");
+        const failedAttempt =
+          input.repository.getSubmissionByKey(job.idempotencyKey) ?? submission;
+        if (quota) {
+          input.repository.updateSubmission(submission.requestId, {
+            status: "failed",
+            payload: {
+              ...failedAttempt.payload,
+              usageCode: quota.code,
+              error: quota.message,
+            },
+          });
+          return {
+            status: "failed",
+            requestId: submission.requestId,
+            error: {
+              code: quota.code,
+              message: quota.message,
+              recoverable: true,
+            },
+          };
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        if (job.mode === "replay") {
+          input.repository.updateSubmission(submission.requestId, {
+            status: "intent-recorded",
+            payload: { ...failedAttempt.payload, error: message },
+          });
+          return {
+            status: "failed",
+            requestId: submission.requestId,
+            error: {
+              code: "concept-generation-failed",
+              message,
+              recoverable: true,
+              failureKind: "retryable",
+            },
+          };
+        }
+        const failedAttempts = Number(
+          failedAttempt.payload.providerAttemptCount ?? currentAttempts + 1,
+        );
+        if (failedAttempts < storedRetryLimit) continue;
+
+        const exhaustedMessage = `Subscription-covered ($0) ImageGen failed after ${failedAttempts} attempts. Automatic attempts are exhausted; a user-directed retry is spend-safe. Last error: ${message}`;
         input.repository.updateSubmission(submission.requestId, {
-          status: "intent-recorded",
-          payload: { ...current.payload, error: message },
+          status: "failed",
+          payload: { ...failedAttempt.payload, error: exhaustedMessage },
         });
         return {
           status: "failed",
           requestId: submission.requestId,
           error: {
             code: "concept-generation-failed",
-            message,
+            message: exhaustedMessage,
             recoverable: true,
-            failureKind: "retryable",
+            failureKind: "user-action-required",
           },
         };
       }
-      input.repository.updateSubmission(submission.requestId, {
-        status: "submission-unknown",
-        payload: { ...current.payload, error: message },
-      });
-      return {
-        status: "failed",
-        requestId: submission.requestId,
-        error: { code: "submission-unknown", message, recoverable: true },
-      };
     }
 
     const png = await sharp(generated.bytes).png().toBuffer();

@@ -398,6 +398,23 @@ describe("Codex subscription ImageGen", () => {
       referenceImages: [{ bytes: png, mediaType: "image/png" }],
     });
   });
+
+  it("forwards the caller timeout to the Codex subprocess", async () => {
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64",
+    );
+    const runner: CommandRunner = vi.fn(async (spec) => {
+      expect(spec.timeoutMs).toBe(12_345);
+      writeFileSync(path.join(spec.cwd, "concept.png"), png);
+      return { status: 0, stdout: "", stderr: "" };
+    });
+
+    await createCodexSubscriptionImageRunner(runner)({
+      prompt: "A readable stone reliquary",
+      timeoutMs: 12_345,
+    });
+  });
 });
 
 describe("preferredOpenAIProvider", () => {

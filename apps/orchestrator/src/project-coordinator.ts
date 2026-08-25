@@ -77,11 +77,13 @@ export class ProjectCoordinator {
     if (state.milestone === "m0") return await this.m0.advance(projectId);
     if (
       state.milestone === "m2" &&
-      ["asset-planning", "asset-plan-approval", "asset-batch"].includes(
+      (["asset-planning", "asset-plan-approval", "asset-batch"].includes(
         state.stage,
-      )
+      ) ||
+        (state.status === "blocked" &&
+          state.blockedReason?.recoverable === true))
     ) {
-      await this.macro.advance(projectId);
+      await this.macro.advance(projectId, "explicit-advance");
       return this.snapshot(projectId);
     }
     return this.creative.advance(projectId);

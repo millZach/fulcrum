@@ -865,6 +865,40 @@ const approveFixturePlan = (
   });
 };
 
+const recoverablyBlockedM2Fixture = async () => {
+  const repository = new ProjectRepository(temporaryRoot());
+  const fixture = m2Fixture(repository);
+  let attempts = 0;
+  const multiview = vi.fn(async (input) => {
+    attempts += 1;
+    if (attempts === 1)
+      return {
+        status: "failed" as const,
+        error: {
+          code: "concept-generation-failed",
+          message: "Subscription ImageGen needs a user-directed retry.",
+          kind: "user-action-required" as const,
+          evidenceRevisionIds: [],
+        },
+      };
+    return {
+      status: "ready" as const,
+      value: {
+        ...input,
+        classification: "hero" as const,
+        multiviewDecision: "not-required" as const,
+      },
+    };
+  });
+  const driver = new PostConceptGraphDriver(repository, {
+    slots: batchSlots(fixture, ["hero"], { multiview }),
+  });
+  await driver.advance(fixture.projectId);
+  approveFixturePlan(repository, fixture);
+  const blocked = await driver.advance(fixture.projectId, "approval-recorded");
+  return { repository, fixture, driver, blocked, multiview };
+};
+
 describe("M2 macro slot contracts", () => {
   it("planner_output_suspends_for_exact_asset_plan_approval", async () => {
     const repository = new ProjectRepository(temporaryRoot());
@@ -982,6 +1016,84 @@ describe("M2 macro slot contracts", () => {
 
     expect(completed.state.stage).toBe("complete");
     expect(calls.get("door")).toBe(2);
+    repository.close();
+  });
+
+  it("explicit_advance_reenters_a_recoverable_block_and_completes_the_batch", async () => {
+    const { repository, fixture, driver, blocked, multiview } =
+      await recoverablyBlockedM2Fixture();
+
+    expect(blocked.state).toMatchObject({
+      status: "blocked",
+      stage: "blocked",
+      blockedReason: {
+        recoverable: true,
+        resumeStage: "asset-batch",
+      },
+    });
+    repository.saveProject({
+      ...blocked.state,
+      blockedReason: {
+        code: blocked.state.blockedReason!.code,
+        message: blocked.state.blockedReason!.message,
+        recoverable: true,
+        failureKind: blocked.state.blockedReason!.failureKind,
+      },
+    });
+
+    const completed = await driver.advance(
+      fixture.projectId,
+      "explicit-advance",
+    );
+
+    expect(completed.state).toMatchObject({
+      status: "complete",
+      stage: "complete",
+    });
+    expect(multiview).toHaveBeenCalledTimes(2);
+    repository.close();
+  });
+
+  it("http_poll_does_not_reenter_a_recoverable_block", async () => {
+    const { repository, fixture, driver, multiview } =
+      await recoverablyBlockedM2Fixture();
+
+    const polled = await driver.advance(fixture.projectId, "http-poll");
+
+    expect(polled.state).toMatchObject({
+      status: "blocked",
+      stage: "blocked",
+      blockedReason: { recoverable: true },
+    });
+    expect(multiview).toHaveBeenCalledTimes(1);
+    repository.close();
+  });
+
+  it("explicit_advance_does_not_reenter_a_nonrecoverable_block", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const fixture = m2Fixture(repository);
+    const base = batchSlots(fixture, ["hero"], {
+      classification: () => "kit",
+    });
+    const multiview = vi.fn(base.multiviewConcepts.ensure);
+    const driver = new PostConceptGraphDriver(repository, {
+      slots: {
+        ...base,
+        multiviewConcepts: { ensure: multiview },
+      },
+    });
+    await driver.advance(fixture.projectId);
+    approveFixturePlan(repository, fixture);
+    await driver.advance(fixture.projectId, "approval-recorded");
+
+    const blocked = await driver.advance(fixture.projectId, "explicit-advance");
+
+    expect(blocked.state).toMatchObject({
+      status: "blocked",
+      stage: "blocked",
+      blockedReason: { recoverable: false },
+    });
+    expect(multiview).toHaveBeenCalledTimes(1);
     repository.close();
   });
 

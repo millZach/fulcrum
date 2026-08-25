@@ -801,6 +801,7 @@ export const BlockedReasonSchema = z.object({
   message: z.string().min(1),
   recoverable: z.boolean(),
   failureKind: FailureKindSchema.optional(),
+  resumeStage: ProjectStageSchema.optional(),
 });
 export type BlockedReason = z.infer<typeof BlockedReasonSchema>;
 
@@ -1910,7 +1911,12 @@ export const MacroGraphOutputSchema = z.object({
 export type MacroGraphOutput = z.infer<typeof MacroGraphOutputSchema>;
 
 export const MacroGraphResumeSchema = z.object({
-  trigger: z.enum(["http-poll", "approval-recorded", "reconstructed"]),
+  trigger: z.enum([
+    "http-poll",
+    "explicit-advance",
+    "approval-recorded",
+    "reconstructed",
+  ]),
 });
 export type MacroGraphResume = z.infer<typeof MacroGraphResumeSchema>;
 
