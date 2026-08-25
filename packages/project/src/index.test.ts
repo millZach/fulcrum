@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ProjectRepository } from "./index.js";
+import type { ApprovalDecision, ProjectState } from "@fulcrum/domain";
 
 const roots: string[] = [];
 
@@ -54,6 +55,200 @@ const openProject = (
   });
   return { state, runId };
 };
+
+const openAssetPlanApprovalProject = (repository: ProjectRepository) => {
+  const projectId = "asset-plan-project";
+  const runId = "asset-plan-run";
+  const createdAt = "2026-01-01T00:00:00.000Z";
+  repository.reserveProject(projectId, createdAt);
+  const brief = repository.writeRevision({
+    projectId,
+    entityId: `${projectId}:brief`,
+    kind: "game-brief",
+    value: { text: "Atomic asset-plan approval fixture." },
+    runId,
+  });
+  const assetPlan = repository.writeRevision({
+    projectId,
+    entityId: `${projectId}:asset-plan`,
+    kind: "asset-plan",
+    value: { planId: `${projectId}:asset-plan` },
+    runId,
+  });
+  const state = repository.createProject({
+    schemaVersion: 1,
+    milestone: "m2",
+    projectId,
+    name: "Asset-plan approval fixture",
+    mode: "replay",
+    status: "awaiting-approval",
+    stage: "asset-plan-approval",
+    runId,
+    spentUsd: 0,
+    brief,
+    assetPlan,
+    assetPlanReplanCount: 0,
+    createdAt,
+    updatedAt: createdAt,
+  });
+  const decision: ApprovalDecision = {
+    approvalId: "asset-plan-approval-1",
+    projectId,
+    targetType: "asset-plan",
+    targetRevisionId: assetPlan.revisionId,
+    targetSha256: assetPlan.artifact.sha256,
+    decision: "approved",
+    decidedBy: "zach",
+    decidedAt: createdAt,
+  };
+  const nextState: ProjectState = {
+    ...state,
+    status: "active",
+    stage: "asset-batch",
+    assetPlanApproval: decision,
+  };
+  return { projectId, runId, state, assetPlan, decision, nextState };
+};
+
+describe("ProjectRepository asset-plan revisions and approvals", () => {
+  it("preallocated_revision_id_matches_the_provenance_manifest", () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const { projectId, runId } = reserve(repository);
+    const revisionId = "asset-plan-revision-1";
+    const createdAt = "2026-01-01T01:00:00.000Z";
+    const value = {
+      provenance: {
+        revisionId,
+        parentRevisionIds: ["gds-1"],
+        sourceArtifactHashes: ["a".repeat(64)],
+        runId,
+        operation: "asset-plan.initial",
+        createdAt,
+      },
+    };
+
+    const written = repository.writeRevision({
+      projectId,
+      entityId: `${projectId}:asset-plan`,
+      kind: "asset-plan",
+      value,
+      runId,
+      revisionId,
+      createdAt,
+    });
+
+    expect(written).toMatchObject({ revisionId, createdAt });
+    expect(
+      repository.resolveRevision<typeof value>(written).provenance.revisionId,
+    ).toBe(written.revisionId);
+    repository.close();
+  });
+
+  it("write_revision_without_preallocation_preserves_existing_behavior", () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const { projectId, runId } = reserve(repository);
+    const write = () =>
+      repository.writeRevision({
+        projectId,
+        entityId: `${projectId}:fixture`,
+        kind: "fixture",
+        value: { stable: true },
+        runId,
+      });
+
+    const first = write();
+    const second = write();
+
+    expect(first.revisionId).not.toBe(second.revisionId);
+    expect(Date.parse(first.createdAt)).not.toBeNaN();
+    expect(first.artifact.sha256).toBe(second.artifact.sha256);
+    repository.close();
+  });
+
+  it("commit_approval_rejects_a_wrong_hash_without_state_or_event_changes", () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const fixture = openAssetPlanApprovalProject(repository);
+
+    expect(() =>
+      repository.commitApproval({
+        decision: { ...fixture.decision, targetSha256: "f".repeat(64) },
+        nextState: fixture.nextState,
+        event: {
+          runId: fixture.runId,
+          type: "approval.asset-plan-decided",
+          payload: { decision: "approved" },
+        },
+      }),
+    ).toThrow("hash");
+    expect(repository.getProject(fixture.projectId)).toEqual(fixture.state);
+    expect(repository.listEvents(fixture.projectId)).toEqual([]);
+    repository.close();
+  });
+
+  it("commit_approval_rolls_back_all_three_writes_on_failure", () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const fixture = openAssetPlanApprovalProject(repository);
+
+    expect(() =>
+      repository.commitApproval({
+        decision: fixture.decision,
+        nextState: fixture.nextState,
+        event: {
+          runId: fixture.runId,
+          type: "approval.asset-plan-decided",
+          payload: { cannotSerialize: 1n },
+        },
+      }),
+    ).toThrow();
+    expect(repository.getProject(fixture.projectId)).toEqual(fixture.state);
+    expect(repository.listEvents(fixture.projectId)).toEqual([]);
+
+    expect(() =>
+      repository.commitApproval({
+        decision: fixture.decision,
+        nextState: fixture.nextState,
+        event: {
+          runId: fixture.runId,
+          type: "approval.asset-plan-decided",
+          payload: { decision: "approved" },
+        },
+      }),
+    ).not.toThrow();
+    repository.close();
+  });
+
+  it("commit_approval_persists_decision_state_and_event_atomically", () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const fixture = openAssetPlanApprovalProject(repository);
+
+    const committed = repository.commitApproval({
+      decision: fixture.decision,
+      nextState: fixture.nextState,
+      event: {
+        runId: fixture.runId,
+        type: "approval.asset-plan-decided",
+        payload: {
+          approvalId: fixture.decision.approvalId,
+          decision: fixture.decision.decision,
+        },
+      },
+    });
+
+    expect(committed.decision).toEqual(fixture.decision);
+    expect(committed.state.assetPlanApproval).toEqual(fixture.decision);
+    expect(repository.getProject(fixture.projectId)).toEqual(committed.state);
+    expect(repository.listEvents(fixture.projectId)).toEqual([
+      expect.objectContaining({
+        type: "approval.asset-plan-decided",
+        payload: {
+          approvalId: fixture.decision.approvalId,
+          decision: "approved",
+        },
+      }),
+    ]);
+    repository.close();
+  });
+});
 
 describe("ProjectRepository.ensureRevision", () => {
   it("returns_the_same_revision_for_the_same_operation_key", () => {

@@ -12,9 +12,11 @@
   },
   "dependencies": {
     "@fulcrum/domain": "workspace:*",
+    "@fulcrum/execution": "workspace:*",
     "@fulcrum/project": "workspace:*",
     "@gltf-transform/core": "latest",
-    "three": "latest"
+    "three": "latest",
+    "zod": "latest"
   },
   "devDependencies": {
     "@types/three": "latest"

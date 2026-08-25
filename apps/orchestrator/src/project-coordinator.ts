@@ -1,12 +1,17 @@
+import { randomUUID } from "node:crypto";
+
 import type {
   SoundGenerationRunner,
   StructuredModelExecution,
 } from "@fulcrum/creative";
 import {
+  AssetPlanApprovalInputSchema,
   CreateProjectInputSchema,
   hasMeteredRoutes,
   IncreaseBudgetInputSchema,
   type ApprovalInput,
+  type AssetPlanApprovalInput,
+  type ApprovalDecision,
   type CreateProjectInput,
   type ProjectSnapshot,
 } from "@fulcrum/domain";
@@ -111,14 +116,116 @@ export class ProjectCoordinator {
 
   async decideAssetPlan(
     projectId: string,
-    _input: unknown,
+    input: AssetPlanApprovalInput | unknown,
   ): Promise<ProjectSnapshot> {
     const state = this.repository.getProject(projectId);
     if (state.milestone !== "m2")
       throw new Error("Only M2 projects have an asset plan.");
-    throw new Error(
-      "Asset-plan decisions require the S2 planner and approval contract.",
-    );
+    if (state.stage !== "asset-plan-approval")
+      throw new Error("This project is not in the asset-plan-approval stage.");
+    if (!state.assetPlan) throw new Error("The project has no asset plan.");
+    const parsed = AssetPlanApprovalInputSchema.parse(input);
+    if (
+      parsed.targetRevisionId !== state.assetPlan.revisionId ||
+      parsed.targetSha256 !== state.assetPlan.artifact.sha256
+    )
+      throw new Error(
+        "The approval target does not match the current immutable revision.",
+      );
+    if (
+      parsed.decision === "changes-requested" &&
+      (state.assetPlanReplanCount ?? 0) >= 1
+    ) {
+      const blocked = this.repository.saveProject({
+        ...state,
+        status: "blocked",
+        stage: "blocked",
+        blockedReason: {
+          code: "asset-plan-replan-limit",
+          message: "M2 permits one asset-plan replan.",
+          recoverable: false,
+          failureKind: "policy-blocked",
+        },
+      });
+      this.repository.appendEvent({
+        projectId,
+        runId: state.runId,
+        type: "asset-plan.failed",
+        payload: {
+          requestId: `asset-plan-replan-limit:${state.assetPlan.revisionId}`,
+          failureCode: "asset-plan-replan-limit",
+          kind: "policy-blocked",
+          issueCodes: [],
+        },
+      });
+      return this.snapshot(blocked.projectId);
+    }
+    const decision: ApprovalDecision = {
+      approvalId: randomUUID(),
+      projectId,
+      targetType: "asset-plan",
+      targetRevisionId: parsed.targetRevisionId,
+      targetSha256: parsed.targetSha256,
+      decision: parsed.decision,
+      ...(parsed.notes ? { notes: parsed.notes } : {}),
+      decidedBy: "local-user",
+      decidedAt: new Date().toISOString(),
+    };
+    const event = {
+      runId: state.runId,
+      type: "approval.asset-plan-decided",
+      payload: {
+        approvalId: decision.approvalId,
+        decision: decision.decision,
+        targetRevisionId: decision.targetRevisionId,
+        targetSha256: decision.targetSha256,
+      },
+    };
+    if (decision.decision === "rejected") {
+      this.repository.commitApproval({
+        decision,
+        nextState: {
+          ...state,
+          assetPlanApproval: decision,
+          status: "blocked",
+          stage: "blocked",
+          blockedReason: {
+            code: "asset-plan-not-approved",
+            message: "The asset plan was rejected.",
+            recoverable: false,
+            failureKind: "policy-blocked",
+          },
+        },
+        event,
+      });
+      return this.snapshot(projectId);
+    }
+    if (decision.decision === "changes-requested") {
+      this.repository.commitApproval({
+        decision,
+        nextState: {
+          ...state,
+          assetPlanApproval: decision,
+          status: "active",
+          stage: "asset-planning",
+        },
+        event,
+      });
+      await this.macro.advance(projectId, "approval-recorded");
+      return this.snapshot(projectId);
+    }
+    this.repository.commitApproval({
+      decision,
+      nextState: {
+        ...state,
+        assetPlanApproval: decision,
+        status: "active",
+        stage: "asset-plan-approval",
+      },
+      event,
+    });
+    await this.macro.advance(projectId, "approval-recorded");
+    return this.snapshot(projectId);
   }
 
   approveSlice(projectId: string, input: ApprovalInput): ProjectSnapshot {

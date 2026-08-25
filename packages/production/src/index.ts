@@ -25,6 +25,9 @@ import {
   TorusGeometry,
 } from "three";
 
+export { AssetPlanner } from "./asset-planner.js";
+export type { AssetPlanning } from "./asset-planner.js";
+
 type GeneratedAsset = {
   bytes: Uint8Array;
   provider: string;

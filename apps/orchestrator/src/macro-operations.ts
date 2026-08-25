@@ -1,5 +1,7 @@
 import {
   AssetPathBaseSchema,
+  AssetPlanSchema,
+  AssetPlanningInputSchema,
   AssetPlanningNodeInputSchema,
   AssetPlanningNodeOutputSchema,
   AssetProductionNodeOutputSchema,
@@ -14,7 +16,12 @@ import {
   type WorkflowFailure,
 } from "@fulcrum/domain";
 import type { z } from "zod";
-import { AssetProduction, AssetQuality } from "@fulcrum/production";
+import {
+  AssetPlanner,
+  AssetProduction,
+  AssetQuality,
+  type AssetPlanning,
+} from "@fulcrum/production";
 import { ProjectRepository } from "@fulcrum/project";
 import { SceneAuthoring } from "@fulcrum/scene";
 
@@ -78,6 +85,87 @@ export const unavailableM2MacroGraphSlots = (): M2MacroGraphSlots => ({
   deterministicQa: unavailable("deterministic-qa"),
   turntableEvaluation: unavailable("turntable-evaluation"),
   regeneration: unavailable("regeneration"),
+});
+
+export const createM2MacroGraphSlots = (
+  repository: ProjectRepository,
+  planner: AssetPlanning = new AssetPlanner(repository),
+): M2MacroGraphSlots => ({
+  ...unavailableM2MacroGraphSlots(),
+  assetPlanning: {
+    ensure: async ({ projectId }) => {
+      const state = repository.getProject(projectId);
+      const parsed = AssetPlanningInputSchema.safeParse({
+        projectId,
+        runId: state.runId,
+        mode: state.mode,
+        orchestratorProvider: state.orchestratorProvider,
+        gameDesignSpec:
+          state.gameDesignSpec && state.gameDesignApproval
+            ? {
+                revision: state.gameDesignSpec,
+                approval: state.gameDesignApproval,
+              }
+            : undefined,
+        conceptSet:
+          state.conceptSet && state.conceptSetApproval
+            ? {
+                revision: state.conceptSet,
+                approval: state.conceptSetApproval,
+              }
+            : undefined,
+        ...(state.assetPlan &&
+        state.assetPlanApproval?.decision === "changes-requested"
+          ? {
+              replan: {
+                previousPlan: state.assetPlan,
+                decision: state.assetPlanApproval,
+              },
+            }
+          : {}),
+      });
+      if (!parsed.success)
+        return {
+          status: "failed" as const,
+          error: {
+            code: "asset-plan-invalid-input",
+            message:
+              "Asset planning requires exact approved Game Design Spec and concept-set revisions.",
+            kind: "user-action-required" as const,
+            evidenceRevisionIds: [
+              state.gameDesignSpec?.revisionId,
+              state.conceptSet?.revisionId,
+            ].filter((value): value is string => Boolean(value)),
+          },
+        };
+      const outcome = await planner.plan(parsed.data);
+      if (outcome.status === "failed")
+        return {
+          status: "failed" as const,
+          error: {
+            code: outcome.error.code,
+            message: outcome.error.message,
+            kind: outcome.error.kind,
+            evidenceRevisionIds: [
+              state.gameDesignSpec?.revisionId,
+              state.conceptSet?.revisionId,
+              state.assetPlan?.revisionId,
+            ].filter((value): value is string => Boolean(value)),
+          },
+        };
+      const plan = AssetPlanSchema.parse(
+        repository.resolveRevision(outcome.value),
+      );
+      return {
+        status: "ready" as const,
+        value: {
+          projectId,
+          assetPlan: outcome.value,
+          orderedAssetIds: plan.assets.map((asset) => asset.assetId),
+        },
+      };
+    },
+  },
 });
 
 const laterThanProduction = new Set<ProjectState["stage"]>([

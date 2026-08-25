@@ -289,12 +289,14 @@ describe("CreativeFrontCoordinator M2 handoff", () => {
     });
 
     expect(project.state).toMatchObject({
-      stage: "blocked",
-      blockedReason: {
-        code: "asset-planner-unavailable",
-        failureKind: "user-action-required",
-      },
+      stage: "asset-plan-approval",
+      status: "awaiting-approval",
     });
+    expect(
+      project.assetPlan?.assets.map((asset) => asset.classification),
+    ).toEqual(
+      expect.arrayContaining(["hero", "kit", "procedural", "functional"]),
+    );
     repository.close();
   });
 });

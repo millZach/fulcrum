@@ -144,6 +144,9 @@ importers:
       '@fulcrum/domain':
         specifier: workspace:*
         version: link:../domain
+      '@fulcrum/execution':
+        specifier: workspace:*
+        version: link:../execution
       '@fulcrum/project':
         specifier: workspace:*
         version: link:../project
@@ -153,6 +156,9 @@ importers:
       three:
         specifier: latest
         version: 0.185.1
+      zod:
+        specifier: latest
+        version: 4.4.3
     devDependencies:
       '@types/three':
         specifier: latest

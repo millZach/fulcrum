@@ -1,5 +1,7 @@
 import {
+  ApprovedAssetPlanBindingSchema,
   AssetBatchNodeOutputSchema,
+  AssetPlanSchema,
   AssetPathBaseSchema,
   AssetPlanningNodeOutputSchema,
   AssetProductionNodeOutputSchema,
@@ -24,8 +26,8 @@ import { createStep, createWorkflow, type Step } from "@mastra/core/workflows";
 import { z } from "zod";
 
 import {
+  createM2MacroGraphSlots,
   PostConceptOperations,
-  unavailableM2MacroGraphSlots,
   type M2MacroGraphSlots,
   type PostConceptOperationOutcome,
 } from "./macro-operations.js";
@@ -304,15 +306,21 @@ const createM2Batch = (
         inputData.projectId,
       );
       const state = repository.getProject(inputData.projectId);
+      const wasReplan =
+        state.assetPlanApproval?.decision === "changes-requested";
       if (state.stage === "asset-planning")
         repository.commitWorkflowCheckpoint({
           projectId: state.projectId,
           runId: state.runId,
-          checkpointKey: `${M2_GRAPH_SLOTS.assetPlanning}:${state.conceptSet?.revisionId ?? "missing"}`,
+          checkpointKey: `${M2_GRAPH_SLOTS.assetPlanning}:${result.assetPlan.revisionId}`,
           expectedStage: "asset-planning",
           nextState: {
             ...state,
             assetPlan: result.assetPlan,
+            assetPlanApproval: undefined,
+            assetPlanReplanCount: wasReplan
+              ? (state.assetPlanReplanCount ?? 0) + 1
+              : (state.assetPlanReplanCount ?? 0),
             status: "awaiting-approval",
             stage: "asset-plan-approval",
           },
@@ -342,16 +350,16 @@ const createM2Batch = (
     execute: async ({ inputData, suspend }) => {
       const state = repository.getProject(inputData.projectId);
       const decision = state.assetPlanApproval;
-      if (
-        decision?.decision === "approved" &&
-        decision.targetRevisionId === inputData.assetPlan.revisionId &&
-        decision.targetSha256 === inputData.assetPlan.artifact.sha256
-      ) {
+      const binding = ApprovedAssetPlanBindingSchema.safeParse({
+        plan: inputData.assetPlan,
+        approval: decision,
+      });
+      if (binding.success) {
         if (state.stage === "asset-plan-approval")
           repository.commitWorkflowCheckpoint({
             projectId: state.projectId,
             runId: state.runId,
-            checkpointKey: `${M2_GRAPH_SLOTS.assetPlanApproval}:${decision.approvalId}`,
+            checkpointKey: `${M2_GRAPH_SLOTS.assetPlanApproval}:${binding.data.approval.approvalId}`,
             expectedStage: "asset-plan-approval",
             nextState: { ...state, status: "active", stage: "asset-batch" },
             event: {
@@ -545,7 +553,7 @@ export const createPostConceptWorkflow = (
 ) => {
   const operations =
     options.operations ?? new PostConceptOperations(repository);
-  const slots = options.slots ?? unavailableM2MacroGraphSlots();
+  const slots = options.slots ?? createM2MacroGraphSlots(repository);
   const route = createStep({
     id: "post-concept.route",
     inputSchema: MacroGraphInputSchema,
@@ -694,7 +702,7 @@ export class PostConceptGraphDriver {
       slots?: M2MacroGraphSlots;
     } = {},
   ) {
-    const sourceSlots = options.slots ?? unavailableM2MacroGraphSlots();
+    const sourceSlots = options.slots ?? createM2MacroGraphSlots(repository);
     const slots: M2MacroGraphSlots = {
       ...sourceSlots,
       assetPlanning: {
@@ -721,6 +729,11 @@ export class PostConceptGraphDriver {
     projectId: string,
     trigger: z.infer<typeof MacroGraphResumeSchema>["trigger"] = "http-poll",
   ): Promise<ProjectSnapshot> {
+    if (
+      trigger === "approval-recorded" &&
+      this.repository.getProject(projectId).stage === "asset-planning"
+    )
+      this.activeRuns.delete(projectId);
     const current = this.inFlight.get(projectId);
     if (current) return current;
     let promise!: Promise<ProjectSnapshot>;
@@ -859,6 +872,13 @@ export class PostConceptGraphDriver {
         : {}),
       ...(state.asset
         ? { asset: this.repository.resolveRevision(state.asset) }
+        : {}),
+      ...(state.assetPlan
+        ? {
+            assetPlan: AssetPlanSchema.parse(
+              this.repository.resolveRevision(state.assetPlan),
+            ),
+          }
         : {}),
       ...(state.assetEvaluation
         ? {

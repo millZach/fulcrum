@@ -571,6 +571,29 @@ export const BlockedReasonSchema = z.object({
 });
 export type BlockedReason = z.infer<typeof BlockedReasonSchema>;
 
+export const ProvenanceSchema = z.object({
+  revisionId: z.string().min(1),
+  parentRevisionIds: z.array(z.string().min(1)),
+  sourceArtifactHashes: z.array(z.string().regex(/^[a-f0-9]{64}$/)).min(1),
+  runId: z.string().min(1),
+  operation: z.string().min(1),
+  provider: z.string().min(1).optional(),
+  model: z.string().min(1).optional(),
+  providerVersion: z.string().min(1).optional(),
+  seed: z.string().min(1).optional(),
+  promptArtifact: ArtifactRefSchema.optional(),
+  rights: z
+    .object({
+      sourceOwnershipConfirmed: z.boolean().optional(),
+      providerTermsUrl: z.string().url().optional(),
+      notes: z.string().optional(),
+    })
+    .optional(),
+  costUsd: z.number().nonnegative().optional(),
+  createdAt: z.string().datetime(),
+});
+export type Provenance = z.infer<typeof ProvenanceSchema>;
+
 export const AssetClassificationSchema = z.enum([
   "hero",
   "kit",
@@ -578,6 +601,444 @@ export const AssetClassificationSchema = z.enum([
   "functional",
 ]);
 export type AssetClassification = z.infer<typeof AssetClassificationSchema>;
+
+export const AssetClassHandlingPoliciesV1Schema = z.object({
+  policyVersion: z.literal(1),
+  hero: z.object({
+    productionRoute: z.literal("provider-3d"),
+    conceptViews: z.literal("multiview-if-supported"),
+    deterministicQa: z.literal("full"),
+    semanticQa: z.literal("turntable"),
+    regenerationStrategy: z.literal("finding-directed"),
+    maxRegenerationAttempts: z.literal(2),
+  }),
+  kit: z.object({
+    productionRoute: z.literal("provider-3d"),
+    conceptViews: z.literal("single-view"),
+    deterministicQa: z.literal("standard"),
+    semanticQa: z.literal("none"),
+    regenerationStrategy: z.literal("finding-directed"),
+    maxRegenerationAttempts: z.literal(1),
+  }),
+  procedural: z.object({
+    productionRoute: z.literal("parameterized-generation"),
+    conceptViews: z.literal("none"),
+    deterministicQa: z.literal("procedural-output"),
+    semanticQa: z.literal("none"),
+    regenerationStrategy: z.literal("parameter-adjustment"),
+    maxRegenerationAttempts: z.literal(2),
+  }),
+  functional: z.object({
+    productionRoute: z.literal("runtime-authored"),
+    conceptViews: z.literal("none"),
+    deterministicQa: z.literal("gameplay-function"),
+    semanticQa: z.literal("none"),
+    regenerationStrategy: z.literal("implementation-repair"),
+    maxRegenerationAttempts: z.literal(1),
+  }),
+});
+export type AssetClassHandlingPoliciesV1 = z.infer<
+  typeof AssetClassHandlingPoliciesV1Schema
+>;
+export type AssetHandlingPolicy =
+  AssetClassHandlingPoliciesV1[AssetClassification];
+
+export const ASSET_CLASS_HANDLING_POLICIES_V1 =
+  AssetClassHandlingPoliciesV1Schema.parse({
+    policyVersion: 1,
+    hero: {
+      productionRoute: "provider-3d",
+      conceptViews: "multiview-if-supported",
+      deterministicQa: "full",
+      semanticQa: "turntable",
+      regenerationStrategy: "finding-directed",
+      maxRegenerationAttempts: 2,
+    },
+    kit: {
+      productionRoute: "provider-3d",
+      conceptViews: "single-view",
+      deterministicQa: "standard",
+      semanticQa: "none",
+      regenerationStrategy: "finding-directed",
+      maxRegenerationAttempts: 1,
+    },
+    procedural: {
+      productionRoute: "parameterized-generation",
+      conceptViews: "none",
+      deterministicQa: "procedural-output",
+      semanticQa: "none",
+      regenerationStrategy: "parameter-adjustment",
+      maxRegenerationAttempts: 2,
+    },
+    functional: {
+      productionRoute: "runtime-authored",
+      conceptViews: "none",
+      deterministicQa: "gameplay-function",
+      semanticQa: "none",
+      regenerationStrategy: "implementation-repair",
+      maxRegenerationAttempts: 1,
+    },
+  });
+
+export const AssetPlanParameterValueSchema = z.union([
+  z.string(),
+  z.number().finite(),
+  z.boolean(),
+]);
+
+export const PlannedAssetProcedureSchema = z.object({
+  generatorId: z.string().min(1).max(120),
+  parameters: z
+    .record(z.string().min(1), AssetPlanParameterValueSchema)
+    .refine(
+      (value) => Object.keys(value).length > 0,
+      "Parameters are required",
+    ),
+});
+
+export const PlannedAssetSourceSchema = z.object({
+  gameDesignSpec: RevisionAncestorSchema,
+  conceptSet: RevisionAncestorSchema,
+  conceptSlots: z
+    .array(
+      z.object({
+        slotId: z.string().min(1),
+        concept: RevisionAncestorSchema,
+      }),
+    )
+    .max(3),
+});
+
+export const PlannedAssetSchema = z
+  .object({
+    assetId: z.string().min(1),
+    name: z.string().trim().min(1).max(120),
+    classification: AssetClassificationSchema,
+    rationale: z.string().trim().min(1).max(600),
+    sourceRefs: PlannedAssetSourceSchema,
+    dependsOnAssetIds: z.array(z.string().min(1)).max(11),
+    procedure: PlannedAssetProcedureSchema.optional(),
+    acceptanceCriteria: z
+      .array(z.string().trim().min(1).max(300))
+      .min(1)
+      .max(8),
+  })
+  .superRefine((asset, context) => {
+    const shouldHaveProcedure = asset.classification === "procedural";
+    if (shouldHaveProcedure !== Boolean(asset.procedure)) {
+      context.addIssue({
+        code: "custom",
+        path: ["procedure"],
+        message:
+          "Procedural assets require parameters; other classes must omit them.",
+      });
+    }
+  });
+export type PlannedAsset = z.infer<typeof PlannedAssetSchema>;
+
+export const AssetPlanProvenanceSchema = ProvenanceSchema.extend({
+  operation: z.enum(["asset-plan.initial", "asset-plan.replan"]),
+});
+
+export const ASSET_PLAN_MAX_ASSETS = 12;
+
+export const AssetPlanIssueCodeSchema = z.enum([
+  "duplicate-asset-id",
+  "unknown-dependency",
+  "self-dependency",
+  "dependency-cycle",
+  "plan-size-exceeded",
+  "missing-hero",
+  "hero-without-kept-concept",
+  "concept-source-not-kept",
+  "source-approval-mismatch",
+  "source-lineage-mismatch",
+  "provenance-mismatch",
+  "invalid-structured-output",
+]);
+export type AssetPlanIssueCode = z.infer<typeof AssetPlanIssueCodeSchema>;
+
+export const AssetPlanIssueSchema = z.object({
+  code: AssetPlanIssueCodeSchema,
+  message: z.string().min(1),
+  path: z.array(z.union([z.string(), z.number().int()])),
+  assetId: z.string().min(1).optional(),
+  relatedAssetId: z.string().min(1).optional(),
+});
+export type AssetPlanIssue = z.infer<typeof AssetPlanIssueSchema>;
+
+export const assetPlanGraphIssues = (
+  assets: readonly PlannedAsset[],
+): AssetPlanIssue[] => {
+  const issues: AssetPlanIssue[] = [];
+  const firstIndexById = new Map<string, number>();
+  const uniqueAssets: Array<{ asset: PlannedAsset; index: number }> = [];
+
+  assets.forEach((asset, index) => {
+    const firstIndex = firstIndexById.get(asset.assetId);
+    if (firstIndex !== undefined) {
+      issues.push({
+        code: "duplicate-asset-id",
+        message: `Asset ID ${asset.assetId} duplicates assets[${firstIndex}].`,
+        path: [index, "assetId"],
+        assetId: asset.assetId,
+      });
+      return;
+    }
+    firstIndexById.set(asset.assetId, index);
+    uniqueAssets.push({ asset, index });
+  });
+
+  const ids = new Set(firstIndexById.keys());
+  const indegree = new Map<string, number>(
+    uniqueAssets.map(({ asset }) => [asset.assetId, 0]),
+  );
+  const dependents = new Map<string, string[]>(
+    uniqueAssets.map(({ asset }) => [asset.assetId, []]),
+  );
+
+  for (const { asset, index } of uniqueAssets) {
+    const countedDependencies = new Set<string>();
+    asset.dependsOnAssetIds.forEach((dependencyId, dependencyIndex) => {
+      if (dependencyId === asset.assetId) {
+        issues.push({
+          code: "self-dependency",
+          message: `Asset ${asset.assetId} cannot depend on itself.`,
+          path: [index, "dependsOnAssetIds", dependencyIndex],
+          assetId: asset.assetId,
+          relatedAssetId: dependencyId,
+        });
+        return;
+      }
+      if (!ids.has(dependencyId)) {
+        issues.push({
+          code: "unknown-dependency",
+          message: `Asset ${asset.assetId} depends on unknown asset ${dependencyId}.`,
+          path: [index, "dependsOnAssetIds", dependencyIndex],
+          assetId: asset.assetId,
+          relatedAssetId: dependencyId,
+        });
+        return;
+      }
+      if (countedDependencies.has(dependencyId)) return;
+      countedDependencies.add(dependencyId);
+      indegree.set(asset.assetId, (indegree.get(asset.assetId) ?? 0) + 1);
+      dependents.get(dependencyId)?.push(asset.assetId);
+    });
+  }
+
+  const queue = [...indegree.entries()]
+    .filter(([, degree]) => degree === 0)
+    .map(([assetId]) => assetId)
+    .sort();
+  let visited = 0;
+  while (queue.length > 0) {
+    const assetId = queue.shift()!;
+    visited += 1;
+    for (const dependentId of (dependents.get(assetId) ?? []).sort()) {
+      const nextDegree = (indegree.get(dependentId) ?? 0) - 1;
+      indegree.set(dependentId, nextDegree);
+      if (nextDegree === 0) {
+        queue.push(dependentId);
+        queue.sort();
+      }
+    }
+  }
+
+  if (visited !== uniqueAssets.length) {
+    const dependencies = new Map(
+      uniqueAssets.map(({ asset }) => [
+        asset.assetId,
+        asset.dependsOnAssetIds.filter(
+          (dependencyId) =>
+            dependencyId !== asset.assetId && ids.has(dependencyId),
+        ),
+      ]),
+    );
+    const participatesInCycle = (start: string): boolean => {
+      const pending = [...(dependencies.get(start) ?? [])];
+      const visitedDependencies = new Set<string>();
+      while (pending.length > 0) {
+        const dependencyId = pending.pop()!;
+        if (dependencyId === start) return true;
+        if (visitedDependencies.has(dependencyId)) continue;
+        visitedDependencies.add(dependencyId);
+        pending.push(...(dependencies.get(dependencyId) ?? []));
+      }
+      return false;
+    };
+    for (const { asset, index } of uniqueAssets) {
+      if (
+        (indegree.get(asset.assetId) ?? 0) > 0 &&
+        participatesInCycle(asset.assetId)
+      ) {
+        issues.push({
+          code: "dependency-cycle",
+          message: `Asset ${asset.assetId} participates in a dependency cycle.`,
+          path: [index, "dependsOnAssetIds"],
+          assetId: asset.assetId,
+        });
+      }
+    }
+  }
+
+  return issues;
+};
+
+export const AssetPlanSchema = z
+  .object({
+    planId: z.string().min(1),
+    assets: z.array(PlannedAssetSchema).min(1).max(ASSET_PLAN_MAX_ASSETS),
+    handling: AssetClassHandlingPoliciesV1Schema,
+    changeRequest: z
+      .object({
+        approvalId: z.string().min(1),
+        previousPlanRevisionId: z.string().min(1),
+        notes: z.string().trim().min(1).max(1_000),
+      })
+      .optional(),
+    provenance: AssetPlanProvenanceSchema,
+  })
+  .superRefine((plan, context) => {
+    for (const issue of assetPlanGraphIssues(plan.assets)) {
+      context.addIssue({
+        code: "custom",
+        path: ["assets", ...issue.path],
+        message: issue.message,
+      });
+    }
+  });
+export type AssetPlan = z.infer<typeof AssetPlanSchema>;
+
+export const handlingForPlannedAsset = (plan: AssetPlan, assetId: string) => {
+  const asset = plan.assets.find((candidate) => candidate.assetId === assetId);
+  if (!asset) throw new Error(`Unknown planned asset: ${assetId}`);
+  return { asset, policy: plan.handling[asset.classification] };
+};
+
+export const AssetPlanFailureSchema = z.object({
+  kind: FailureKindSchema,
+  code: z.enum([
+    "asset-plan-invalid-input",
+    "asset-plan-invalid-output",
+    "asset-plan-provider-failed",
+    "asset-plan-submission-unknown",
+    "asset-plan-replan-limit",
+  ]),
+  message: z.string().min(1),
+  issues: z.array(AssetPlanIssueSchema),
+});
+export type AssetPlanFailure = z.infer<typeof AssetPlanFailureSchema>;
+
+export const ApprovedRevisionBindingSchema = z
+  .object({
+    revision: RevisionRefSchema,
+    approval: ApprovalDecisionSchema.extend({
+      decision: z.literal("approved"),
+    }),
+  })
+  .superRefine(({ revision, approval }, context) => {
+    if (
+      approval.targetRevisionId !== revision.revisionId ||
+      approval.targetSha256 !== revision.artifact.sha256
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["approval"],
+        message: "Approval does not bind to this immutable revision.",
+      });
+    }
+  });
+export type ApprovedRevisionBinding = z.infer<
+  typeof ApprovedRevisionBindingSchema
+>;
+
+export const AssetPlanningInputSchema = z
+  .object({
+    projectId: z.string().min(1),
+    runId: z.string().min(1),
+    mode: ProviderModeSchema,
+    orchestratorProvider: ExecutionProviderSchema,
+    gameDesignSpec: ApprovedRevisionBindingSchema,
+    conceptSet: ApprovedRevisionBindingSchema,
+    replan: z
+      .object({
+        previousPlan: RevisionRefSchema,
+        decision: ApprovalDecisionSchema,
+      })
+      .optional(),
+  })
+  .superRefine((input, context) => {
+    if (input.gameDesignSpec.approval.targetType !== "game-design") {
+      context.addIssue({
+        code: "custom",
+        path: ["gameDesignSpec", "approval", "targetType"],
+        message: "Expected an approved Game Design Spec.",
+      });
+    }
+    if (input.conceptSet.approval.targetType !== "concept-set") {
+      context.addIssue({
+        code: "custom",
+        path: ["conceptSet", "approval", "targetType"],
+        message: "Expected an approved concept set.",
+      });
+    }
+    if (input.replan) {
+      const { previousPlan, decision } = input.replan;
+      if (
+        decision.targetType !== "asset-plan" ||
+        decision.decision !== "changes-requested" ||
+        !decision.notes?.trim() ||
+        decision.targetRevisionId !== previousPlan.revisionId ||
+        decision.targetSha256 !== previousPlan.artifact.sha256
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["replan"],
+          message: "Replanning requires an exact changes-requested decision.",
+        });
+      }
+    }
+  });
+export type AssetPlanningInput = z.infer<typeof AssetPlanningInputSchema>;
+
+export const AssetPlanningOutcomeSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("ready"),
+    requestId: z.string().min(1),
+    value: RevisionRefSchema,
+  }),
+  z.object({
+    status: z.literal("failed"),
+    requestId: z.string().min(1),
+    error: AssetPlanFailureSchema,
+  }),
+]);
+export type AssetPlanningOutcome = z.infer<typeof AssetPlanningOutcomeSchema>;
+
+export const ApprovedAssetPlanBindingSchema = z
+  .object({
+    plan: RevisionRefSchema,
+    approval: ApprovalDecisionSchema.extend({
+      targetType: z.literal("asset-plan"),
+      decision: z.literal("approved"),
+    }),
+  })
+  .superRefine(({ plan, approval }, context) => {
+    if (
+      approval.targetRevisionId !== plan.revisionId ||
+      approval.targetSha256 !== plan.artifact.sha256
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["approval"],
+        message: "The asset-plan approval is stale.",
+      });
+    }
+  });
+export type ApprovedAssetPlanBinding = z.infer<
+  typeof ApprovedAssetPlanBindingSchema
+>;
 
 export const AssetBatchEntrySchema = z.object({
   assetId: z.string().min(1),
@@ -754,6 +1215,7 @@ export const ProjectSnapshotSchema = z.object({
   soundDocuments: z
     .record(z.string().min(1), z.array(SoundDocumentSchema).min(1))
     .optional(),
+  assetPlan: AssetPlanSchema.optional(),
   asset: AssetDocumentSchema.optional(),
   assetEvaluation: AssetEvaluationSchema.optional(),
   scene: FulcrumSceneSpecV0Schema.optional(),
@@ -905,6 +1367,24 @@ export const ApprovalInputSchema = z.object({
   notes: z.string().max(1_000).optional(),
 });
 export type ApprovalInput = z.infer<typeof ApprovalInputSchema>;
+
+export const AssetPlanApprovalInputSchema = ApprovalInputSchema.extend({
+  targetType: z.literal("asset-plan"),
+  targetRevisionId: z.string().min(1),
+  targetSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  notes: z.string().trim().max(1_000).optional(),
+}).superRefine((input, context) => {
+  if (input.decision === "changes-requested" && !input.notes) {
+    context.addIssue({
+      code: "custom",
+      path: ["notes"],
+      message: "Describe the requested asset-plan change.",
+    });
+  }
+});
+export type AssetPlanApprovalInput = z.infer<
+  typeof AssetPlanApprovalInputSchema
+>;
 
 export const AnswerFrontierRoundInputSchema = z.object({
   interrogationRevisionId: z.string().min(1),

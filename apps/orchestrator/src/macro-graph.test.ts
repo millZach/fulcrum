@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
+  ASSET_CLASS_HANDLING_POLICIES_V1,
   MacroGraphInputSchema,
   M0_FIXTURE_BRIEF,
   type ApprovalDecision,
@@ -172,7 +173,53 @@ const m2Fixture = (repository: ProjectRepository) => {
   const conceptSet = revision("concept-set", "concept-set");
   const gameDesignSpec = revision("game-design", "game-design-spec");
   const visualDirectionSet = revision("directions", "visual-direction-set");
-  const assetPlan = revision("asset-plan", "asset-plan");
+  const assetPlanRevisionId = "m2-fixture-asset-plan-revision";
+  const assetPlan = repository.writeRevision({
+    projectId,
+    entityId: `${projectId}:asset-plan`,
+    kind: "asset-plan",
+    revisionId: assetPlanRevisionId,
+    createdAt,
+    value: {
+      planId: `${projectId}:asset-plan`,
+      assets: [
+        {
+          assetId: "hero",
+          name: "Fixture hero",
+          classification: "hero",
+          rationale: "Exercises the S1 M2 graph contract.",
+          sourceRefs: {
+            gameDesignSpec: {
+              revisionId: gameDesignSpec.revisionId,
+              sha256: gameDesignSpec.artifact.sha256,
+              kind: gameDesignSpec.kind,
+            },
+            conceptSet: {
+              revisionId: conceptSet.revisionId,
+              sha256: conceptSet.artifact.sha256,
+              kind: conceptSet.kind,
+            },
+            conceptSlots: [],
+          },
+          dependsOnAssetIds: [],
+          acceptanceCriteria: ["The fixture remains readable."],
+        },
+      ],
+      handling: ASSET_CLASS_HANDLING_POLICIES_V1,
+      provenance: {
+        revisionId: assetPlanRevisionId,
+        parentRevisionIds: [gameDesignSpec.revisionId, conceptSet.revisionId],
+        sourceArtifactHashes: [
+          gameDesignSpec.artifact.sha256,
+          conceptSet.artifact.sha256,
+        ],
+        runId,
+        operation: "asset-plan.initial",
+        createdAt,
+      },
+    },
+    runId,
+  });
   repository.createProject({
     schemaVersion: 1,
     milestone: "m2",
@@ -383,7 +430,7 @@ describe("PostConceptGraphDriver", () => {
     expect(snapshot.state).toMatchObject({
       stage: "blocked",
       blockedReason: {
-        code: "asset-planner-unavailable",
+        code: "asset-plan-invalid-input",
         failureKind: "user-action-required",
       },
     });

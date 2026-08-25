@@ -1,0 +1,806 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import {
+  ASSET_CLASS_HANDLING_POLICIES_V1,
+  AssetPlanSchema,
+  type ApprovalDecision,
+  type AssetPlan,
+  type AssetPlanningInput,
+  type ConceptSet,
+  type GameDesignSpec,
+  type M1ConceptDocument,
+  type RevisionRef,
+} from "@fulcrum/domain";
+import { ProjectRepository } from "@fulcrum/project";
+
+import {
+  type AssetPlanValidationInputs,
+  type StructuredModelExecution,
+  assetPlanIdempotencyKey,
+  createAssetPlannerForTest,
+  deriveReplayAssetPlanDraft,
+  materializeAssetPlan,
+  validateAssetPlanAgainstApprovedInputs,
+} from "./asset-planner.js";
+
+const timestamp = "2026-08-24T12:00:00.000Z";
+const roots: string[] = [];
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  for (const root of roots.splice(0))
+    rmSync(root, { recursive: true, force: true });
+});
+
+const temporaryRoot = () => {
+  const root = mkdtempSync(path.join(tmpdir(), "fulcrum-asset-planner-"));
+  roots.push(root);
+  return root;
+};
+
+const revision = (
+  revisionId: string,
+  sha256: string,
+  kind: string,
+): RevisionRef => ({
+  entityId: `${revisionId}:entity`,
+  revisionId,
+  kind,
+  artifact: {
+    artifactId: `${revisionId}:artifact`,
+    sha256,
+    mediaType: "application/json",
+    byteLength: 100,
+    uri: `/api/artifacts/${revisionId}:artifact`,
+  },
+  createdAt: timestamp,
+  createdByRunId: "run-1",
+});
+
+const approval = (
+  targetType: ApprovalDecision["targetType"],
+  target: RevisionRef,
+): ApprovalDecision & { decision: "approved" } => ({
+  approvalId: `${target.revisionId}:approval`,
+  projectId: "project-1",
+  targetType,
+  targetRevisionId: target.revisionId,
+  targetSha256: target.artifact.sha256,
+  decision: "approved",
+  decidedBy: "zach",
+  decidedAt: timestamp,
+});
+
+const validationFixture = (): {
+  plan: AssetPlan;
+  inputs: AssetPlanValidationInputs;
+} => {
+  const gds = revision("gds-1", "a".repeat(64), "game-design-spec");
+  const set = revision("concept-set-1", "b".repeat(64), "concept-set");
+  const concept = revision("concept-1", "c".repeat(64), "m1-concept");
+  const conceptSet: ConceptSet = {
+    conceptSetId: "concept-set-1",
+    sourceDirectionRevisionId: "direction-1",
+    slots: [
+      {
+        slotId: "gameplay-anchor",
+        name: "Reliquary",
+        purpose: "gameplay anchor hero prop",
+        revisions: [
+          {
+            revision: concept,
+            inheritedVisualTokens: [
+              { tokenId: "shape-1", category: "shape", value: "squat" },
+            ],
+          },
+        ],
+        selectedRevisionId: concept.revisionId,
+      },
+    ],
+  };
+  const conceptDocument: M1ConceptDocument = {
+    conceptId: "concept-1",
+    name: "Reliquary",
+    prompt: "A squat ancient reliquary hero prop.",
+    negativePrompt: "photoreal",
+    image: {
+      artifactId: "concept-image",
+      sha256: "d".repeat(64),
+      mediaType: "image/png",
+      byteLength: 10,
+      uri: "/api/artifacts/concept-image",
+    },
+    provider: "replay",
+    model: "fixture",
+    sourceRevisionIds: [gds.revisionId, "direction-1"],
+    costUsd: 0,
+    ancestors: [
+      {
+        revisionId: gds.revisionId,
+        sha256: gds.artifact.sha256,
+        kind: gds.kind,
+      },
+      {
+        revisionId: "direction-1",
+        sha256: "e".repeat(64),
+        kind: "visual-direction",
+      },
+    ],
+  };
+  const plan = AssetPlanSchema.parse({
+    planId: "project-1:asset-plan",
+    assets: [
+      {
+        assetId: "project-1:planned-asset:reliquary",
+        name: "Reliquary",
+        classification: "hero",
+        rationale: "The gameplay anchor needs a readable hero prop.",
+        sourceRefs: {
+          gameDesignSpec: {
+            revisionId: gds.revisionId,
+            sha256: gds.artifact.sha256,
+            kind: gds.kind,
+          },
+          conceptSet: {
+            revisionId: set.revisionId,
+            sha256: set.artifact.sha256,
+            kind: set.kind,
+          },
+          conceptSlots: [
+            {
+              slotId: "gameplay-anchor",
+              concept: {
+                revisionId: concept.revisionId,
+                sha256: concept.artifact.sha256,
+                kind: concept.kind,
+              },
+            },
+          ],
+        },
+        dependsOnAssetIds: [],
+        acceptanceCriteria: ["Readable from across the arena."],
+      },
+    ],
+    handling: ASSET_CLASS_HANDLING_POLICIES_V1,
+    provenance: {
+      revisionId: "plan-revision-1",
+      parentRevisionIds: [gds.revisionId, set.revisionId, concept.revisionId],
+      sourceArtifactHashes: [
+        gds.artifact.sha256,
+        set.artifact.sha256,
+        concept.artifact.sha256,
+      ],
+      runId: "run-1",
+      operation: "asset-plan.initial",
+      createdAt: timestamp,
+    },
+  });
+  return {
+    plan,
+    inputs: {
+      projectId: "project-1",
+      runId: "run-1",
+      gameDesignSpec: { revision: gds, approval: approval("game-design", gds) },
+      conceptSet: { revision: set, approval: approval("concept-set", set) },
+      conceptSetDocument: conceptSet,
+      conceptDocuments: { [concept.revisionId]: conceptDocument },
+      expectedRevisionId: "plan-revision-1",
+      expectedOperation: "asset-plan.initial",
+    },
+  };
+};
+
+describe("validateAssetPlanAgainstApprovedInputs", () => {
+  it("asset_plan_rejects_an_unapproved_game_design_spec", () => {
+    const fixture = validationFixture();
+    fixture.inputs.gameDesignSpec.approval = {
+      ...fixture.inputs.gameDesignSpec.approval,
+      decision: "rejected",
+    };
+
+    expect(
+      validateAssetPlanAgainstApprovedInputs(fixture.plan, fixture.inputs),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "source-approval-mismatch" }),
+      ]),
+    );
+  });
+
+  it("asset_plan_rejects_an_unapproved_concept_set", () => {
+    const fixture = validationFixture();
+    fixture.inputs.conceptSet.approval = {
+      ...fixture.inputs.conceptSet.approval,
+      decision: "changes-requested",
+    };
+
+    expect(
+      validateAssetPlanAgainstApprovedInputs(fixture.plan, fixture.inputs),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "source-approval-mismatch" }),
+      ]),
+    );
+  });
+
+  it("hero_asset_requires_a_kept_concept_revision", () => {
+    const fixture = validationFixture();
+    const plan = AssetPlanSchema.parse({
+      ...fixture.plan,
+      assets: [
+        {
+          ...fixture.plan.assets[0],
+          sourceRefs: {
+            ...fixture.plan.assets[0]!.sourceRefs,
+            conceptSlots: [],
+          },
+        },
+      ],
+    });
+
+    expect(
+      validateAssetPlanAgainstApprovedInputs(plan, fixture.inputs),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "hero-without-kept-concept" }),
+      ]),
+    );
+  });
+
+  it("concept_source_must_match_the_slots_selected_revision_and_hash", () => {
+    const fixture = validationFixture();
+    const plan = structuredClone(fixture.plan);
+    plan.assets[0]!.sourceRefs.conceptSlots[0]!.concept.sha256 = "f".repeat(64);
+
+    expect(
+      validateAssetPlanAgainstApprovedInputs(plan, fixture.inputs),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "concept-source-not-kept" }),
+      ]),
+    );
+  });
+
+  it("selected_concept_must_descend_from_the_approved_game_design_spec", () => {
+    const fixture = validationFixture();
+    fixture.inputs.conceptDocuments["concept-1"] = {
+      ...fixture.inputs.conceptDocuments["concept-1"]!,
+      ancestors: [
+        {
+          revisionId: "other-gds",
+          sha256: "9".repeat(64),
+          kind: "game-design-spec",
+        },
+        {
+          revisionId: "direction-1",
+          sha256: "e".repeat(64),
+          kind: "visual-direction",
+        },
+      ],
+    };
+
+    expect(
+      validateAssetPlanAgainstApprovedInputs(fixture.plan, fixture.inputs),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "source-lineage-mismatch" }),
+      ]),
+    );
+  });
+
+  it("plan_provenance_must_name_every_exact_source_hash", () => {
+    const fixture = validationFixture();
+    const plan = structuredClone(fixture.plan);
+    plan.provenance.sourceArtifactHashes = [
+      fixture.inputs.gameDesignSpec.revision.artifact.sha256,
+      fixture.inputs.conceptSet.revision.artifact.sha256,
+    ];
+
+    expect(
+      validateAssetPlanAgainstApprovedInputs(plan, fixture.inputs),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "provenance-mismatch" }),
+      ]),
+    );
+  });
+});
+
+const replayInputs = () => {
+  const fixture = validationFixture();
+  const gameDesignSpecDocument: GameDesignSpec = {
+    title: "Reliquary Run",
+    genre: "third-person extraction",
+    camera: "third-person",
+    coreFantasy: "Recover an ancient reliquary under pressure.",
+    coreLoop: ["enter", "locate", "extract"],
+    playerVerbs: ["move", "inspect", "extract"],
+    objective: "Extract the reliquary.",
+    sessionMinutes: 8,
+    gameplayConstraints: ["The objective must read from across the arena."],
+    facts: [],
+    assumptions: [],
+  };
+  return { ...fixture.inputs, gameDesignSpecDocument };
+};
+
+const initialReplayPlan = () => {
+  const inputs = replayInputs();
+  const draft = deriveReplayAssetPlanDraft(inputs);
+  const plan = materializeAssetPlan(draft, {
+    ...inputs,
+    revisionId: "replay-plan-1",
+    createdAt: timestamp,
+    operation: "asset-plan.initial",
+  });
+  return { inputs, draft, plan };
+};
+
+describe("replay asset-plan derivation and materialization", () => {
+  it("replay_planner_is_deterministic_for_identical_approved_inputs", () => {
+    const first = initialReplayPlan().plan;
+    const second = initialReplayPlan().plan;
+
+    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+  });
+
+  it("replay_fixture_contains_hero_kit_procedural_and_functional_assets", () => {
+    const classes = initialReplayPlan().plan.assets.map(
+      (asset) => asset.classification,
+    );
+
+    expect(new Set(classes)).toEqual(
+      new Set(["hero", "kit", "procedural", "functional"]),
+    );
+  });
+
+  it("replay_kit_depends_on_the_hero_material_language", () => {
+    const plan = initialReplayPlan().plan;
+    const hero = plan.assets.find((asset) => asset.classification === "hero")!;
+    const kit = plan.assets.find((asset) => asset.classification === "kit")!;
+
+    expect(kit.dependsOnAssetIds).toContain(hero.assetId);
+  });
+
+  it("materialization_assigns_stable_project_scoped_asset_ids", () => {
+    const { plan } = initialReplayPlan();
+
+    expect(
+      plan.assets.every((asset) =>
+        asset.assetId.startsWith("project-1:planned-asset:"),
+      ),
+    ).toBe(true);
+    expect(new Set(plan.assets.map((asset) => asset.assetId)).size).toBe(
+      plan.assets.length,
+    );
+  });
+
+  it("replan_preserves_ids_for_unchanged_asset_keys", () => {
+    const initial = initialReplayPlan();
+    const previousPlan = revision(
+      initial.plan.provenance.revisionId,
+      "7".repeat(64),
+      "asset-plan",
+    );
+    const decision: ApprovalDecision = {
+      approvalId: "plan-change-1",
+      projectId: "project-1",
+      targetType: "asset-plan",
+      targetRevisionId: previousPlan.revisionId,
+      targetSha256: previousPlan.artifact.sha256,
+      decision: "changes-requested",
+      notes: "Give the arena kit a stronger material tie to the hero.",
+      decidedBy: "zach",
+      decidedAt: timestamp,
+    };
+    const inputs = {
+      ...initial.inputs,
+      previousPlan,
+      previousPlanDocument: initial.plan,
+      replanDecision: decision,
+    };
+    const replanned = materializeAssetPlan(deriveReplayAssetPlanDraft(inputs), {
+      ...inputs,
+      revisionId: "replay-plan-2",
+      createdAt: timestamp,
+      operation: "asset-plan.replan",
+    });
+
+    expect(replanned.assets.map((asset) => asset.assetId).sort()).toEqual(
+      initial.plan.assets.map((asset) => asset.assetId).sort(),
+    );
+  });
+
+  it("replan_records_parent_revision_approval_and_change_note", () => {
+    const initial = initialReplayPlan();
+    const previousPlan = revision(
+      initial.plan.provenance.revisionId,
+      "7".repeat(64),
+      "asset-plan",
+    );
+    const decision: ApprovalDecision = {
+      approvalId: "plan-change-1",
+      projectId: "project-1",
+      targetType: "asset-plan",
+      targetRevisionId: previousPlan.revisionId,
+      targetSha256: previousPlan.artifact.sha256,
+      decision: "changes-requested",
+      notes: "Give the arena kit a stronger material tie to the hero.",
+      decidedBy: "zach",
+      decidedAt: timestamp,
+    };
+    const inputs = {
+      ...initial.inputs,
+      previousPlan,
+      previousPlanDocument: initial.plan,
+      replanDecision: decision,
+    };
+    const replanned = materializeAssetPlan(deriveReplayAssetPlanDraft(inputs), {
+      ...inputs,
+      revisionId: "replay-plan-2",
+      createdAt: timestamp,
+      operation: "asset-plan.replan",
+    });
+
+    expect(replanned.changeRequest).toEqual({
+      approvalId: decision.approvalId,
+      previousPlanRevisionId: previousPlan.revisionId,
+      notes: decision.notes,
+    });
+    expect(replanned.provenance.parentRevisionIds).toContain(
+      previousPlan.revisionId,
+    );
+  });
+});
+
+const plannerFixture = (
+  mode: "replay" | "live" = "replay",
+  orchestratorProvider: AssetPlanningInput["orchestratorProvider"] = "openai",
+  budgetUsd = 1,
+) => {
+  const repository = new ProjectRepository(temporaryRoot());
+  const projectId = "planner-project";
+  const runId = "planner-run";
+  repository.reserveProject(projectId, timestamp);
+  const brief = repository.writeRevision({
+    projectId,
+    entityId: `${projectId}:brief`,
+    kind: "game-brief",
+    value: { text: "A compact extraction arena centered on one reliquary." },
+    runId,
+  });
+  const gameDesignSpecDocument: GameDesignSpec = {
+    title: "Reliquary Run",
+    genre: "third-person extraction",
+    camera: "third-person",
+    coreFantasy: "Recover an ancient reliquary under pressure.",
+    coreLoop: ["enter", "locate", "extract"],
+    playerVerbs: ["move", "inspect", "extract"],
+    objective: "Extract the reliquary.",
+    sessionMinutes: 8,
+    gameplayConstraints: ["Keep the objective visible across the arena."],
+    facts: [],
+    assumptions: [],
+  };
+  const gds = repository.writeRevision({
+    projectId,
+    entityId: `${projectId}:gds`,
+    kind: "game-design-spec",
+    value: gameDesignSpecDocument,
+    runId,
+  });
+  const conceptDocument: M1ConceptDocument = {
+    conceptId: "concept-1",
+    name: "Reliquary",
+    prompt: "A squat ancient reliquary hero prop.",
+    negativePrompt: "photoreal",
+    image: {
+      artifactId: "concept-image",
+      sha256: "d".repeat(64),
+      mediaType: "image/png",
+      byteLength: 10,
+      uri: "/api/artifacts/concept-image",
+    },
+    provider: "replay",
+    model: "fixture",
+    sourceRevisionIds: [gds.revisionId, "direction-1"],
+    costUsd: 0,
+    ancestors: [
+      {
+        revisionId: gds.revisionId,
+        sha256: gds.artifact.sha256,
+        kind: gds.kind,
+      },
+      {
+        revisionId: "direction-1",
+        sha256: "e".repeat(64),
+        kind: "visual-direction",
+      },
+    ],
+  };
+  const concept = repository.writeRevision({
+    projectId,
+    entityId: `${projectId}:concept:gameplay-anchor`,
+    kind: "m1-concept",
+    value: conceptDocument,
+    runId,
+  });
+  const conceptSetDocument: ConceptSet = {
+    conceptSetId: `${projectId}:concept-set`,
+    sourceDirectionRevisionId: "direction-1",
+    slots: [
+      {
+        slotId: "gameplay-anchor",
+        name: "Reliquary",
+        purpose: "gameplay anchor hero prop",
+        revisions: [
+          {
+            revision: concept,
+            inheritedVisualTokens: [
+              { tokenId: "shape-1", category: "shape", value: "squat" },
+            ],
+          },
+        ],
+        selectedRevisionId: concept.revisionId,
+      },
+    ],
+  };
+  const conceptSet = repository.writeRevision({
+    projectId,
+    entityId: `${projectId}:concept-set`,
+    kind: "concept-set",
+    value: conceptSetDocument,
+    runId,
+  });
+  const gameDesignApproval = {
+    ...approval("game-design", gds),
+    projectId,
+  };
+  const conceptSetApproval = {
+    ...approval("concept-set", conceptSet),
+    projectId,
+  };
+  repository.createProject({
+    schemaVersion: 1,
+    milestone: "m2",
+    projectId,
+    name: "Planner fixture",
+    mode,
+    orchestratorProvider,
+    status: "active",
+    stage: "asset-planning",
+    runId,
+    budgetUsd,
+    spentUsd: 0,
+    brief,
+    gameDesignSpec: gds,
+    conceptSet,
+    gameDesignApproval,
+    conceptSetApproval,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  });
+  const input: AssetPlanningInput = {
+    projectId,
+    runId,
+    mode,
+    orchestratorProvider,
+    gameDesignSpec: { revision: gds, approval: gameDesignApproval },
+    conceptSet: { revision: conceptSet, approval: conceptSetApproval },
+  };
+  const resolved = {
+    projectId,
+    runId,
+    gameDesignSpec: input.gameDesignSpec,
+    conceptSet: input.conceptSet,
+    conceptSetDocument,
+    conceptDocuments: { [concept.revisionId]: conceptDocument },
+    expectedRevisionId: "unused",
+    expectedOperation: "asset-plan.initial" as const,
+    gameDesignSpecDocument,
+  };
+  return { repository, input, resolved };
+};
+
+const executionReturning = (value: unknown): StructuredModelExecution => ({
+  generateStructured: vi.fn(async () => ({
+    value,
+    provider: "openai",
+    model: "planner-model",
+  })) as StructuredModelExecution["generateStructured"],
+});
+
+describe("AssetPlanner.plan", () => {
+  it("replay_planning_never_calls_structured_execution", async () => {
+    const fixture = plannerFixture();
+    const execution = executionReturning({});
+    const planner = createAssetPlannerForTest(fixture.repository, {
+      execution,
+      now: () => timestamp,
+      revisionId: () => "plan-revision-1",
+    });
+
+    const outcome = await planner.plan(fixture.input);
+
+    expect(outcome.status).toBe("ready");
+    expect(execution.generateStructured).not.toHaveBeenCalled();
+    fixture.repository.close();
+  });
+
+  it("repeat_planning_returns_the_ready_revision_without_writing_another", async () => {
+    const fixture = plannerFixture();
+    const planner = createAssetPlannerForTest(fixture.repository, {
+      execution: executionReturning({}),
+      now: () => timestamp,
+      revisionId: vi.fn(() => "plan-revision-1"),
+    });
+
+    const first = await planner.plan(fixture.input);
+    const second = await planner.plan(fixture.input);
+
+    expect(second).toEqual(first);
+    expect(
+      fixture.repository
+        .listEvents(fixture.input.projectId)
+        .filter((event) => event.type === "asset-plan.created"),
+    ).toHaveLength(1);
+    fixture.repository.close();
+  });
+
+  it("live_planning_journals_intent_before_model_execution", async () => {
+    const fixture = plannerFixture("live");
+    const key = assetPlanIdempotencyKey(fixture.input);
+    const execution = executionReturning(
+      deriveReplayAssetPlanDraft(fixture.resolved),
+    );
+    vi.mocked(execution.generateStructured).mockImplementationOnce(async () => {
+      expect(fixture.repository.getSubmissionByKey(key)?.status).toBe(
+        "pending",
+      );
+      return {
+        value: deriveReplayAssetPlanDraft(fixture.resolved),
+        provider: "openai",
+        model: "planner-model",
+      };
+    });
+    const planner = createAssetPlannerForTest(fixture.repository, {
+      execution,
+      now: () => timestamp,
+      revisionId: () => "plan-revision-1",
+    });
+
+    expect((await planner.plan(fixture.input)).status).toBe("ready");
+    fixture.repository.close();
+  });
+
+  it("openai_api_planning_reserves_budget_before_the_call", async () => {
+    const fixture = plannerFixture("live", "openai-api");
+    const execution = executionReturning(
+      deriveReplayAssetPlanDraft(fixture.resolved),
+    );
+    vi.mocked(execution.generateStructured).mockImplementationOnce(async () => {
+      expect(
+        fixture.repository.getProject(fixture.input.projectId).spentUsd,
+      ).toBe(0.25);
+      return {
+        value: deriveReplayAssetPlanDraft(fixture.resolved),
+        provider: "openai-api",
+        model: "planner-model",
+      };
+    });
+    const planner = createAssetPlannerForTest(fixture.repository, {
+      execution,
+      now: () => timestamp,
+      revisionId: () => "plan-revision-1",
+    });
+
+    expect((await planner.plan(fixture.input)).status).toBe("ready");
+    fixture.repository.close();
+  });
+
+  it("budget_refusal_does_not_call_the_model_or_poison_the_key", async () => {
+    const fixture = plannerFixture("live", "openai-api", 0);
+    const execution = executionReturning(
+      deriveReplayAssetPlanDraft(fixture.resolved),
+    );
+    const planner = createAssetPlannerForTest(fixture.repository, {
+      execution,
+      now: () => timestamp,
+      revisionId: () => "plan-revision-1",
+    });
+
+    const refused = await planner.plan(fixture.input);
+    expect(refused.status).toBe("failed");
+    expect(execution.generateStructured).not.toHaveBeenCalled();
+    const key = assetPlanIdempotencyKey(fixture.input);
+    expect(fixture.repository.getSubmissionByKey(key)?.status).toBe(
+      "intent-recorded",
+    );
+
+    fixture.repository.saveProject({
+      ...fixture.repository.getProject(fixture.input.projectId),
+      budgetUsd: 1,
+    });
+    expect((await planner.plan(fixture.input)).status).toBe("ready");
+    expect(execution.generateStructured).toHaveBeenCalledTimes(1);
+    fixture.repository.close();
+  });
+
+  it("invalid_live_output_returns_strategy_changing_and_persists_no_plan", async () => {
+    const fixture = plannerFixture("live");
+    const planner = createAssetPlannerForTest(fixture.repository, {
+      execution: executionReturning({ assets: [] }),
+      now: () => timestamp,
+      revisionId: () => "plan-revision-1",
+    });
+
+    const outcome = await planner.plan(fixture.input);
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "asset-plan-invalid-output",
+        kind: "strategy-changing",
+      },
+    });
+    expect(
+      fixture.repository
+        .listEvents(fixture.input.projectId)
+        .some((event) => event.type === "asset-plan.created"),
+    ).toBe(false);
+    fixture.repository.close();
+  });
+
+  it("interrupted_live_planning_becomes_submission_unknown_without_respend", async () => {
+    const fixture = plannerFixture("live", "openai-api");
+    const execution = executionReturning({});
+    vi.mocked(execution.generateStructured).mockRejectedValueOnce(
+      new Error("connection interrupted"),
+    );
+    const planner = createAssetPlannerForTest(fixture.repository, {
+      execution,
+      now: () => timestamp,
+      revisionId: () => "plan-revision-1",
+    });
+
+    const first = await planner.plan(fixture.input);
+    const second = await planner.plan(fixture.input);
+
+    expect(first).toMatchObject({
+      status: "failed",
+      error: { code: "asset-plan-submission-unknown" },
+    });
+    expect(second).toMatchObject({
+      status: "failed",
+      error: { code: "asset-plan-submission-unknown" },
+    });
+    expect(execution.generateStructured).toHaveBeenCalledTimes(1);
+    expect(
+      fixture.repository.getProject(fixture.input.projectId).spentUsd,
+    ).toBe(0.25);
+    fixture.repository.close();
+  });
+
+  it("ready_live_submission_replays_without_a_second_model_call", async () => {
+    const fixture = plannerFixture("live");
+    const execution = executionReturning(
+      deriveReplayAssetPlanDraft(fixture.resolved),
+    );
+    const planner = createAssetPlannerForTest(fixture.repository, {
+      execution,
+      now: () => timestamp,
+      revisionId: () => "plan-revision-1",
+    });
+
+    const first = await planner.plan(fixture.input);
+    const second = await planner.plan(fixture.input);
+
+    expect(second).toEqual(first);
+    expect(execution.generateStructured).toHaveBeenCalledTimes(1);
+    fixture.repository.close();
+  });
+});

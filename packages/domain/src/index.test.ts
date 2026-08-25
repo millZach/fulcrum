@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ASSET_CLASS_HANDLING_POLICIES_V1,
+  AssetPlanSchema,
   AssetBatchEntrySchema,
   CreateProjectInputSchema,
   FailureKindSchema,
   MacroGraphSuspendSchema,
+  PlannedAssetSchema,
   ProjectStateSchema,
   WorkflowFailureSchema,
+  assetPlanGraphIssues,
+  handlingForPlannedAsset,
   hasMeteredRoutes,
 } from "./index.js";
 
@@ -43,6 +48,237 @@ const persistedState = (milestone: "m0" | "m1" | "m2", stage: string) => {
     updatedAt: createdAt,
   };
 };
+
+const ancestor = (revisionId: string, sha = "a".repeat(64)) => ({
+  revisionId,
+  sha256: sha,
+  kind: "test-revision",
+});
+
+const plannedAsset = (overrides: Record<string, unknown> = {}) => ({
+  assetId: "project-1:planned-asset:hero",
+  name: "Reliquary",
+  classification: "hero",
+  rationale: "The approved gameplay anchor needs a readable hero asset.",
+  sourceRefs: {
+    gameDesignSpec: ancestor("gds-1"),
+    conceptSet: ancestor("concept-set-1", "b".repeat(64)),
+    conceptSlots: [
+      {
+        slotId: "gameplay-anchor",
+        concept: ancestor("concept-1", "c".repeat(64)),
+      },
+    ],
+  },
+  dependsOnAssetIds: [],
+  acceptanceCriteria: ["Readable from across the play space."],
+  ...overrides,
+});
+
+const assetPlan = (assets = [plannedAsset()]) => ({
+  planId: "project-1:asset-plan",
+  assets,
+  handling: ASSET_CLASS_HANDLING_POLICIES_V1,
+  provenance: {
+    revisionId: "asset-plan-revision-1",
+    parentRevisionIds: ["gds-1", "concept-set-1", "concept-1"],
+    sourceArtifactHashes: ["a".repeat(64), "b".repeat(64), "c".repeat(64)],
+    runId: "run-1",
+    operation: "asset-plan.initial",
+    createdAt: "2026-08-24T12:00:00.000Z",
+  },
+});
+
+const parsedPlannedAsset = (overrides: Record<string, unknown> = {}) =>
+  PlannedAssetSchema.parse(plannedAsset(overrides));
+
+describe("asset plan schema", () => {
+  it("asset_plan_schema_accepts_the_four_class_contract", () => {
+    const policy = ASSET_CLASS_HANDLING_POLICIES_V1;
+
+    expect(policy).toEqual({
+      policyVersion: 1,
+      hero: {
+        productionRoute: "provider-3d",
+        conceptViews: "multiview-if-supported",
+        deterministicQa: "full",
+        semanticQa: "turntable",
+        regenerationStrategy: "finding-directed",
+        maxRegenerationAttempts: 2,
+      },
+      kit: {
+        productionRoute: "provider-3d",
+        conceptViews: "single-view",
+        deterministicQa: "standard",
+        semanticQa: "none",
+        regenerationStrategy: "finding-directed",
+        maxRegenerationAttempts: 1,
+      },
+      procedural: {
+        productionRoute: "parameterized-generation",
+        conceptViews: "none",
+        deterministicQa: "procedural-output",
+        semanticQa: "none",
+        regenerationStrategy: "parameter-adjustment",
+        maxRegenerationAttempts: 2,
+      },
+      functional: {
+        productionRoute: "runtime-authored",
+        conceptViews: "none",
+        deterministicQa: "gameplay-function",
+        semanticQa: "none",
+        regenerationStrategy: "implementation-repair",
+        maxRegenerationAttempts: 1,
+      },
+    });
+    expect(AssetPlanSchema.parse(assetPlan()).handling).toEqual(policy);
+  });
+
+  it("asset_plan_schema_requires_parameters_only_for_procedural_assets", () => {
+    expect(
+      PlannedAssetSchema.safeParse(
+        plannedAsset({ classification: "procedural" }),
+      ).success,
+    ).toBe(false);
+    expect(
+      PlannedAssetSchema.safeParse(
+        plannedAsset({
+          classification: "procedural",
+          procedure: {
+            generatorId: "scatter-dressing-v1",
+            parameters: { density: 0.65, avoidGameplayLane: true },
+          },
+        }),
+      ).success,
+    ).toBe(true);
+    expect(
+      PlannedAssetSchema.safeParse(
+        plannedAsset({
+          procedure: {
+            generatorId: "not-for-heroes",
+            parameters: { enabled: true },
+          },
+        }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("asset_plan_schema_rejects_more_than_twelve_assets", () => {
+    const assets = Array.from({ length: 13 }, (_, index) =>
+      plannedAsset({
+        assetId: `project-1:planned-asset:hero-${index}`,
+        name: `Hero ${index}`,
+      }),
+    );
+
+    expect(AssetPlanSchema.safeParse(assetPlan(assets)).success).toBe(false);
+  });
+
+  it("handling_for_planned_asset_returns_the_approved_policy", () => {
+    const plan = AssetPlanSchema.parse(assetPlan());
+
+    expect(
+      handlingForPlannedAsset(plan, "project-1:planned-asset:hero"),
+    ).toEqual({ asset: plan.assets[0], policy: plan.handling.hero });
+  });
+
+  it("project_state_schema_still_parses_existing_m0_and_m1_rows", () => {
+    expect(
+      ProjectStateSchema.safeParse(persistedState("m0", "asset-production"))
+        .success,
+    ).toBe(true);
+    expect(
+      ProjectStateSchema.safeParse(persistedState("m1", "interrogation"))
+        .success,
+    ).toBe(true);
+  });
+});
+
+describe("asset plan graph", () => {
+  it("asset_plan_graph_rejects_duplicate_logical_ids", () => {
+    const issues = assetPlanGraphIssues([
+      parsedPlannedAsset(),
+      parsedPlannedAsset({ name: "Duplicate reliquary" }),
+    ]);
+
+    expect(issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "duplicate-asset-id",
+          assetId: "project-1:planned-asset:hero",
+        }),
+      ]),
+    );
+  });
+
+  it("asset_plan_graph_rejects_an_unknown_dependency", () => {
+    const issues = assetPlanGraphIssues([
+      parsedPlannedAsset({ dependsOnAssetIds: ["missing-asset"] }),
+    ]);
+
+    expect(issues).toEqual([
+      expect.objectContaining({
+        code: "unknown-dependency",
+        relatedAssetId: "missing-asset",
+      }),
+    ]);
+  });
+
+  it("asset_plan_graph_rejects_a_self_dependency", () => {
+    const asset = parsedPlannedAsset({
+      dependsOnAssetIds: ["project-1:planned-asset:hero"],
+    });
+
+    expect(assetPlanGraphIssues([asset])).toEqual([
+      expect.objectContaining({
+        code: "self-dependency",
+        assetId: asset.assetId,
+      }),
+    ]);
+  });
+
+  it("asset_plan_graph_reports_the_members_of_a_cycle", () => {
+    const heroId = "project-1:planned-asset:hero";
+    const kitId = "project-1:planned-asset:kit";
+    const issues = assetPlanGraphIssues([
+      parsedPlannedAsset({ dependsOnAssetIds: [kitId] }),
+      parsedPlannedAsset({
+        assetId: kitId,
+        name: "Arena kit",
+        classification: "kit",
+        dependsOnAssetIds: [heroId],
+      }),
+    ]);
+
+    expect(
+      issues
+        .filter((issue) => issue.code === "dependency-cycle")
+        .map((issue) => issue.assetId)
+        .sort(),
+    ).toEqual([heroId, kitId]);
+  });
+
+  it("asset_plan_graph_accepts_a_disconnected_acyclic_graph", () => {
+    const heroId = "project-1:planned-asset:hero";
+    const kitId = "project-1:planned-asset:kit";
+    const assets = [
+      parsedPlannedAsset(),
+      parsedPlannedAsset({
+        assetId: kitId,
+        name: "Arena kit",
+        classification: "kit",
+        dependsOnAssetIds: [heroId],
+      }),
+      parsedPlannedAsset({
+        assetId: "project-1:planned-asset:portal",
+        name: "Exit portal",
+        classification: "functional",
+      }),
+    ];
+
+    expect(assetPlanGraphIssues(assets)).toEqual([]);
+  });
+});
 
 describe("M2 domain boundaries", () => {
   it("accepts_m2_replay_without_budget_and_defaults_concurrency", () => {

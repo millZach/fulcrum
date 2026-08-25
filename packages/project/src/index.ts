@@ -355,6 +355,8 @@ export class ProjectRepository {
     kind: string;
     value: T;
     runId: string;
+    revisionId?: string;
+    createdAt?: string;
   }): RevisionRef {
     const bytes = new TextEncoder().encode(
       JSON.stringify(input.value, null, 2),
@@ -364,8 +366,8 @@ export class ProjectRepository {
       bytes,
       "application/json",
     );
-    const revisionId = randomUUID();
-    const createdAt = now();
+    const revisionId = input.revisionId ?? randomUUID();
+    const createdAt = input.createdAt ?? now();
     this.database
       .prepare(
         "INSERT INTO revisions (revision_id, project_id, entity_id, kind, artifact_id, run_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -631,6 +633,72 @@ export class ProjectRepository {
         parsed.decidedAt,
       );
     return parsed;
+  }
+
+  commitApproval(input: {
+    decision: ApprovalDecision;
+    nextState: ProjectState;
+    event: {
+      runId: string;
+      type: string;
+      payload: Record<string, unknown>;
+    };
+  }): { decision: ApprovalDecision; state: ProjectState } {
+    const decision = ApprovalDecisionSchema.parse(input.decision);
+    const nextState = ProjectStateSchema.parse({
+      ...input.nextState,
+      projectId: decision.projectId,
+      updatedAt: now(),
+    });
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const revision = this.getRevision(decision.targetRevisionId);
+      if (revision.artifact.sha256 !== decision.targetSha256) {
+        throw new Error(
+          "Approval target hash does not match the immutable revision.",
+        );
+      }
+      this.database
+        .prepare(
+          "INSERT INTO approvals (approval_id, project_id, target_revision_id, decision_json, created_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .run(
+          decision.approvalId,
+          decision.projectId,
+          decision.targetRevisionId,
+          JSON.stringify(decision),
+          decision.decidedAt,
+        );
+      const updated = this.database
+        .prepare(
+          "UPDATE projects SET state_json = ?, updated_at = ? WHERE project_id = ?",
+        )
+        .run(
+          JSON.stringify(nextState),
+          nextState.updatedAt,
+          decision.projectId,
+        );
+      if (updated.changes !== 1) {
+        throw new Error(`Project ${decision.projectId} does not exist.`);
+      }
+      this.database
+        .prepare(
+          "INSERT INTO events (event_id, project_id, run_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          randomUUID(),
+          decision.projectId,
+          input.event.runId,
+          input.event.type,
+          JSON.stringify(input.event.payload),
+          now(),
+        );
+      this.database.exec("COMMIT");
+      return { decision, state: nextState };
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   recordSubmissionIntent(input: {

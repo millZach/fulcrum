@@ -16,6 +16,7 @@ import { z } from "zod";
 
 import {
   AnswerFrontierRoundInputSchema,
+  AssetPlanSchema,
   ChangeVisualDirectionInputSchema,
   ConceptSetSchema,
   ConceptPlanSchema,
@@ -1292,6 +1293,9 @@ export class M1Coordinator {
           ]),
         )
       : undefined;
+    const assetPlan = state.assetPlan
+      ? AssetPlanSchema.parse(this.repository.resolveRevision(state.assetPlan))
+      : undefined;
     return ProjectSnapshotSchema.parse({
       state,
       briefText,
@@ -1322,6 +1326,7 @@ export class M1Coordinator {
       ...(conceptSet ? { conceptSet, conceptDocuments } : {}),
       ...(soundPlan ? { soundPlan } : {}),
       ...(soundSet ? { soundSet, soundDocuments } : {}),
+      ...(assetPlan ? { assetPlan } : {}),
     });
   }
 
