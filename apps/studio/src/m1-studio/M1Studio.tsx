@@ -27,12 +27,16 @@ import {
 
 import * as m1 from "../m1-api.js";
 import { MascotStage } from "../m1-prototype/MascotStage.js";
+import { AssetPlanView } from "../m2-studio/AssetPlanView.js";
+import { QualityEvidencePanel } from "../m2-studio/QualityEvidencePanel.js";
 import {
   VoxelCube,
   VoxelWorld,
   voxelMaxLevel,
 } from "../m1-prototype/M1Prototype.js";
 import "../m1-prototype/m1-prototype.css";
+import "../m2-studio/asset-plan.css";
+import "../m2-studio/multiview-concepts.css";
 import {
   PINNED_ASPECT_OPTIONS,
   SAMPLE_M1_BRIEF,
@@ -145,9 +149,12 @@ const imageProviderLabels: Record<ImageProvider, string> = {
 const readProjectId = (): string | null =>
   new URLSearchParams(window.location.search).get(PROJECT_PARAM);
 
-const writeProjectId = (projectId: string | null): void => {
+const writeProjectId = (
+  projectId: string | null,
+  milestone: "m1" | "m2",
+): void => {
   const url = new URL(window.location.href);
-  url.searchParams.set("studio", "m1");
+  url.searchParams.set("studio", milestone);
   if (projectId) url.searchParams.set(PROJECT_PARAM, projectId);
   else url.searchParams.delete(PROJECT_PARAM);
   window.history.replaceState({}, "", url);
@@ -317,7 +324,7 @@ function ModelWaitBanner({
   );
 }
 
-export function M1Studio() {
+export function M1Studio({ milestone = "m1" }: { milestone?: "m1" | "m2" }) {
   const [configuration, setConfiguration] =
     useState<ConfigurationStatus | null>(null);
   const [projects, setProjects] = useState<ProjectSnapshot[]>([]);
@@ -379,7 +386,7 @@ export function M1Studio() {
       );
       return [next, ...others];
     });
-    writeProjectId(next.state.projectId);
+    writeProjectId(next.state.projectId, milestone);
   };
 
   const mutate = async (
@@ -439,10 +446,11 @@ export function M1Studio() {
     void Promise.all([m1.getConfiguration(), m1.listProjects()])
       .then(([config, listed]) => {
         setConfiguration(config);
-        const m1Listed = m1.m1Projects(listed);
-        setProjects(m1Listed);
+        const milestoneProjects =
+          milestone === "m2" ? m1.m2Projects(listed) : m1.m1Projects(listed);
+        setProjects(milestoneProjects);
         if (!requested) return;
-        const found = m1Listed.find(
+        const found = milestoneProjects.find(
           ({ state }) => state.projectId === requested,
         );
         if (found) {
@@ -450,8 +458,10 @@ export function M1Studio() {
           return;
         }
         return m1.getProject(requested).then((snapshot) => {
-          if (snapshot.state.milestone !== "m1") {
-            setBootError("That project is not an M1 run.");
+          if (snapshot.state.milestone !== milestone) {
+            setBootError(
+              `That project is not an ${milestone.toUpperCase()} run.`,
+            );
             return;
           }
           applySnapshot(snapshot);
@@ -460,7 +470,7 @@ export function M1Studio() {
       .catch((cause) =>
         setBootError(cause instanceof Error ? cause.message : String(cause)),
       );
-  }, []);
+  }, [milestone]);
 
   useEffect(() => {
     const projectId = project?.state.projectId;
@@ -651,16 +661,25 @@ export function M1Studio() {
       implementationProvider:
         mode === "replay" ? ("openai" as const) : implementationProvider,
       imageProvider: mode === "live" ? imageProvider : ("none" as const),
-      soundProvider: mode === "live" ? soundProvider : ("none" as const),
+      soundProvider:
+        milestone === "m2"
+          ? ("none" as const)
+          : mode === "live"
+            ? soundProvider
+            : ("none" as const),
     };
     const input: CreateProjectInput = {
-      milestone: "m1",
+      milestone,
       brief: brief.trim(),
       ...routing,
       ...(showsMeteredBudget(routing) ? { budgetUsd } : {}),
       rightsConfirmed: true,
     };
-    await mutate("create", () => m1.createM1Project(input));
+    await mutate("create", () =>
+      milestone === "m2"
+        ? m1.createM2Project(input)
+        : m1.createM1Project(input),
+    );
   };
 
   const submitRound = async () => {
@@ -859,13 +878,39 @@ export function M1Studio() {
 
   const decideConceptSet = async (decision: M1ApprovalInput["decision"]) => {
     if (!project?.state.conceptSet) return;
-    await mutate("approve-set", () =>
-      m1.approveConceptSet(project.state.projectId, {
-        targetType: "concept-set",
-        targetRevisionId: project.state.conceptSet!.revisionId,
-        targetSha256: project.state.conceptSet!.artifact.sha256,
-        decision,
-      }),
+    await mutate(
+      milestone === "m2" && decision === "approved"
+        ? "plan-assets"
+        : "approve-set",
+      () =>
+        m1.approveConceptSet(project.state.projectId, {
+          targetType: "concept-set",
+          targetRevisionId: project.state.conceptSet!.revisionId,
+          targetSha256: project.state.conceptSet!.artifact.sha256,
+          decision,
+        }),
+    );
+  };
+
+  const decideAssetPlan = async (
+    decision: "approved" | "rejected" | "changes-requested",
+    notes?: string,
+  ) => {
+    if (!project?.state.assetPlan) return;
+    await mutate(
+      decision === "changes-requested"
+        ? "replan-assets"
+        : decision === "approved"
+          ? "approve-asset-plan"
+          : "reject-asset-plan",
+      () =>
+        m1.decideAssetPlan(project.state.projectId, {
+          targetType: "asset-plan",
+          targetRevisionId: project.state.assetPlan!.revisionId,
+          targetSha256: project.state.assetPlan!.artifact.sha256,
+          decision,
+          ...(notes ? { notes } : {}),
+        }),
     );
   };
 
@@ -935,7 +980,7 @@ export function M1Studio() {
 
   const goHome = () => {
     setProject(null);
-    writeProjectId(null);
+    writeProjectId(null, milestone);
     setError(undefined);
     setPendingAction(undefined);
   };
@@ -1069,6 +1114,7 @@ export function M1Studio() {
           implementationProvider={implementationProvider}
           level={level}
           mode={mode}
+          milestone={milestone}
           orchestratorProvider={orchestratorProvider}
           projects={projects}
           rightsConfirmed={rightsConfirmed}
@@ -1205,6 +1251,44 @@ export function M1Studio() {
           }}
         />
       );
+    if (screen === "asset-planning")
+      return (
+        <section className="m2-batch-screen">
+          <span className="m1-kicker">
+            {project.state.assetPlanApproval?.decision === "changes-requested"
+              ? "Asset plan · changes requested"
+              : "Asset planning"}
+          </span>
+          <h1>
+            {project.state.assetPlanApproval?.decision === "changes-requested"
+              ? "Revising the production batch…"
+              : "Building the production plan…"}
+          </h1>
+          <p>
+            Fulcrum is binding every asset to the approved Game Design Spec and
+            concept revisions.
+          </p>
+        </section>
+      );
+    if (screen === "asset-plan")
+      return (
+        <AssetPlanView
+          busy={busy}
+          project={project}
+          onDecide={(decision, notes) => void decideAssetPlan(decision, notes)}
+        />
+      );
+    if (screen === "asset-batch")
+      return (
+        <section className="m2-batch-screen">
+          <span className="m1-kicker">Approved asset batch</span>
+          <h1>Producing and checking each asset…</h1>
+          <p>
+            Dependencies run in order. Each asset keeps its deterministic gates,
+            turntable evidence, semantic findings, and regeneration trail.
+          </p>
+        </section>
+      );
     if (screen === "sound-plan")
       return (
         <SoundPlanScreen
@@ -1227,7 +1311,12 @@ export function M1Studio() {
           onReject={() => void decideSoundSet("rejected")}
         />
       );
-    if (screen === "complete") return <CompleteScreen project={project} />;
+    if (screen === "complete")
+      return milestone === "m2" ? (
+        <M2CompleteScreen project={project} />
+      ) : (
+        <CompleteScreen project={project} />
+      );
     if (screen === "blocked") return <BlockedScreen project={project} />;
     return null;
   };
@@ -1248,6 +1337,9 @@ export function M1Studio() {
     screen === "concept-review" ||
     screen === "sound-plan" ||
     screen === "sound-review" ||
+    screen === "asset-planning" ||
+    screen === "asset-plan" ||
+    screen === "asset-batch" ||
     screen === "complete" ||
     screen === "blocked";
 
@@ -1255,7 +1347,16 @@ export function M1Studio() {
     <main
       className="m1-prototype variant-b-voxel m1-studio"
       data-forged={forged ? "true" : "false"}
-      data-mascot={mascot.visible ? "on" : "off"}
+      data-mascot={
+        milestone === "m2" &&
+        ["asset-planning", "asset-plan", "asset-batch", "complete"].includes(
+          screen,
+        )
+          ? "off"
+          : mascot.visible
+            ? "on"
+            : "off"
+      }
       data-stage={screen}
     >
       <div className="vx-paper" aria-hidden="true" />
@@ -1325,7 +1426,7 @@ export function M1Studio() {
         ) : (
           renderStage()
         )}
-        {screen === "complete" && project && (
+        {milestone === "m1" && screen === "complete" && project && (
           <div
             className="vx-finale"
             data-flag={flagPlaced ? "placed" : "pending"}
@@ -1402,8 +1503,8 @@ export function M1Studio() {
                 status: "Needs style",
               },
               {
-                key: "sounds",
-                label: "SOUNDS",
+                key: milestone === "m2" ? "assets" : "sounds",
+                label: milestone === "m2" ? "ASSETS" : "SOUNDS",
                 tone: "wood",
                 filled: false,
                 locked: true,
@@ -1450,6 +1551,7 @@ function HomeScreen({
   implementationProvider,
   level,
   mode,
+  milestone,
   orchestratorProvider,
   projects,
   rightsConfirmed,
@@ -1474,6 +1576,7 @@ function HomeScreen({
   implementationProvider: ExecutionProvider;
   level: number;
   mode: ProviderMode;
+  milestone: "m1" | "m2";
   orchestratorProvider: ExecutionProvider;
   projects: ProjectSnapshot[];
   rightsConfirmed: boolean;
@@ -1505,7 +1608,12 @@ function HomeScreen({
     implementationProvider:
       mode === "replay" ? ("openai" as const) : implementationProvider,
     imageProvider: mode === "live" ? imageProvider : ("none" as const),
-    soundProvider: mode === "live" ? soundProvider : ("none" as const),
+    soundProvider:
+      milestone === "m2"
+        ? ("none" as const)
+        : mode === "live"
+          ? soundProvider
+          : ("none" as const),
   };
   const showBudget = showsMeteredBudget(routing);
 
@@ -1514,7 +1622,7 @@ function HomeScreen({
       <div className="vx-start-copy">
         <span className="vx-kicker">
           <i />
-          New world · M1 studio
+          New world · {milestone.toUpperCase()} studio
         </span>
         <h1>
           Build the game
@@ -1557,7 +1665,7 @@ function HomeScreen({
               <small>OpenAI subscription ImageGen</small>
             </button>
           </div>
-          {mode === "live" && (
+          {mode === "live" && milestone === "m1" && (
             <div className="vx-mode-row vx-sound-provider-row">
               <button
                 className={soundProvider === "elevenlabs" ? "selected" : ""}
@@ -1635,7 +1743,7 @@ function HomeScreen({
               <small className={implementationReadiness?.ready ? "ready" : ""}>
                 {mode === "replay"
                   ? "Replay is offline · saved for later milestones"
-                  : `${implementationReadiness?.detail ?? "Checking provider"} · M1 saves this for later milestones`}
+                  : `${implementationReadiness?.detail ?? "Checking provider"} · ${milestone.toUpperCase()} saves this route for later work`}
               </small>
             </label>
             <label>
@@ -2698,6 +2806,74 @@ function CompleteScreen({ project }: { project: ProjectSnapshot }) {
         package → sound palette
       </div>
       <BudgetChip project={project} />
+    </section>
+  );
+}
+
+function M2CompleteScreen({ project }: { project: ProjectSnapshot }) {
+  const entries = project.state.assetBatch ?? {};
+  const orderedIds = [
+    ...(project.assetPlan?.assets.map(({ assetId }) => assetId) ?? []),
+    ...Object.keys(entries).filter(
+      (assetId) =>
+        !project.assetPlan?.assets.some((asset) => asset.assetId === assetId),
+    ),
+  ].filter((assetId) => entries[assetId] !== undefined);
+  const [selectedId, setSelectedId] = useState(orderedIds[0]);
+  const entry = selectedId ? entries[selectedId] : undefined;
+  const asset = project.assetPlan?.assets.find(
+    (candidate) => candidate.assetId === selectedId,
+  );
+
+  if (!entry)
+    return (
+      <section className="m2-batch-screen">
+        <span className="m1-kicker">M2 batch complete</span>
+        <h1>No asset evidence was included in this snapshot.</h1>
+        <p>Reload the project to resolve the persisted batch reports.</p>
+      </section>
+    );
+
+  return (
+    <section className="m2-complete">
+      <aside>
+        <header>
+          <span className="m1-kicker">M2 complete</span>
+          <h2>Asset evidence</h2>
+          <p>Select an asset to inspect its gates and cited frames.</p>
+        </header>
+        <nav aria-label="Produced assets">
+          {orderedIds.map((assetId) => {
+            const candidate = entries[assetId]!;
+            const planned = project.assetPlan?.assets.find(
+              (item) => item.assetId === assetId,
+            );
+            return (
+              <button
+                aria-pressed={assetId === selectedId}
+                key={assetId}
+                onClick={() => setSelectedId(assetId)}
+                type="button"
+              >
+                <span>
+                  <strong>{planned?.name ?? assetId}</strong>
+                  <small>{candidate.classification}</small>
+                </span>
+                <i data-valid={candidate.validated}>
+                  {candidate.validated ? "Validated" : "Needs input"}
+                </i>
+              </button>
+            );
+          })}
+        </nav>
+      </aside>
+      <div className="m2-complete-evidence">
+        <QualityEvidencePanel
+          asset={asset}
+          entry={entry}
+          evidence={project.assetQualityEvidence?.[entry.assetId]}
+        />
+      </div>
     </section>
   );
 }

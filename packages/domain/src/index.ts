@@ -1761,6 +1761,29 @@ export const M1InFlightSchema = z.object({
 });
 export type M1InFlight = z.infer<typeof M1InFlightSchema>;
 
+export const ProjectEventSchema = z.object({
+  eventId: z.string().min(1),
+  runId: z.string().min(1),
+  type: z.string().min(1),
+  payload: z.record(z.string(), z.unknown()),
+  createdAt: z.string().datetime(),
+});
+export type ProjectEvent = z.infer<typeof ProjectEventSchema>;
+
+export const AssetQualityEvidenceSchema = z.object({
+  deterministicReports: z.array(DeterministicAssetReportSchema),
+  turntables: z.array(TurntableManifestSchema),
+  semanticReports: z.array(SemanticAssetReportSchema),
+  decisions: z.array(
+    z.object({
+      revisionId: z.string().min(1),
+      report: RegenerationDecisionReportSchema,
+    }),
+  ),
+  events: z.array(ProjectEventSchema),
+});
+export type AssetQualityEvidence = z.infer<typeof AssetQualityEvidenceSchema>;
+
 export const ProjectSnapshotSchema = z.object({
   state: ProjectStateSchema,
   briefText: z.string(),
@@ -1785,6 +1808,9 @@ export const ProjectSnapshotSchema = z.object({
     .record(z.string().min(1), z.array(SoundDocumentSchema).min(1))
     .optional(),
   assetPlan: AssetPlanSchema.optional(),
+  assetQualityEvidence: z
+    .record(z.string().min(1), AssetQualityEvidenceSchema)
+    .optional(),
   asset: AssetDocumentSchema.optional(),
   assetEvaluation: AssetEvaluationSchema.optional(),
   scene: FulcrumSceneSpecV0Schema.optional(),

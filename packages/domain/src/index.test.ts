@@ -15,6 +15,7 @@ import {
   MultiviewConceptSetSchema,
   NormalizedCropSchema,
   PlannedAssetSchema,
+  ProjectSnapshotSchema,
   ProjectStateSchema,
   RegenerationStrategySchema,
   WorkflowFailureSchema,
@@ -106,6 +107,34 @@ const guidance = {
     background: "neutral-studio" as const,
   },
 };
+
+it("project snapshot accepts additive M2 quality evidence and event trails", () => {
+  const parsed = ProjectSnapshotSchema.parse({
+    state: persistedState("m2", "complete"),
+    briefText: brief,
+    assetQualityEvidence: {
+      hero: {
+        deterministicReports: [],
+        turntables: [],
+        semanticReports: [],
+        decisions: [],
+        events: [
+          {
+            eventId: "event-1",
+            runId: "run-1",
+            type: "asset.regeneration-strategy-selected",
+            payload: { assetId: "hero", strategyKind: "change-views" },
+            createdAt: "2026-08-24T12:00:00.000Z",
+          },
+        ],
+      },
+    },
+  });
+
+  expect(parsed.assetQualityEvidence?.hero?.events[0]?.type).toBe(
+    "asset.regeneration-strategy-selected",
+  );
+});
 
 const multiviewSet = (roles: Array<keyof typeof guidance>) => ({
   multiviewConceptSetId: "hero:multiview-concept-set",

@@ -28,6 +28,7 @@ import {
   type M2MacroGraphSlots,
 } from "./macro-operations.js";
 import { M0Coordinator } from "./coordinator.js";
+import { qualityEvidenceFor } from "./m1-coordinator.js";
 
 const roots: string[] = [];
 
@@ -1172,6 +1173,22 @@ describe("M2 macro slot contracts", () => {
       ({ type }) => type === "asset.semantic-evaluation-completed",
     );
     expect(semanticReports).toHaveLength(2);
+    expect(qualityEvidenceFor(repository, completed.state)?.hero).toMatchObject(
+      {
+        deterministicReports: [expect.anything(), expect.anything()],
+        turntables: [expect.anything(), expect.anything()],
+        semanticReports: [expect.anything(), expect.anything()],
+        decisions: [
+          { report: { strategy: { kind: "change-views" } } },
+          { report: { strategy: { kind: "accept-best" } } },
+        ],
+        events: expect.arrayContaining([
+          expect.objectContaining({
+            type: "asset.regeneration-strategy-selected",
+          }),
+        ]),
+      },
+    );
     const firstReport = repository.resolveRevision<{
       findings: Array<{
         evidence: Array<{ frameIndex?: number; crop?: unknown }>;

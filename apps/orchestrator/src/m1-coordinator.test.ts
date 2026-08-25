@@ -297,6 +297,27 @@ describe("CreativeFrontCoordinator M2 handoff", () => {
     ).toEqual(
       expect.arrayContaining(["hero", "kit", "procedural", "functional"]),
     );
+
+    project = await coordinator.decideAssetPlan(project.state.projectId, {
+      targetType: "asset-plan",
+      targetRevisionId: project.state.assetPlan!.revisionId,
+      targetSha256: project.state.assetPlan!.artifact.sha256,
+      decision: "approved",
+    });
+
+    expect(project.state.stage).toBe("complete");
+    expect(Object.keys(project.state.assetBatch ?? {})).toHaveLength(
+      project.assetPlan!.assets.length,
+    );
+    const heroAssetId = project.assetPlan!.assets.find(
+      ({ classification }) => classification === "hero",
+    )!.assetId;
+    const heroEvidence = project.assetQualityEvidence?.[heroAssetId];
+    expect(heroEvidence?.turntables).toHaveLength(2);
+    expect(heroEvidence?.semanticReports.length).toBeGreaterThanOrEqual(1);
+    expect(
+      heroEvidence?.decisions.map(({ report }) => report.strategy.kind),
+    ).toEqual(["change-views", "accept-best"]);
     repository.close();
   });
 });

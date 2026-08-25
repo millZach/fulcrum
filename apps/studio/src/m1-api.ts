@@ -1,5 +1,6 @@
 import type {
   AnswerFrontierRoundInput,
+  AssetPlanApprovalInput,
   ChangeVisualDirectionInput,
   ConfigurationStatus,
   ConfirmConceptPlanInput,
@@ -36,6 +37,11 @@ export const createM1Project = (
   input: CreateProjectInput,
 ): Promise<ProjectSnapshot> =>
   api<ProjectSnapshot>("/api/projects", json({ ...input, milestone: "m1" }));
+
+export const createM2Project = (
+  input: CreateProjectInput,
+): Promise<ProjectSnapshot> =>
+  api<ProjectSnapshot>("/api/projects", json({ ...input, milestone: "m2" }));
 
 export const answerFrontier = (
   projectId: string,
@@ -149,6 +155,15 @@ export const approveConceptSet = (
     json(input),
   );
 
+export const decideAssetPlan = (
+  projectId: string,
+  input: AssetPlanApprovalInput,
+): Promise<ProjectSnapshot> =>
+  api<ProjectSnapshot>(
+    `/api/projects/${projectId}/approvals/asset-plan`,
+    json(input),
+  );
+
 export const confirmSoundPlan = (
   projectId: string,
   input: ConfirmSoundPlanInput,
@@ -187,3 +202,6 @@ export const increaseBudget = (
 
 export const m1Projects = (projects: ProjectSnapshot[]): ProjectSnapshot[] =>
   projects.filter((project) => project.state.milestone === "m1");
+
+export const m2Projects = (projects: ProjectSnapshot[]): ProjectSnapshot[] =>
+  projects.filter((project) => project.state.milestone === "m2");

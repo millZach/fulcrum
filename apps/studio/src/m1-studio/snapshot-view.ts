@@ -24,6 +24,9 @@ export type M1StudioScreen =
   | "concept-review"
   | "sound-plan"
   | "sound-review"
+  | "asset-planning"
+  | "asset-plan"
+  | "asset-batch"
   | "complete"
   | "blocked";
 
@@ -77,7 +80,7 @@ export const reconcileConceptReviewView = (
 };
 
 export type HotbarSlot = {
-  key: "pitch" | "brief" | "style" | "images" | "sounds";
+  key: "pitch" | "brief" | "style" | "images" | "sounds" | "assets";
   label: string;
   tone: string;
   filled: boolean;
@@ -121,6 +124,12 @@ export const screenForSnapshot = (
       return "sound-plan";
     case "sound-set-approval":
       return "sound-review";
+    case "asset-planning":
+      return "asset-planning";
+    case "asset-plan-approval":
+      return "asset-plan";
+    case "asset-batch":
+      return "asset-batch";
     case "complete":
       return "complete";
     case "blocked":
@@ -128,6 +137,37 @@ export const screenForSnapshot = (
     default:
       return "blocked";
   }
+};
+
+export type AssetPlanStatus =
+  | "pending"
+  | "stale"
+  | "changes-requested"
+  | "approved"
+  | "rejected"
+  | "blocked";
+
+export const assetPlanStatusForSnapshot = (
+  snapshot: Pick<ProjectSnapshot, "state">,
+): AssetPlanStatus => {
+  const { state } = snapshot;
+  const target = state.assetPlan;
+  const decision = state.assetPlanApproval;
+  if (decision?.decision === "rejected" && target) {
+    if (
+      decision.targetRevisionId === target.revisionId &&
+      decision.targetSha256 === target.artifact.sha256
+    )
+      return "rejected";
+  }
+  if (state.stage === "blocked") return "blocked";
+  if (!target || !decision) return "pending";
+  if (
+    decision.targetRevisionId !== target.revisionId ||
+    decision.targetSha256 !== target.artifact.sha256
+  )
+    return "stale";
+  return decision.decision;
 };
 
 export const currentRound = (
@@ -321,6 +361,10 @@ export const modelWaitForWorking = (
       "Revising the asset plan…",
       "Applying the requested planning changes · this can take a few minutes",
     ],
+    "approve-asset-plan": [
+      "Producing the approved asset batch…",
+      "Generating, checking, and regenerating assets where evidence calls for it · this can take several minutes",
+    ],
     "generate-sounds": [
       "Generating the sound palette…",
       "Rendering the approved sound set · this can take a few minutes",
@@ -501,7 +545,7 @@ export const hotbarForSnapshot = (
       .length ?? 0;
   const total = snapshot.conceptSet?.slots.length ?? 0;
 
-  return [
+  const common: HotbarSlot[] = [
     {
       key: "pitch",
       label: "PITCH",
@@ -578,6 +622,52 @@ export const hotbarForSnapshot = (
             : imagesFilled
               ? "Plan pending"
               : "Needs images",
+    },
+  ];
+  if (snapshot.state.milestone !== "m2") return common;
+
+  const planStatus = assetPlanStatusForSnapshot(snapshot);
+  const assetEntries = Object.values(snapshot.state.assetBatch ?? {});
+  const validated = assetEntries.filter((entry) => entry.validated).length;
+  const assetStatus =
+    screen === "asset-planning"
+      ? planStatus === "changes-requested"
+        ? "Changes requested"
+        : "Planning batch"
+      : screen === "asset-plan"
+        ? planStatus === "pending"
+          ? "Approval pending"
+          : planStatus === "stale"
+            ? "Stale approval"
+            : planStatus === "approved"
+              ? "Approved"
+              : planStatus === "rejected"
+                ? "Rejected"
+                : "Changes requested"
+        : screen === "asset-batch"
+          ? assetEntries.length > 0
+            ? `${validated} of ${assetEntries.length} validated`
+            : "Producing batch"
+          : screen === "complete"
+            ? `${validated} of ${assetEntries.length} validated`
+            : screen === "blocked"
+              ? planStatus === "rejected"
+                ? "Plan rejected"
+                : "Blocked"
+              : "Needs images";
+
+  return [
+    ...common.slice(0, 4),
+    {
+      key: "assets",
+      label: "ASSETS",
+      tone: "wood",
+      filled: screen === "complete",
+      locked:
+        !imagesFilled &&
+        !["asset-planning", "asset-plan", "asset-batch"].includes(screen),
+      active: ["asset-planning", "asset-plan", "asset-batch"].includes(screen),
+      status: assetStatus,
     },
   ];
 };
@@ -708,6 +798,9 @@ const mascotScreenFor = (
       return "concepts";
     case "sound-review":
       return "package";
+    case "asset-planning":
+    case "asset-plan":
+    case "asset-batch":
     case "complete":
       return "package";
   }
@@ -739,6 +832,9 @@ export const mascotForSnapshot = (
     studio === "concept-review" ||
     studio === "sound-plan" ||
     studio === "sound-review" ||
+    studio === "asset-planning" ||
+    studio === "asset-plan" ||
+    studio === "asset-batch" ||
     studio === "complete";
   const pastGameDesign =
     studio === "visual-direction" ||
@@ -746,16 +842,25 @@ export const mascotForSnapshot = (
     studio === "concept-review" ||
     studio === "sound-plan" ||
     studio === "sound-review" ||
+    studio === "asset-planning" ||
+    studio === "asset-plan" ||
+    studio === "asset-batch" ||
     studio === "complete";
   const pastDirection =
     studio === "concept-plan" ||
     studio === "concept-review" ||
     studio === "sound-plan" ||
     studio === "sound-review" ||
+    studio === "asset-planning" ||
+    studio === "asset-plan" ||
+    studio === "asset-batch" ||
     studio === "complete";
   const pastConcepts =
     studio === "sound-plan" ||
     studio === "sound-review" ||
+    studio === "asset-planning" ||
+    studio === "asset-plan" ||
+    studio === "asset-batch" ||
     studio === "complete";
 
   const decisions =

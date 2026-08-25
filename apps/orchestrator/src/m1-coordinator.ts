@@ -16,6 +16,11 @@ import { z } from "zod";
 
 import {
   AnswerFrontierRoundInputSchema,
+  AssetQualityEvidenceSchema,
+  DeterministicAssetReportSchema,
+  RegenerationDecisionReportSchema,
+  SemanticAssetReportSchema,
+  TurntableManifestSchema,
   AssetPlanSchema,
   ChangeVisualDirectionInputSchema,
   ConceptSetSchema,
@@ -39,6 +44,7 @@ import {
   SelectConceptRevisionInputSchema,
   VisualDirectionSetSchema,
   type ApprovalDecision,
+  type AssetQualityEvidence,
   type M1InFlight,
   type M1InFlightAction,
   type ProjectSnapshot,
@@ -61,6 +67,110 @@ const delay = async (milliseconds: number): Promise<void> => {
 };
 
 const publicActor = "local-creative-director";
+
+export const qualityEvidenceFor = (
+  repository: ProjectRepository,
+  state: ProjectState,
+): Record<string, AssetQualityEvidence> | undefined => {
+  if (!state.assetBatch) return undefined;
+  const evidence = Object.fromEntries(
+    Object.keys(state.assetBatch).map((assetId) => [
+      assetId,
+      {
+        deterministicReports: [],
+        turntables: [],
+        semanticReports: [],
+        decisions: [],
+        events: [],
+      },
+    ]),
+  ) as Record<string, AssetQualityEvidence>;
+  const seen = new Map(
+    Object.keys(evidence).map((assetId) => [
+      assetId,
+      {
+        deterministic: new Set<string>(),
+        turntables: new Set<string>(),
+        semantic: new Set<string>(),
+        decisions: new Set<string>(),
+      },
+    ]),
+  );
+
+  const addRevision = (
+    assetId: string,
+    kind: "deterministic" | "turntables" | "semantic" | "decisions",
+    revisionId: string,
+  ) => {
+    const target = evidence[assetId];
+    const known = seen.get(assetId)?.[kind];
+    if (!target || !known || known.has(revisionId)) return;
+    const revision = repository.getRevision(revisionId);
+    const value = repository.resolveRevision(revision);
+    if (kind === "deterministic")
+      target.deterministicReports.push(
+        DeterministicAssetReportSchema.parse(value),
+      );
+    if (kind === "turntables")
+      target.turntables.push(TurntableManifestSchema.parse(value));
+    if (kind === "semantic")
+      target.semanticReports.push(SemanticAssetReportSchema.parse(value));
+    if (kind === "decisions")
+      target.decisions.push({
+        revisionId,
+        report: RegenerationDecisionReportSchema.parse(value),
+      });
+    known.add(revisionId);
+  };
+
+  for (const event of repository.listEvents(state.projectId)) {
+    const assetId = event.payload.assetId;
+    if (typeof assetId !== "string" || !evidence[assetId]) continue;
+    evidence[assetId].events.push(event);
+    if (
+      event.type === "asset.deterministic-quality-completed" &&
+      typeof event.payload.reportRevisionId === "string"
+    )
+      addRevision(assetId, "deterministic", event.payload.reportRevisionId);
+    if (
+      event.type === "asset.turntable-rendered" &&
+      typeof event.payload.turntableRevisionId === "string"
+    )
+      addRevision(assetId, "turntables", event.payload.turntableRevisionId);
+    if (
+      event.type === "asset.semantic-evaluation-completed" &&
+      typeof event.payload.semanticReportRevisionId === "string"
+    )
+      addRevision(assetId, "semantic", event.payload.semanticReportRevisionId);
+    if (
+      event.type === "asset.regeneration-strategy-selected" &&
+      typeof event.payload.decisionRevisionId === "string"
+    )
+      addRevision(assetId, "decisions", event.payload.decisionRevisionId);
+  }
+
+  for (const [assetId, entry] of Object.entries(state.assetBatch)) {
+    if (entry.deterministicReport)
+      addRevision(
+        assetId,
+        "deterministic",
+        entry.deterministicReport.revisionId,
+      );
+    if (entry.turntable)
+      addRevision(assetId, "turntables", entry.turntable.revisionId);
+    if (entry.semanticReport)
+      addRevision(assetId, "semantic", entry.semanticReport.revisionId);
+    if (entry.decision)
+      addRevision(assetId, "decisions", entry.decision.revisionId);
+  }
+
+  return Object.fromEntries(
+    Object.entries(evidence).map(([assetId, value]) => [
+      assetId,
+      AssetQualityEvidenceSchema.parse(value),
+    ]),
+  );
+};
 
 export type M1CoordinatorOptions = {
   imageRunner?: SubscriptionImageRunner;
@@ -1327,6 +1437,11 @@ export class M1Coordinator {
       ...(soundPlan ? { soundPlan } : {}),
       ...(soundSet ? { soundSet, soundDocuments } : {}),
       ...(assetPlan ? { assetPlan } : {}),
+      ...(state.milestone === "m2" && state.assetBatch
+        ? {
+            assetQualityEvidence: qualityEvidenceFor(this.repository, state),
+          }
+        : {}),
     });
   }
 

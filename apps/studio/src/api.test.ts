@@ -11,10 +11,13 @@ import {
   confirmConceptPlan,
   confirmSoundPlan,
   confirmSharedUnderstanding,
+  createM2Project,
   createM1Project,
+  decideAssetPlan,
   getProject,
   increaseBudget,
   m1Projects,
+  m2Projects,
   regenerateConcept,
   regenerateSound,
   replaceDirection,
@@ -344,5 +347,84 @@ describe("M1 API client", () => {
         { state: { milestone: "m1" } } as ProjectSnapshot,
       ]),
     ).toHaveLength(1);
+  });
+});
+
+describe("M2 API client", () => {
+  it("creates, filters, and posts exact asset-plan decisions", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string, options?: RequestInit) => {
+        calls.push({
+          path,
+          body: options?.body ? JSON.parse(String(options.body)) : undefined,
+        });
+        return Response.json({ state: { projectId: "p2", milestone: "m2" } });
+      }),
+    );
+
+    await createM2Project({
+      milestone: "m1",
+      brief:
+        "Create a first-person stealth game in a cramped lunar greenhouse.",
+      mode: "replay",
+      budgetUsd: 1,
+      rightsConfirmed: true,
+    });
+    await decideAssetPlan("p2", {
+      targetType: "asset-plan",
+      targetRevisionId: "asset-plan-r1",
+      targetSha256: "e".repeat(64),
+      decision: "approved",
+    });
+    await decideAssetPlan("p2", {
+      targetType: "asset-plan",
+      targetRevisionId: "asset-plan-r2",
+      targetSha256: "f".repeat(64),
+      decision: "changes-requested",
+      notes: "Split the greenhouse wall kit by material family.",
+    });
+
+    expect(calls).toEqual([
+      {
+        path: "/api/projects",
+        body: expect.objectContaining({ milestone: "m2", mode: "replay" }),
+      },
+      {
+        path: "/api/projects/p2/approvals/asset-plan",
+        body: {
+          targetType: "asset-plan",
+          targetRevisionId: "asset-plan-r1",
+          targetSha256: "e".repeat(64),
+          decision: "approved",
+        },
+      },
+      {
+        path: "/api/projects/p2/approvals/asset-plan",
+        body: {
+          targetType: "asset-plan",
+          targetRevisionId: "asset-plan-r2",
+          targetSha256: "f".repeat(64),
+          decision: "changes-requested",
+          notes: "Split the greenhouse wall kit by material family.",
+        },
+      },
+    ]);
+  });
+
+  it("keeps M1 and M2 project lists separate", () => {
+    const projects = [
+      { state: { milestone: "m1", projectId: "p1" } },
+      { state: { milestone: "m2", projectId: "p2" } },
+      { state: { milestone: "m0", projectId: "p0" } },
+    ] as ProjectSnapshot[];
+
+    expect(m1Projects(projects).map(({ state }) => state.projectId)).toEqual([
+      "p1",
+    ]);
+    expect(m2Projects(projects).map(({ state }) => state.projectId)).toEqual([
+      "p2",
+    ]);
   });
 });

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { ApiError } from "../api.js";
 import {
   allSlotsSelected,
+  assetPlanStatusForSnapshot,
   budgetRaisePrompt,
   choreographySafetyDelay,
   choreographyStep,
@@ -196,6 +197,139 @@ describe("M1 snapshot adapter", () => {
     expect(
       screenForSnapshot({ state: { ...baseState, stage: "blocked" } }),
     ).toBe("blocked");
+  });
+
+  it("maps all three M2 stages without changing the creative-front screens", () => {
+    const m2State = { ...baseState, milestone: "m2" as const };
+    expect(
+      screenForSnapshot({ state: { ...m2State, stage: "asset-planning" } }),
+    ).toBe("asset-planning");
+    expect(
+      screenForSnapshot({
+        state: { ...m2State, stage: "asset-plan-approval" },
+      }),
+    ).toBe("asset-plan");
+    expect(
+      screenForSnapshot({ state: { ...m2State, stage: "asset-batch" } }),
+    ).toBe("asset-batch");
+    expect(
+      screenForSnapshot({
+        state: { ...m2State, stage: "concept-set-approval" },
+      }),
+    ).toBe("concept-review");
+  });
+
+  it("makes pending, stale, approved, rejected, requested-change, and blocked plan states distinct", () => {
+    const target = {
+      entityId: "asset-plan",
+      revisionId: "asset-plan-r2",
+      kind: "asset-plan",
+      artifact: {
+        artifactId: "asset-plan-artifact",
+        sha256: "f".repeat(64),
+        mediaType: "application/json",
+        byteLength: 12,
+        uri: "/api/artifacts/asset-plan-artifact",
+      },
+      createdAt: "2026-08-24T00:00:00.000Z",
+      createdByRunId: "run-1",
+    };
+    const decision = {
+      approvalId: "approval-1",
+      projectId: "p1",
+      targetType: "asset-plan" as const,
+      targetRevisionId: target.revisionId,
+      targetSha256: target.artifact.sha256,
+      decision: "approved" as const,
+      decidedBy: "local-user",
+      decidedAt: "2026-08-24T00:01:00.000Z",
+    };
+    const state = {
+      ...baseState,
+      milestone: "m2" as const,
+      stage: "asset-plan-approval" as const,
+      assetPlan: target,
+    };
+
+    expect(assetPlanStatusForSnapshot({ state })).toBe("pending");
+    expect(
+      assetPlanStatusForSnapshot({
+        state: {
+          ...state,
+          assetPlanApproval: { ...decision, targetSha256: "0".repeat(64) },
+        },
+      }),
+    ).toBe("stale");
+    expect(
+      assetPlanStatusForSnapshot({
+        state: { ...state, assetPlanApproval: decision },
+      }),
+    ).toBe("approved");
+    expect(
+      assetPlanStatusForSnapshot({
+        state: {
+          ...state,
+          assetPlanApproval: {
+            ...decision,
+            decision: "changes-requested",
+            notes: "Split the wall kit by material family.",
+          },
+        },
+      }),
+    ).toBe("changes-requested");
+    expect(
+      assetPlanStatusForSnapshot({
+        state: {
+          ...state,
+          stage: "blocked",
+          status: "blocked",
+          assetPlanApproval: { ...decision, decision: "rejected" },
+        },
+      }),
+    ).toBe("rejected");
+    expect(
+      assetPlanStatusForSnapshot({
+        state: {
+          ...state,
+          stage: "blocked",
+          status: "blocked",
+          blockedReason: {
+            code: "asset-provider-unavailable",
+            message: "The asset provider is unavailable.",
+            recoverable: true,
+          },
+        },
+      }),
+    ).toBe("blocked");
+  });
+
+  it("uses an assets hotbar slot for M2 while retaining the M1 sounds slot", () => {
+    const m1 = hotbarForSnapshot({ state: baseState });
+    const m2 = hotbarForSnapshot({
+      state: {
+        ...baseState,
+        milestone: "m2",
+        stage: "asset-plan-approval",
+        conceptSetApproval: {
+          approvalId: "concept-approval",
+          projectId: "p1",
+          targetType: "concept-set",
+          targetRevisionId: "concept-set-r1",
+          targetSha256: "c".repeat(64),
+          decision: "approved",
+          decidedBy: "local-user",
+          decidedAt: "2026-08-24T00:00:00.000Z",
+        },
+      },
+    });
+
+    expect(m1.at(-1)?.label).toBe("SOUNDS");
+    expect(m2.at(-1)).toMatchObject({
+      key: "assets",
+      label: "ASSETS",
+      active: true,
+      status: "Approval pending",
+    });
   });
 
   it("reads the open frontier round and recorded answers from snapshot rounds", () => {
