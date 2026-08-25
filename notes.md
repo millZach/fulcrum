@@ -1,5 +1,9 @@
 # Fulcrum
 
+## 2026-08-24 — 388 green tests, and the browser still found two bugs the suite couldn't
+
+Clicking through the full M2 flow caught what 384 unit tests missed: two hero assets with byte-identical replay GLBs shared one durable submission row (the idempotency key was content-only, no asset identity), so the second asset tripped the first's in-flight marker and blocked the whole project with "submission-unknown" — in replay mode, where no money exists. Fixed, re-ran the walkthrough, and the browser immediately caught bug two: my `.env` had `FULCRUM_MESHY_MODEL=meshy-6`, which silently switched replay's multiview capability off, while the regeneration decider read capability from the policy allowlist instead of the adapter — so it picked change-views, burned its one bounded attempt on a byte-identical request, and gave up. Vitest never loads `.env`, which is exactly why the suite stayed green both times. Two fixes, six new tests, and the demo path now validates heroes in 2 attempts. The walkthrough is not a formality.
+
 ## 2026-08-24: A fresh snapshot rewound the screen after a paid regeneration
 
 I reproduced the slot jump with a 6,000 ms replay regeneration: the POST returned slot 02 r02, then an effect keyed to the new concept-set revision cleared the browser selection and exposed slot 01 r01. I made review state project-scoped, moved intentional form cleanup into the actions that own it, and found the same poll-triggered reset pattern in interrogation drafts, visual-direction notes, and sound notes; slot 02 r02 now survives the response and six 2.5-second poll intervals.
