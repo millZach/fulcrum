@@ -1569,7 +1569,7 @@ export class AssetQuality {
         rubric: ASSET_VISION_RUBRIC_V1,
       });
     const requestDigest = visionRequestDigest(descriptor);
-    const idempotencyKey = `asset-semantic:${input.projectId}:${input.mode}:${requestDigest}`;
+    const idempotencyKey = `asset-semantic:${input.projectId}:${asset.assetId}:${input.mode}:${requestDigest}`;
     let submission = this.repository.getSubmissionByKey(idempotencyKey);
     if (submission?.status === "ready") {
       if (!submission.resultRevisionId)
@@ -1618,7 +1618,7 @@ export class AssetQuality {
               : "strategy-changing",
         },
       };
-    if (submission?.payload.providerCallStartedAt) {
+    if (input.mode === "live" && submission?.payload.providerCallStartedAt) {
       submission = this.repository.updateSubmission(submission.requestId, {
         status: "submission-unknown",
         payload: submission.payload,
@@ -1812,7 +1812,7 @@ export class AssetQuality {
       });
       const ensured = this.repository.ensureRevision({
         projectId: input.projectId,
-        operationKey: `m2.asset-semantic:${requestDigest}`,
+        operationKey: `m2.asset-semantic:${asset.assetId}:${requestDigest}`,
         entityId: `${asset.assetId}:semantic-quality`,
         kind: "asset-semantic-report",
         runId: input.runId,

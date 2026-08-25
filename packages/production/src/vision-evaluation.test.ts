@@ -5,6 +5,7 @@ import path from "node:path";
 
 import {
   AssetDocumentSchema,
+  TurntableManifestSchema,
   type ArtifactRef,
   type RevisionRef,
 } from "@fulcrum/domain";
@@ -147,6 +148,7 @@ type VisionExecutionInput<T> = {
 
 const openSemanticProject = async (
   execution: StructuredVisionExecution,
+  mode: "live" | "replay" = "live",
 ): Promise<{
   repository: ProjectRepository;
   quality: AssetQuality;
@@ -202,7 +204,7 @@ const openSemanticProject = async (
     milestone: "m2",
     projectId,
     name: "Semantic fixture",
-    mode: "live",
+    mode,
     status: "active",
     stage: "asset-batch",
     runId,
@@ -424,6 +426,181 @@ describe("ReplayVisionEvaluationPort", () => {
 });
 
 describe("AssetQuality.ensureSemantic", () => {
+  it("keeps_concurrent_replay_submissions_asset_scoped_for_identical_content", async () => {
+    const fixture = await openSemanticProject(
+      {
+        async generateStructuredVision() {
+          throw new Error("Replay evaluation must not call live execution.");
+        },
+      },
+      "replay",
+    );
+    const firstAsset = AssetDocumentSchema.parse(
+      fixture.repository.resolveRevision(fixture.asset),
+    );
+    const secondAssetId = `${fixture.projectId}:second-asset`;
+    const secondAsset = fixture.repository.writeRevision({
+      projectId: fixture.projectId,
+      entityId: secondAssetId,
+      kind: "asset-document",
+      value: AssetDocumentSchema.parse({
+        ...firstAsset,
+        assetId: secondAssetId,
+        name: "Second Ancient Reliquary",
+        externalJobId: "asset-job-2",
+      }),
+      runId: fixture.runId,
+    });
+    const secondInspected = await fixture.quality.inspect({
+      projectId: fixture.projectId,
+      runId: fixture.runId,
+      asset: secondAsset,
+      policy: {
+        revision: fixture.policy,
+        value: DEFAULT_ASSET_POLICIES.hero,
+      },
+    });
+    if (!secondInspected.turntable)
+      throw new Error("Second fixture did not render a turntable.");
+    const firstRequest = {
+      ...semanticRequest(fixture),
+      mode: "replay" as const,
+    };
+    const secondRequest = {
+      ...firstRequest,
+      asset: secondAsset,
+      deterministicReport: secondInspected.deterministicReport,
+      turntable: secondInspected.turntable,
+    };
+    const requestDigest = (
+      asset: RevisionRef,
+      turntable: RevisionRef,
+    ): string => {
+      const document = AssetDocumentSchema.parse(
+        fixture.repository.resolveRevision(asset),
+      );
+      const manifest = TurntableManifestSchema.parse(
+        fixture.repository.resolveRevision(turntable),
+      );
+      return visionRequestDigest({
+        assetRevisionId: asset.revisionId,
+        assetSha256: document.glb.sha256,
+        policySha256: fixture.policy.artifact.sha256,
+        classification: DEFAULT_ASSET_POLICIES.hero.classification,
+        intendedUse: firstRequest.context.intendedUse,
+        requiredFeatures: firstRequest.context.requiredFeatures,
+        prohibitedFeatures: firstRequest.context.prohibitedFeatures,
+        referenceArtifacts: firstRequest.context.referenceArtifacts,
+        frames: manifest.frames,
+        rubric: ASSET_VISION_RUBRIC_V1,
+      });
+    };
+    const firstDigest = requestDigest(fixture.asset, fixture.turntable);
+    const secondDigest = requestDigest(secondAsset, secondInspected.turntable);
+
+    expect(secondDigest).toBe(firstDigest);
+    const [first, second] = await Promise.all([
+      fixture.quality.ensureSemantic(firstRequest),
+      fixture.quality.ensureSemantic(secondRequest),
+    ]);
+
+    expect(first).toMatchObject({ status: "ready" });
+    expect(second).toMatchObject({ status: "ready" });
+    if (first.status === "ready" && second.status === "ready") {
+      expect(first.value.report.assetId).toBe(firstAsset.assetId);
+      expect(second.value.report.assetId).toBe(secondAssetId);
+    }
+    const firstKey = `asset-semantic:${fixture.projectId}:${firstAsset.assetId}:replay:${firstDigest}`;
+    const secondKey = `asset-semantic:${fixture.projectId}:${secondAssetId}:replay:${secondDigest}`;
+    expect(secondKey).not.toBe(firstKey);
+    const firstSubmission = fixture.repository.getSubmissionByKey(firstKey);
+    const secondSubmission = fixture.repository.getSubmissionByKey(secondKey);
+    expect(firstSubmission).toMatchObject({
+      idempotencyKey: firstKey,
+      status: "ready",
+    });
+    expect(secondSubmission).toMatchObject({
+      idempotencyKey: secondKey,
+      status: "ready",
+    });
+    expect(secondSubmission?.requestId).not.toBe(firstSubmission?.requestId);
+    const semanticEvents = fixture.repository
+      .listEvents(fixture.projectId)
+      .filter(({ type }) => type.startsWith("asset.semantic-evaluation-"));
+    expect(
+      semanticEvents.filter(
+        ({ type }) => type === "asset.semantic-evaluation-submitted",
+      ),
+    ).toHaveLength(2);
+    expect(
+      semanticEvents.filter(
+        ({ type }) => type === "asset.semantic-evaluation-submission-unknown",
+      ),
+    ).toHaveLength(0);
+    fixture.repository.close();
+  });
+
+  it("reruns_replay_evaluation_after_an_interrupted_provider_call_marker", async () => {
+    const fixture = await openSemanticProject(
+      {
+        async generateStructuredVision() {
+          throw new Error("Replay evaluation must not call live execution.");
+        },
+      },
+      "replay",
+    );
+    const request = {
+      ...semanticRequest(fixture),
+      mode: "replay" as const,
+    };
+    const updateSubmission = fixture.repository.updateSubmission.bind(
+      fixture.repository,
+    );
+    let interruptedIdempotencyKey: string | undefined;
+    const interruption = vi
+      .spyOn(fixture.repository, "updateSubmission")
+      .mockImplementation((requestId, update) => {
+        const submission = updateSubmission(requestId, update);
+        if (
+          !interruptedIdempotencyKey &&
+          update.status === "pending" &&
+          typeof update.payload?.providerCallStartedAt === "string"
+        ) {
+          interruptedIdempotencyKey = submission.idempotencyKey;
+          throw new Error("simulated process interruption");
+        }
+        return submission;
+      });
+
+    await expect(fixture.quality.ensureSemantic(request)).rejects.toThrow(
+      "simulated process interruption",
+    );
+    interruption.mockRestore();
+    if (!interruptedIdempotencyKey)
+      throw new Error("Fixture did not persist a provider call marker.");
+    expect(
+      fixture.repository.getSubmissionByKey(interruptedIdempotencyKey),
+    ).toMatchObject({
+      status: "pending",
+      payload: { providerCallStartedAt: expect.any(String) },
+    });
+
+    const resumed = await fixture.quality.ensureSemantic(request);
+
+    expect(resumed).toMatchObject({ status: "ready" });
+    expect(
+      fixture.repository.getSubmissionByKey(interruptedIdempotencyKey),
+    ).toMatchObject({ status: "ready" });
+    expect(
+      fixture.repository
+        .listEvents(fixture.projectId)
+        .filter(
+          ({ type }) => type === "asset.semantic-evaluation-submission-unknown",
+        ),
+    ).toHaveLength(0);
+    fixture.repository.close();
+  });
+
   it("journals_intent_before_live_execution", async () => {
     process.env.OPENAI_API_KEY = "test-key";
     let repository: ProjectRepository | undefined;
