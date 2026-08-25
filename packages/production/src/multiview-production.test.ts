@@ -20,6 +20,7 @@ import {
 } from "./asset-generation.js";
 import { AssetProduction } from "./index.js";
 import { MeshyAssetAdapter } from "./meshy-adapter.js";
+import { TripoAssetAdapter } from "./tripo-adapter.js";
 
 const roots: string[] = [];
 
@@ -35,6 +36,7 @@ afterEach(() => {
   ]) {
     delete process.env[name];
   }
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
 });
@@ -348,6 +350,67 @@ const multiviewJob = (
 });
 
 describe("AssetProduction M2 durability", () => {
+  it.each([
+    ["meshy" as const, "FULCRUM_MESHY_MODEL", "meshy-6", "meshy-7"],
+    [
+      "tripo" as const,
+      "FULCRUM_TRIPO_MODEL_VERSION",
+      "v2.4-20240919",
+      "v2.5-20250123",
+    ],
+  ])(
+    "replay_%s_capability_and_fingerprint_ignore_live_model_env",
+    async (assetProvider, envName, unsupportedModel, pinnedModel) => {
+      const context = fixture({ mode: "replay", assetProvider });
+      const production = new AssetProduction(context.repository);
+      const pinnedAdapter =
+        assetProvider === "meshy"
+          ? new MeshyAssetAdapter(context.repository, pinnedModel)
+          : new TripoAssetAdapter(context.repository, pinnedModel);
+      const pinnedKey = m2AssetIdempotencyKey({
+        projectId: context.projectId,
+        mode: "replay",
+        provider: assetProvider,
+        requestFingerprint: pinnedAdapter.requestFingerprint(
+          multiviewJob(context),
+        ),
+      });
+
+      const withoutOverride = await production.ensure(context.request);
+      vi.stubEnv(envName, unsupportedModel);
+      const withOverride = await production.ensure(context.request);
+
+      expect(withoutOverride.status).toBe("ready");
+      expect(withOverride.status).toBe("ready");
+      if (
+        withoutOverride.status === "ready" &&
+        withOverride.status === "ready"
+      ) {
+        expect(withOverride.requestId).toBe(withoutOverride.requestId);
+        expect(withOverride.value).toEqual(withoutOverride.value);
+        expect(
+          AssetDocumentSchema.parse(
+            context.repository.resolveRevision(withOverride.value),
+          ).sourceMultiviewConceptSetRevisionId,
+        ).toBe(context.multiviewConceptSet.revisionId);
+      }
+      expect(
+        context.repository.getSubmissionByKey(pinnedKey)?.payload,
+      ).toMatchObject({
+        modelVersion: pinnedModel,
+        requestFingerprint: pinnedAdapter.requestFingerprint(
+          multiviewJob(context),
+        ),
+      });
+      expect(
+        context.repository
+          .listEvents(context.projectId)
+          .filter(({ type }) => type === "asset.completed"),
+      ).toHaveLength(1);
+      context.repository.close();
+    },
+  );
+
   it("multiview_job_journals_full_hash_set_before_network", async () => {
     const context = fixture({ mode: "live" });
     process.env.MESHY_API_KEY = "test-key";

@@ -60,11 +60,13 @@ import {
   CARDINAL_VIEW_ROLES,
   decideMultiviewStrategy,
   m2AssetIdempotencyKey,
-  type AssetGenerationAdapter,
   type AssetGenerationJob,
 } from "./asset-generation.js";
-import { MeshyAssetAdapter, meshyConfiguration } from "./meshy-adapter.js";
-import { createReplayAssetAdapter } from "./replay-asset-adapter.js";
+import {
+  createAssetGenerationAdapter,
+  resolveAssetGenerationProfile,
+} from "./asset-generation-profile.js";
+import { meshyConfiguration } from "./meshy-adapter.js";
 import { createReplayReliquary } from "./replay-reliquary.js";
 import {
   bestRegenerationAttempt,
@@ -72,11 +74,7 @@ import {
   decideRegeneration,
 } from "./regeneration.js";
 import { renderTurntable } from "./turntable.js";
-import {
-  AssetPreparationError,
-  TripoAssetAdapter,
-  tripoConfiguration,
-} from "./tripo-adapter.js";
+import { AssetPreparationError, tripoConfiguration } from "./tripo-adapter.js";
 import {
   ASSET_VISION_RUBRIC_V1,
   LiveVisionEvaluationPort,
@@ -212,14 +210,10 @@ export class AssetProduction {
         assetPlan: request.assetPlan,
         assetId: request.assetId,
       });
-      const liveAdapter = this.liveAdapter(
+      const capability = resolveAssetGenerationProfile(
         context.state.assetProvider,
         context.state.mode,
-      );
-      const capability =
-        context.state.mode === "replay"
-          ? createReplayAssetAdapter(liveAdapter).multiviewImageInput
-          : liveAdapter.multiviewImageInput;
+      ).multiviewImageInput;
       const decision = decideMultiviewStrategy(
         context.policy,
         capability,
@@ -282,26 +276,6 @@ export class AssetProduction {
     return "concept" in parsed
       ? this.ensureLegacy(parsed)
       : this.ensureM2(parsed);
-  }
-
-  private liveAdapter(
-    provider: AssetProvider,
-    mode: ProviderMode,
-  ): AssetGenerationAdapter {
-    if (provider === "meshy") {
-      return new MeshyAssetAdapter(
-        this.repository,
-        mode === "replay" && !process.env.FULCRUM_MESHY_MODEL
-          ? "meshy-7"
-          : undefined,
-      );
-    }
-    return new TripoAssetAdapter(
-      this.repository,
-      mode === "replay" && !process.env.FULCRUM_TRIPO_MODEL_VERSION
-        ? "v2.5-20250123"
-        : undefined,
-    );
   }
 
   private resolveM2Context(input: M2AssetProductionRequest) {
@@ -444,19 +418,20 @@ export class AssetProduction {
         }
       }
 
-      const liveAdapter = this.liveAdapter(
+      const profile = resolveAssetGenerationProfile(
         context.state.assetProvider,
         context.state.mode,
       );
-      const adapter =
-        context.state.mode === "replay"
-          ? createReplayAssetAdapter(liveAdapter)
-          : liveAdapter;
+      const adapter = createAssetGenerationAdapter(
+        this.repository,
+        context.state.assetProvider,
+        context.state.mode,
+      );
       const canUseMultiview =
         multiviewSet !== undefined &&
-        adapter.multiviewImageInput.supported &&
-        multiviewSet.views.length >= adapter.multiviewImageInput.minViews &&
-        multiviewSet.views.length <= adapter.multiviewImageInput.maxViews &&
+        profile.multiviewImageInput.supported &&
+        multiviewSet.views.length >= profile.multiviewImageInput.minViews &&
+        multiviewSet.views.length <= profile.multiviewImageInput.maxViews &&
         (context.state.assetProvider !== "tripo" ||
           multiviewSet.views.length === 4);
       const orderedViews = multiviewSet
@@ -593,10 +568,6 @@ export class AssetProduction {
           : job.imageInput.kind === "multiview"
             ? "multiview_to_model"
             : "image_to_model";
-      const modelVersion =
-        context.state.assetProvider === "meshy"
-          ? (process.env.FULCRUM_MESHY_MODEL ?? "meshy-7")
-          : (process.env.FULCRUM_TRIPO_MODEL_VERSION ?? "v2.5-20250123");
       const submission =
         "submission" in decision && decision.submission
           ? decision.submission
@@ -627,7 +598,7 @@ export class AssetProduction {
                   ({ image }) => image.artifactId,
                 ),
                 imageHashes: imageEntries.map(({ image }) => image.sha256),
-                modelVersion,
+                modelVersion: profile.modelVersion,
                 requestFingerprint,
                 ...(input.regeneration
                   ? {
@@ -1033,7 +1004,11 @@ export class AssetProduction {
     const concept = this.repository.resolveRevision<ConceptDocument>(
       input.concept,
     );
-    const adapter = this.liveAdapter(input.assetProvider, input.mode);
+    const adapter = createAssetGenerationAdapter(
+      this.repository,
+      input.assetProvider,
+      input.mode,
+    );
     const legacyJob: AssetGenerationJob = {
       projectId: input.projectId,
       assetId: `${input.projectId}:reliquary-asset`,
@@ -1934,6 +1909,11 @@ export class AssetQuality {
       (left, right) => left.attemptNumber - right.attemptNumber,
     );
     const best = bestRegenerationAttempt(attempts);
+    const state = this.repository.getProject(input.projectId);
+    const multiviewCapability = resolveAssetGenerationProfile(
+      state.assetProvider,
+      state.mode,
+    ).multiviewImageInput;
     const strategy: RegenerationStrategy = decideRegeneration({
       assetId: input.assetId,
       currentAttempt: input.currentAttempt,
@@ -1947,8 +1927,7 @@ export class AssetQuality {
         .map((gate) => gate.id),
       priorStrategies,
       policy,
-      providerSupportsMultiview:
-        policy.regeneration.allowedStrategies.includes("change-views"),
+      providerSupportsMultiview: multiviewCapability.supported,
       permissibleClassifications: [policy.classification],
     });
     const sourceReportRevisionIds = [

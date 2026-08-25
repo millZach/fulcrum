@@ -43,6 +43,7 @@ afterEach(() => {
   delete process.env.MESHY_API_KEY;
   delete process.env.FULCRUM_MESHY_MODEL;
   delete process.env.FULCRUM_MESHY_RESERVE_USD;
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
 });
@@ -1098,7 +1099,66 @@ describe("M2 macro slot contracts", () => {
     repository.close();
   });
 
+  it("unsupported_provider_capability_does_not_start_null_multiview_regeneration", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const fixture = m2Fixture(repository);
+    repository.saveProject({
+      ...repository.getProject(fixture.projectId),
+      assetPlan: fixture.assetPlan,
+    });
+    approveFixturePlan(repository, fixture);
+    const slots = createM2MacroGraphSlots(repository, {
+      plan: vi.fn(),
+    } as never);
+    const multiview = {
+      projectId: fixture.projectId,
+      assetPlan: fixture.assetPlan,
+      assetId: "hero",
+      classification: "hero" as const,
+      multiviewDecision: "not-required" as const,
+    };
+    const produced = await slots.assetProduction.ensure(multiview);
+    if (produced.status !== "ready")
+      throw new Error("Replay fixture asset was not ready.");
+    const inspected = await slots.deterministicQa.ensure(produced.value);
+    if (inspected.status !== "ready")
+      throw new Error("Replay fixture inspection was not ready.");
+    const evaluated = await slots.turntableEvaluation.ensure(inspected.value);
+    if (evaluated.status !== "ready")
+      throw new Error("Replay fixture semantic QA was not ready.");
+    repository.saveProject({
+      ...repository.getProject(fixture.projectId),
+      mode: "live",
+      assetProvider: "meshy",
+    });
+    vi.stubEnv("FULCRUM_MESHY_MODEL", "meshy-6");
+
+    const outcome = await slots.regeneration.ensure(evaluated.value);
+
+    expect(outcome).toMatchObject({
+      status: "ready",
+      value: {
+        attemptCount: 1,
+        disposition: "user-action-required",
+        validated: false,
+      },
+    });
+    expect(
+      repository
+        .listEvents(fixture.projectId)
+        .filter(({ type }) => type === "asset.regeneration-attempt-started"),
+    ).toHaveLength(0);
+    expect(
+      repository
+        .listEvents(fixture.projectId)
+        .filter(({ type }) => type === "asset.regeneration-strategy-selected")
+        .map(({ payload }) => payload.strategyKind),
+    ).toEqual(["give-up-user"]);
+    repository.close();
+  });
+
   it("replay_hero_runs_change_views_then_validates_attempt_two", async () => {
+    vi.stubEnv("FULCRUM_MESHY_MODEL", "meshy-6");
     const repository = new ProjectRepository(temporaryRoot());
     const fixture = m2Fixture(repository);
     const slots = createM2MacroGraphSlots(repository, {
@@ -1137,11 +1197,18 @@ describe("M2 macro slot contracts", () => {
         .filter(({ type }) => type === "asset.regeneration-strategy-selected")
         .map(({ payload }) => payload.strategyKind),
     ).toEqual(["change-views", "accept-best"]);
+    const regenerationAttempts = events.filter(
+      ({ type }) => type === "asset.regeneration-attempt-started",
+    );
+    expect(regenerationAttempts).toHaveLength(1);
+    expect(regenerationAttempts[0]?.payload).toMatchObject({
+      multiviewConceptSetRevisionId: expect.any(String),
+    });
     expect(
-      events.filter(
-        ({ type }) => type === "asset.regeneration-attempt-started",
+      regenerationAttempts.some(
+        ({ payload }) => payload.multiviewConceptSetRevisionId === null,
       ),
-    ).toHaveLength(1);
+    ).toBe(false);
     expect(events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

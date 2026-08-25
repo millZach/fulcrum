@@ -15,6 +15,7 @@ import {
   AssetProduction,
   AssetQuality,
   createReplayReliquary,
+  DEFAULT_ASSET_POLICIES,
 } from "./index.js";
 
 const PNG_1x1 = Buffer.from(
@@ -35,6 +36,7 @@ afterEach(() => {
   delete process.env.MESHY_API_KEY;
   delete process.env.FULCRUM_MESHY_MODEL;
   delete process.env.FULCRUM_MESHY_RESERVE_USD;
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0))
     rmSync(root, { recursive: true, force: true });
 });
@@ -497,6 +499,176 @@ describe("AssetProduction regeneration lineage", () => {
         generationClaims: { textured: false, textureChannels: [] },
       });
     }
+    repository.close();
+  });
+});
+
+describe("AssetQuality regeneration capability", () => {
+  it("unsupported_live_multiview_capability_prevents_change_views_selection", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const projectId = "unsupported-multiview-quality";
+    const runId = "run-1";
+    const createdAt = "2026-08-24T12:00:00.000Z";
+    repository.reserveProject(projectId, createdAt);
+    const revision = (entityId: string, kind: string, value: unknown) =>
+      repository.writeRevision({
+        projectId,
+        entityId,
+        kind,
+        value,
+        runId,
+      });
+    const brief = revision("brief", "game-brief", {
+      text: "Unsupported multiview quality fixture.",
+      rightsConfirmed: true,
+    });
+    const asset = revision("hero", "asset-document", { fixture: "asset" });
+    const policy = revision("hero-policy", "asset-policy", {
+      fixture: "policy",
+    });
+    const turntable = revision("hero-turntable", "turntable", {
+      fixture: "turntable",
+    });
+    const deterministicReport = revision(
+      "hero-deterministic",
+      "asset-deterministic-report",
+      {
+        schema: "fulcrum.asset-deterministic-report",
+        version: 1,
+        reportId: "deterministic-1",
+        assetId: "hero",
+        assetRevisionId: asset.revisionId,
+        assetArtifactSha256: asset.artifact.sha256,
+        policy: {
+          revisionId: policy.revisionId,
+          sha256: policy.artifact.sha256,
+        },
+        classification: "hero",
+        passed: true,
+        measurements: {
+          mesh: {
+            meshCount: 1,
+            primitiveCount: 1,
+            vertexCount: 3,
+            triangleCount: 1,
+            boundsMeters: { x: 1, y: 1, z: 1 },
+          },
+          material: {
+            materialCount: 1,
+            unassignedPrimitiveCount: 0,
+            unusedMaterialCount: 0,
+            duplicateMaterialGroupCount: 0,
+          },
+          texture: {
+            textureCount: 1,
+            embeddedCount: 1,
+            referencedCount: 0,
+            unusedCount: 0,
+            smallestDimensionPx: 1024,
+            largestDimensionPx: 1024,
+          },
+          topology: {
+            degenerateTriangles: 0,
+            nonManifoldEdges: 0,
+            boundaryEdges: 0,
+            unreferencedVertices: 0,
+            inconsistentWindingEdges: 0,
+            normalMismatchTriangles: 0,
+          },
+        },
+        gates: [],
+        findings: [],
+        qualityVector: {
+          hardGateFailures: 0,
+          criticalFindings: 0,
+          majorFindings: 0,
+          minorFindings: 0,
+          semanticVerdict: "not-run",
+        },
+      },
+    );
+    const finding = {
+      findingId: "finding-silhouette",
+      findingCode: "semantic.silhouette-readability",
+      rubricVersion: "asset-turntable-v1",
+      category: "geometry",
+      summary: "The rear silhouette collapses behind the crystal housing.",
+      evidenceArtifactIds: ["frame-4"],
+      evidence: [
+        {
+          artifactId: "frame-4",
+          kind: "turntable-frame",
+          frameIndex: 4,
+        },
+      ],
+      severity: "major",
+      confidence: 0.94,
+      ownerModule: "asset-quality.semantic",
+      suggestedAction: "Add direct rear and side concept evidence.",
+    };
+    const semanticReport = revision("hero-semantic", "asset-semantic-report", {
+      schema: "fulcrum.asset-semantic-report",
+      version: 1,
+      reportId: "semantic-1",
+      assetId: "hero",
+      assetRevisionId: asset.revisionId,
+      turntableRevisionId: turntable.revisionId,
+      rubricVersion: "asset-turntable-v1",
+      requestDigest: "a".repeat(64),
+      provider: "fixture",
+      model: "fixture",
+      costUsd: 0,
+      verdict: "revise",
+      dimensionScores: { "silhouette-readability": 0.4 },
+      findings: [finding],
+      qualityVector: {
+        hardGateFailures: 0,
+        criticalFindings: 0,
+        majorFindings: 1,
+        minorFindings: 0,
+        semanticVerdict: "revise",
+      },
+    });
+    repository.createProject({
+      schemaVersion: 1,
+      milestone: "m2",
+      projectId,
+      name: "Unsupported multiview quality fixture",
+      mode: "live",
+      assetProvider: "meshy",
+      status: "active",
+      stage: "asset-batch",
+      runId,
+      spentUsd: 0,
+      brief,
+      createdAt,
+      updatedAt: createdAt,
+    });
+    vi.stubEnv("FULCRUM_MESHY_MODEL", "meshy-6");
+
+    const selected = await new AssetQuality(repository).selectRegeneration({
+      projectId,
+      runId,
+      assetId: "hero",
+      currentAttempt: {
+        attemptNumber: 0,
+        asset,
+        deterministicReport,
+        turntable,
+        semanticReport,
+        qualityVector: {
+          hardGateFailures: 0,
+          criticalFindings: 0,
+          majorFindings: 1,
+          minorFindings: 0,
+          semanticVerdict: "revise",
+        },
+      },
+      attemptHistory: [],
+      policy: DEFAULT_ASSET_POLICIES.hero,
+    });
+
+    expect(selected.decision.strategy.kind).toBe("give-up-user");
     repository.close();
   });
 });
