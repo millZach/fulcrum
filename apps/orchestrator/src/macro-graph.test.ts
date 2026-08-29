@@ -13,6 +13,7 @@ import { ProjectRepository } from "@fulcrum/project";
 import {
   AssetProduction,
   AssetQuality,
+  DEFAULT_ASSET_POLICIES,
   createReplayReliquary,
 } from "@fulcrum/production";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -479,9 +480,16 @@ describe("PostConceptGraphDriver", () => {
     repository.close();
   });
 
-  it("approval_resume_continues_from_asset_plan_gate", async () => {
+  it("reconstructs an old awaiting asset-plan gate and auto-finalizes it", async () => {
     const repository = new ProjectRepository(temporaryRoot());
     const fixture = m2Fixture(repository);
+    repository.saveProject({
+      ...repository.getProject(fixture.projectId),
+      status: "awaiting-approval",
+      stage: "asset-plan-approval",
+      assetPlan: fixture.assetPlan,
+      workflowRunId: "old-approval-workflow-run",
+    });
     const driver = new PostConceptGraphDriver(repository, {
       slots: readyM2Slots(
         fixture.projectId,
@@ -489,34 +497,33 @@ describe("PostConceptGraphDriver", () => {
         fixture.revision,
       ),
     });
-    await driver.advance(fixture.projectId);
-    const suspendedRunId = repository.getProject(
-      fixture.projectId,
-    ).workflowRunId;
-    const state = repository.getProject(fixture.projectId);
-    const decision: ApprovalDecision = repository.recordApproval({
-      approvalId: "approval-1",
-      projectId: fixture.projectId,
-      targetType: "asset-plan",
+    const completed = await driver.advance(fixture.projectId);
+
+    expect(completed.state.stage).toBe("complete");
+    expect(completed.state.assetPlanApproval).toMatchObject({
+      decision: "approved",
+      decidedBy: "fulcrum:auto-finalizer",
       targetRevisionId: fixture.assetPlan.revisionId,
       targetSha256: fixture.assetPlan.artifact.sha256,
-      decision: "approved",
-      decidedBy: "test",
-      decidedAt: "2026-01-01T00:00:01.000Z",
     });
-    repository.saveProject({
-      ...state,
-      assetPlanApproval: decision,
-      status: "active",
+    expect(
+      repository
+        .listEvents(fixture.projectId)
+        .find(
+          ({ type, payload }) =>
+            type === "workflow.node.completed" &&
+            payload.nodeId === "m2.asset-plan-approval",
+        ),
+    ).toMatchObject({
+      payload: {
+        stage: "asset-batch",
+        decision: "approved",
+        decidedBy: "fulcrum:auto-finalizer",
+        automatic: true,
+        targetRevisionId: fixture.assetPlan.revisionId,
+        targetSha256: fixture.assetPlan.artifact.sha256,
+      },
     });
-
-    const completed = await driver.advance(
-      fixture.projectId,
-      "approval-recorded",
-    );
-
-    expect(completed.state.workflowRunId).toBe(suspendedRunId);
-    expect(completed.state.stage).toBe("complete");
     repository.close();
   });
 
@@ -893,14 +900,171 @@ const recoverablyBlockedM2Fixture = async () => {
   const driver = new PostConceptGraphDriver(repository, {
     slots: batchSlots(fixture, ["hero"], { multiview }),
   });
-  await driver.advance(fixture.projectId);
-  approveFixturePlan(repository, fixture);
-  const blocked = await driver.advance(fixture.projectId, "approval-recorded");
+  const blocked = await driver.advance(fixture.projectId);
   return { repository, fixture, driver, blocked, multiview };
 };
 
 describe("M2 macro slot contracts", () => {
-  it("planner_output_suspends_for_exact_asset_plan_approval", async () => {
+  it("live_meshy_old_approval_state_auto_finalizes_and_parks_before_legacy_production", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const fixture = m2Fixture(repository);
+    repository.saveProject({
+      ...repository.getProject(fixture.projectId),
+      mode: "live",
+      assetProvider: "meshy",
+      status: "awaiting-approval",
+      stage: "asset-plan-approval",
+      assetPlan: fixture.assetPlan,
+      workflowRunId: "old-live-approval-workflow-run",
+    });
+    const assetProduction: Pick<
+      AssetProduction,
+      "ensure" | "ensureMultiviewConcepts" | "finish"
+    > = {
+      ensureMultiviewConcepts: vi.fn(async () => {
+        throw new Error("legacy multiview must stay parked");
+      }),
+      ensure: vi.fn(async () => {
+        throw new Error("legacy production must stay parked");
+      }),
+      finish: vi.fn(async () => {
+        throw new Error("legacy finishing must stay parked");
+      }),
+    };
+    const slots = createM2MacroGraphSlots(
+      repository,
+      {
+        plan: async () => ({
+          status: "ready",
+          requestId: "live-fixture-plan",
+          value: fixture.assetPlan,
+        }),
+      },
+      { assetProduction },
+    );
+    const driver = new PostConceptGraphDriver(repository, { slots });
+    const parked = await driver.advance(fixture.projectId);
+
+    expect(parked.state).toMatchObject({
+      mode: "live",
+      assetProvider: "meshy",
+      status: "active",
+      stage: "asset-batch",
+      assetPlanApproval: {
+        decision: "approved",
+        decidedBy: "fulcrum:auto-finalizer",
+        targetRevisionId: fixture.assetPlan.revisionId,
+      },
+    });
+    expect(assetProduction.ensureMultiviewConcepts).not.toHaveBeenCalled();
+    expect(assetProduction.ensure).not.toHaveBeenCalled();
+    expect(assetProduction.finish).not.toHaveBeenCalled();
+    expect(repository.listEvents(fixture.projectId).at(-1)).toMatchObject({
+      type: "workflow.node.suspended",
+      payload: {
+        nodeId: "m2.staged-asset-gate",
+        stage: "asset-batch",
+      },
+    });
+    repository.close();
+  });
+
+  it("replay_plan_finalization_keeps_the_legacy_asset_path_to_completion", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const fixture = m2Fixture(repository);
+    const base = batchSlots(fixture, ["hero"]);
+    const multiview = vi.fn(base.multiviewConcepts.ensure);
+    const production = vi.fn(base.assetProduction.ensure);
+    const finishing = vi.fn(async (input) => ({
+      status: "ready" as const,
+      value: input,
+    }));
+    const driver = new PostConceptGraphDriver(repository, {
+      slots: {
+        ...base,
+        multiviewConcepts: { ensure: multiview },
+        assetProduction: { ensure: production },
+        assetFinishing: { ensure: finishing },
+      },
+    });
+    const completed = await driver.advance(fixture.projectId);
+
+    expect(completed.state).toMatchObject({
+      mode: "replay",
+      status: "complete",
+      stage: "complete",
+    });
+    expect(multiview).toHaveBeenCalledOnce();
+    expect(production).toHaveBeenCalledOnce();
+    expect(finishing).toHaveBeenCalledOnce();
+    repository.close();
+  });
+
+  it("live_meshy_reconstruction_mid_batch_stays_parked_with_pending_legacy_submissions", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const fixture = m2Fixture(repository);
+    approveFixturePlan(repository, fixture);
+    repository.saveProject({
+      ...repository.getProject(fixture.projectId),
+      mode: "live",
+      assetProvider: "meshy",
+      stage: "asset-batch",
+      assetPlan: fixture.assetPlan,
+      workflowRunId: "interrupted-legacy-run",
+    });
+    const pendingKeys = ["stuck-concept-view-left", "stuck-concept-view-right"];
+    for (const idempotencyKey of pendingKeys) {
+      const intent = repository.recordSubmissionIntent({
+        projectId: fixture.projectId,
+        operation: "m2-concept-view",
+        provider: "openai-subscription",
+        idempotencyKey,
+        payload: { assetId: "hero" },
+      });
+      repository.updateSubmission(intent.requestId, { status: "pending" });
+    }
+    const base = batchSlots(fixture, ["hero"]);
+    const phases = {
+      planning: vi.fn(base.assetPlanning.ensure),
+      multiview: vi.fn(base.multiviewConcepts.ensure),
+      production: vi.fn(base.assetProduction.ensure),
+      qa: vi.fn(base.deterministicQa.ensure),
+      turntable: vi.fn(base.turntableEvaluation.ensure),
+      regeneration: vi.fn(base.regeneration.ensure),
+      finishing: vi.fn(async (input) => ({
+        status: "ready" as const,
+        value: input,
+      })),
+    };
+    const driver = new PostConceptGraphDriver(repository, {
+      slots: {
+        assetPlanning: { ensure: phases.planning },
+        multiviewConcepts: { ensure: phases.multiview },
+        assetProduction: { ensure: phases.production },
+        deterministicQa: { ensure: phases.qa },
+        turntableEvaluation: { ensure: phases.turntable },
+        regeneration: { ensure: phases.regeneration },
+        assetFinishing: { ensure: phases.finishing },
+      },
+    });
+
+    const parked = await driver.advance(fixture.projectId, "reconstructed");
+
+    expect(parked.state).toMatchObject({
+      status: "active",
+      stage: "asset-batch",
+      workflowRunId: "interrupted-legacy-run",
+    });
+    for (const phase of Object.values(phases))
+      expect(phase).not.toHaveBeenCalled();
+    for (const idempotencyKey of pendingKeys)
+      expect(repository.getSubmissionByKey(idempotencyKey)?.status).toBe(
+        "pending",
+      );
+    repository.close();
+  });
+
+  it("planner_output_records_exact_automatic_finalization", async () => {
     const repository = new ProjectRepository(temporaryRoot());
     const fixture = m2Fixture(repository);
     const driver = new PostConceptGraphDriver(repository, {
@@ -910,15 +1074,28 @@ describe("M2 macro slot contracts", () => {
     const snapshot = await driver.advance(fixture.projectId);
 
     expect(snapshot.state).toMatchObject({
-      stage: "asset-plan-approval",
-      status: "awaiting-approval",
+      stage: "complete",
+      status: "complete",
       assetPlan: { revisionId: fixture.assetPlan.revisionId },
+      assetPlanApproval: {
+        decision: "approved",
+        decidedBy: "fulcrum:auto-finalizer",
+        targetRevisionId: fixture.assetPlan.revisionId,
+      },
     });
-    expect(repository.listEvents(fixture.projectId).at(-1)).toMatchObject({
-      type: "workflow.node.suspended",
+    expect(
+      repository
+        .listEvents(fixture.projectId)
+        .find(
+          ({ type, payload }) =>
+            type === "workflow.node.completed" &&
+            payload.nodeId === "m2.asset-plan-approval",
+        ),
+    ).toMatchObject({
       payload: {
-        nodeId: "m2.asset-plan-approval",
-        checkpointKey: `m2.asset-plan-approval:${fixture.assetPlan.revisionId}`,
+        decision: "approved",
+        automatic: true,
+        inputRevisionIds: [fixture.assetPlan.revisionId],
       },
     });
     repository.close();
@@ -940,9 +1117,6 @@ describe("M2 macro slot contracts", () => {
     };
     const driver = new PostConceptGraphDriver(repository, { slots });
     await driver.advance(fixture.projectId);
-    approveFixturePlan(repository, fixture);
-
-    await driver.advance(fixture.projectId, "approval-recorded");
 
     expect(received).toEqual(["hero", "door", "wall"]);
     repository.close();
@@ -971,9 +1145,6 @@ describe("M2 macro slot contracts", () => {
     });
     const driver = new PostConceptGraphDriver(repository, { slots: base });
     await driver.advance(fixture.projectId);
-    approveFixturePlan(repository, fixture);
-
-    await driver.advance(fixture.projectId, "approval-recorded");
 
     expect(maximum).toBe(2);
     repository.close();
@@ -1004,12 +1175,7 @@ describe("M2 macro slot contracts", () => {
       },
     });
     const driver = new PostConceptGraphDriver(repository, { slots });
-    await driver.advance(fixture.projectId);
-    approveFixturePlan(repository, fixture);
-    const suspended = await driver.advance(
-      fixture.projectId,
-      "approval-recorded",
-    );
+    const suspended = await driver.advance(fixture.projectId);
     expect(suspended.state.stage).toBe("asset-batch");
 
     const completed = await driver.advance(fixture.projectId);
@@ -1083,8 +1249,6 @@ describe("M2 macro slot contracts", () => {
       },
     });
     await driver.advance(fixture.projectId);
-    approveFixturePlan(repository, fixture);
-    await driver.advance(fixture.projectId, "approval-recorded");
 
     const blocked = await driver.advance(fixture.projectId, "explicit-advance");
 
@@ -1097,13 +1261,9 @@ describe("M2 macro slot contracts", () => {
     repository.close();
   });
 
-  it("two_concurrent_asset_production_suspends_do_not_block_the_batch", async () => {
+  it("two_concurrent_replay_asset_production_suspends_do_not_block_the_batch", async () => {
     const repository = new ProjectRepository(temporaryRoot());
     const fixture = m2Fixture(repository);
-    repository.saveProject({
-      ...repository.getProject(fixture.projectId),
-      mode: "live",
-    });
     const calls = new Map<string, number>();
     const submissionRequestIds = new Map<string, Set<string>>();
     const completedAssetIds = new Set<string>();
@@ -1163,13 +1323,7 @@ describe("M2 macro slot contracts", () => {
       },
     });
     const driver = new PostConceptGraphDriver(repository, { slots });
-    await driver.advance(fixture.projectId);
-    approveFixturePlan(repository, fixture);
-
-    const suspended = await driver.advance(
-      fixture.projectId,
-      "approval-recorded",
-    );
+    const suspended = await driver.advance(fixture.projectId);
     expect(suspended.state).toMatchObject({
       status: "active",
       stage: "asset-batch",
@@ -1226,8 +1380,6 @@ describe("M2 macro slot contracts", () => {
     });
     const driver = new PostConceptGraphDriver(repository, { slots });
     await driver.advance(fixture.projectId);
-    approveFixturePlan(repository, fixture);
-    await driver.advance(fixture.projectId, "approval-recorded");
     await driver.advance(fixture.projectId);
 
     expect(calls.get("hero")).toBe(1);
@@ -1287,8 +1439,6 @@ describe("M2 macro slot contracts", () => {
     };
     const driver = new PostConceptGraphDriver(repository, { slots });
     await driver.advance(fixture.projectId);
-    approveFixturePlan(repository, fixture);
-    await driver.advance(fixture.projectId, "approval-recorded");
 
     expect(received?.deterministicReport).toEqual(deterministic);
     expect(received?.semanticReport).toEqual(semantic);
@@ -1302,13 +1452,7 @@ describe("M2 macro slot contracts", () => {
       classification: () => "kit",
     });
     const driver = new PostConceptGraphDriver(repository, { slots });
-    await driver.advance(fixture.projectId);
-    approveFixturePlan(repository, fixture);
-
-    const blocked = await driver.advance(
-      fixture.projectId,
-      "approval-recorded",
-    );
+    const blocked = await driver.advance(fixture.projectId);
 
     expect(blocked.state).toMatchObject({
       stage: "blocked",
@@ -1378,6 +1522,63 @@ describe("M2 macro slot contracts", () => {
     repository.close();
   });
 
+  it("revises_persisted_asset_policies_when_quality_thresholds_change", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const fixture = m2Fixture(repository);
+    repository.saveProject({
+      ...repository.getProject(fixture.projectId),
+      assetPlan: fixture.assetPlan,
+    });
+    approveFixturePlan(repository, fixture);
+    const prior = repository.ensureRevision({
+      projectId: fixture.projectId,
+      operationKey: "m2.asset-policy:hero:v1",
+      entityId: `${fixture.projectId}:asset-policy:hero`,
+      kind: "asset-policy",
+      runId: fixture.runId,
+      createValue: () => ({
+        ...DEFAULT_ASSET_POLICIES.hero,
+        topology: {
+          ...DEFAULT_ASSET_POLICIES.hero.topology,
+          maxNonManifoldEdges: 0,
+        },
+      }),
+    });
+    const slots = createM2MacroGraphSlots(repository, {
+      plan: vi.fn(),
+    } as never);
+    const multiview = await slots.multiviewConcepts.ensure({
+      projectId: fixture.projectId,
+      assetPlan: fixture.assetPlan,
+      assetId: "hero",
+    });
+    if (multiview.status !== "ready")
+      throw new Error("Replay fixture multiview set was not ready.");
+    const produced = await slots.assetProduction.ensure(multiview.value);
+    if (produced.status !== "ready")
+      throw new Error("Replay fixture asset was not ready.");
+    const inspected = await slots.deterministicQa.ensure(produced.value);
+    if (inspected.status !== "ready")
+      throw new Error("Replay fixture inspection was not ready.");
+
+    const report = repository.resolveRevision<{
+      policy: { revisionId: string };
+    }>(inspected.value.deterministicReport);
+    const currentPolicy = repository.resolveRevision<{
+      topology: { maxNonManifoldEdges: number };
+    }>(repository.getRevision(report.policy.revisionId));
+
+    expect(report.policy.revisionId).not.toBe(prior.revision.revisionId);
+    expect(currentPolicy.topology.maxNonManifoldEdges).toBe(250);
+    expect(inspected.value.turntable).toBeDefined();
+    expect(
+      repository.resolveRevision<{ rendererVersion: string }>(
+        inspected.value.turntable!,
+      ).rendererVersion,
+    ).toBe("software-rasterizer-v3");
+    repository.close();
+  });
+
   it("replay_hero_runs_change_views_then_validates_attempt_two", async () => {
     vi.stubEnv("FULCRUM_MESHY_MODEL", "meshy-6");
     const repository = new ProjectRepository(temporaryRoot());
@@ -1391,14 +1592,7 @@ describe("M2 macro slot contracts", () => {
     });
     const driver = new PostConceptGraphDriver(repository, { slots });
 
-    const awaitingApproval = await driver.advance(fixture.projectId);
-    expect(awaitingApproval.state.stage).toBe("asset-plan-approval");
-    approveFixturePlan(repository, fixture);
-
-    const completed = await driver.advance(
-      fixture.projectId,
-      "approval-recorded",
-    );
+    const completed = await driver.advance(fixture.projectId);
 
     const selection = completed.state.assetBatch?.hero;
     expect(completed.state.stage).toBe("complete");
@@ -1527,13 +1721,7 @@ describe("M2 macro slot contracts", () => {
       },
     };
     const driver = new PostConceptGraphDriver(repository, { slots });
-    await driver.advance(fixture.projectId);
-    approveFixturePlan(repository, fixture);
-
-    const suspended = await driver.advance(
-      fixture.projectId,
-      "approval-recorded",
-    );
+    const suspended = await driver.advance(fixture.projectId);
     expect(suspended.state.stage).toBe("asset-batch");
     const baselineSubmission = repository
       .listEvents(fixture.projectId)
@@ -1655,7 +1843,7 @@ describe("M2 macro slot contracts", () => {
       fixtures: [
         {
           requestDigest:
-            "a513b9b40e9eac10023c72b69d0f966cf44fdf3a32ad1c13c08e783d93ae0022",
+            "ce80f5382b896fbba01f160876f5bfaee69e34ec6b1689e43b0ea06df82c4075",
           description: "baseline remains the Pareto incumbent",
           response: {
             verdict: "revise" as const,
@@ -1674,7 +1862,7 @@ describe("M2 macro slot contracts", () => {
         },
         {
           requestDigest:
-            "3dc1801f3b1f301a020e53dab363240b33a59abeeb384e7595183e91aa6e82cc",
+            "bfc34ee8c986f061c306d7b4cfe7b25d702239321953ab5d37a0ef3e0fb87ae1",
           description: "rear-defined attempt regresses concept fidelity",
           response: {
             verdict: "revise" as const,

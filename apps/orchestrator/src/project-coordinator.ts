@@ -1,25 +1,35 @@
-import { randomUUID } from "node:crypto";
-
 import type {
   SoundGenerationRunner,
   StructuredModelExecution,
 } from "@fulcrum/creative";
 import {
-  AssetPlanApprovalInputSchema,
+  AmendAssetPlanInputSchema,
+  approvalGateBlock,
   CreateProjectInputSchema,
   hasMeteredRoutes,
   IncreaseBudgetInputSchema,
+  ReopenApprovalReviewInputSchema,
   type ApprovalInput,
-  type AssetPlanApprovalInput,
-  type ApprovalDecision,
   type CreateProjectInput,
   type ProjectSnapshot,
 } from "@fulcrum/domain";
-import type { SubscriptionImageRunner } from "@fulcrum/execution";
+import type {
+  ExecutionProviderStatus,
+  StructuredVisionExecution,
+  SubscriptionImageRunner,
+} from "@fulcrum/execution";
+import {
+  AssetPlanAmender,
+  type AssetPlanAmending,
+  type StagedAssetAdapter,
+} from "@fulcrum/production";
 import { ProjectRepository } from "@fulcrum/project";
 
 import { M0Coordinator } from "./coordinator.js";
-import { PostConceptGraphDriver } from "./macro-graph.js";
+import {
+  PostConceptGraphDriver,
+  createAutomaticAssetPlanFinalization,
+} from "./macro-graph.js";
 import { CreativeFrontCoordinator, M1Coordinator } from "./m1-coordinator.js";
 import type { M2MacroGraphSlots } from "./macro-operations.js";
 
@@ -28,6 +38,9 @@ export type ProjectCoordinatorOptions = {
   execution?: StructuredModelExecution;
   soundRunner?: SoundGenerationRunner;
   m2Slots?: M2MacroGraphSlots;
+  stagedAssetAdapter?: StagedAssetAdapter;
+  stagedVisionExecution?: StructuredVisionExecution;
+  stagedVisionProviderStatuses?: ExecutionProviderStatus[];
 };
 
 /** Routes a project to its milestone-specific state machine. */
@@ -36,6 +49,7 @@ export class ProjectCoordinator {
   readonly creative: CreativeFrontCoordinator;
   readonly m1: M1Coordinator;
   readonly macro: PostConceptGraphDriver;
+  readonly assetPlanAmender: AssetPlanAmending;
 
   constructor(
     readonly repository: ProjectRepository,
@@ -47,6 +61,7 @@ export class ProjectCoordinator {
     this.m0 = new M0Coordinator(repository, this.macro);
     this.creative = new CreativeFrontCoordinator(repository, options);
     this.m1 = this.creative;
+    this.assetPlanAmender = new AssetPlanAmender(repository, options.execution);
   }
 
   configuration() {
@@ -72,6 +87,101 @@ export class ProjectCoordinator {
       .map(({ projectId }) => this.snapshot(projectId));
   }
 
+  async amendAssetPlan(
+    projectId: string,
+    input: unknown,
+  ): Promise<ProjectSnapshot> {
+    const parsed = AmendAssetPlanInputSchema.parse(input);
+    const result = await this.assetPlanAmender.amend({ projectId, ...parsed });
+    const state = this.repository.getProject(projectId);
+    if (
+      state.assetPlan?.revisionId !== result.fromRevision.revisionId ||
+      state.assetPlan?.artifact.sha256 !== result.fromRevision.artifact.sha256
+    )
+      throw new Error(
+        "The asset plan changed before the amendment could be finalized. The new revision was not applied.",
+      );
+    const finalization = createAutomaticAssetPlanFinalization(
+      projectId,
+      result.toRevision,
+    );
+    this.repository.commitApproval({
+      decision: finalization,
+      nextState: {
+        ...state,
+        assetPlan: result.toRevision,
+        assetPlanApproval: finalization,
+      },
+      event: {
+        runId: state.runId,
+        type: "asset-plan.amended",
+        payload: {
+          section: parsed.section,
+          request: parsed.request,
+          fromRevisionId: result.fromRevision.revisionId,
+          toRevisionId: result.toRevision.revisionId,
+          addedAssetIds: result.addedAssetIds,
+          changedAssetIds: result.changedAssetIds,
+          removedAssetIds: result.removedAssetIds,
+          decidedBy: finalization.decidedBy,
+          targetSha256: finalization.targetSha256,
+        },
+      },
+    });
+    return this.snapshot(projectId);
+  }
+
+  /* The staged asset gate. Deliberately four separate entry points rather than
+     one overloaded `advance`: three of them spend credits, and a route that can
+     spend should never be reachable by accident. */
+
+  async startAssetStage(
+    projectId: string,
+    input: unknown,
+  ): Promise<ProjectSnapshot> {
+    return await this.creative.startAssetStage(projectId, input);
+  }
+
+  async pollAssetStage(
+    projectId: string,
+    assetId: string,
+  ): Promise<ProjectSnapshot> {
+    return await this.creative.pollAssetStage(projectId, assetId);
+  }
+
+  async decideAssetStage(
+    projectId: string,
+    input: unknown,
+  ): Promise<ProjectSnapshot> {
+    return await this.creative.decideAssetStage(projectId, input);
+  }
+
+  updateMeshyConfig(projectId: string, input: unknown): ProjectSnapshot {
+    return this.creative.updateMeshyConfig(projectId, input);
+  }
+
+  /** Free: it persists what a human approved, and spends nothing. */
+  async storeAssetReferences(
+    projectId: string,
+    input: unknown,
+  ): Promise<ProjectSnapshot> {
+    return await this.creative.storeAssetReferences(projectId, input);
+  }
+
+  async detectAssetBiped(
+    projectId: string,
+    assetId: string,
+  ): Promise<ProjectSnapshot> {
+    return await this.creative.detectAssetBiped(projectId, assetId);
+  }
+
+  overrideAssetRigEligibility(
+    projectId: string,
+    input: unknown,
+  ): ProjectSnapshot {
+    return this.creative.overrideAssetRigEligibility(projectId, input);
+  }
+
   async advance(projectId: string): Promise<ProjectSnapshot> {
     const state = this.repository.getProject(projectId);
     if (state.milestone === "m0") return await this.m0.advance(projectId);
@@ -81,12 +191,51 @@ export class ProjectCoordinator {
         state.stage,
       ) ||
         (state.status === "blocked" &&
-          state.blockedReason?.recoverable === true))
+          state.blockedReason?.recoverable === true &&
+          !approvalGateBlock(state)))
     ) {
       await this.macro.advance(projectId, "explicit-advance");
       return this.snapshot(projectId);
     }
     return this.creative.advance(projectId);
+  }
+
+  /**
+   * Returns a project blocked by a rejection to that gate's review, with its
+   * revisions intact. This never generates anything: the human re-reviews and
+   * decides again.
+   */
+  reopenApprovalReview(projectId: string, input: unknown): ProjectSnapshot {
+    const parsed = ReopenApprovalReviewInputSchema.parse(input);
+    if (parsed.gate === "asset-plan")
+      throw new Error(
+        "Asset plans finalize automatically and have no review gate to reopen.",
+      );
+    const state = this.repository.getProject(projectId);
+    const block = approvalGateBlock(state);
+    if (state.status !== "blocked" || !block)
+      throw new Error("This project has no rejected approval to reopen.");
+    if (block.gate !== parsed.gate)
+      throw new Error(
+        `This project is blocked at the ${block.gate} gate, not ${parsed.gate}.`,
+      );
+    this.repository.saveProject({
+      ...state,
+      status: "awaiting-approval",
+      stage: block.reviewStage,
+      blockedReason: undefined,
+    });
+    this.repository.appendEvent({
+      projectId,
+      runId: state.runId,
+      type: "approval.review-reopened",
+      payload: {
+        gate: block.gate,
+        stage: block.reviewStage,
+        blockedReasonCode: state.blockedReason?.code ?? null,
+      },
+    });
+    return this.snapshot(projectId);
   }
 
   async approveDirection(
@@ -116,120 +265,6 @@ export class ProjectCoordinator {
     return snapshot;
   }
 
-  async decideAssetPlan(
-    projectId: string,
-    input: AssetPlanApprovalInput | unknown,
-  ): Promise<ProjectSnapshot> {
-    const state = this.repository.getProject(projectId);
-    if (state.milestone !== "m2")
-      throw new Error("Only M2 projects have an asset plan.");
-    if (state.stage !== "asset-plan-approval")
-      throw new Error("This project is not in the asset-plan-approval stage.");
-    if (!state.assetPlan) throw new Error("The project has no asset plan.");
-    const parsed = AssetPlanApprovalInputSchema.parse(input);
-    if (
-      parsed.targetRevisionId !== state.assetPlan.revisionId ||
-      parsed.targetSha256 !== state.assetPlan.artifact.sha256
-    )
-      throw new Error(
-        "The approval target does not match the current immutable revision.",
-      );
-    if (
-      parsed.decision === "changes-requested" &&
-      (state.assetPlanReplanCount ?? 0) >= 1
-    ) {
-      const blocked = this.repository.saveProject({
-        ...state,
-        status: "blocked",
-        stage: "blocked",
-        blockedReason: {
-          code: "asset-plan-replan-limit",
-          message: "M2 permits one asset-plan replan.",
-          recoverable: false,
-          failureKind: "policy-blocked",
-        },
-      });
-      this.repository.appendEvent({
-        projectId,
-        runId: state.runId,
-        type: "asset-plan.failed",
-        payload: {
-          requestId: `asset-plan-replan-limit:${state.assetPlan.revisionId}`,
-          failureCode: "asset-plan-replan-limit",
-          kind: "policy-blocked",
-          issueCodes: [],
-        },
-      });
-      return this.snapshot(blocked.projectId);
-    }
-    const decision: ApprovalDecision = {
-      approvalId: randomUUID(),
-      projectId,
-      targetType: "asset-plan",
-      targetRevisionId: parsed.targetRevisionId,
-      targetSha256: parsed.targetSha256,
-      decision: parsed.decision,
-      ...(parsed.notes ? { notes: parsed.notes } : {}),
-      decidedBy: "local-user",
-      decidedAt: new Date().toISOString(),
-    };
-    const event = {
-      runId: state.runId,
-      type: "approval.asset-plan-decided",
-      payload: {
-        approvalId: decision.approvalId,
-        decision: decision.decision,
-        targetRevisionId: decision.targetRevisionId,
-        targetSha256: decision.targetSha256,
-      },
-    };
-    if (decision.decision === "rejected") {
-      this.repository.commitApproval({
-        decision,
-        nextState: {
-          ...state,
-          assetPlanApproval: decision,
-          status: "blocked",
-          stage: "blocked",
-          blockedReason: {
-            code: "asset-plan-not-approved",
-            message: "The asset plan was rejected.",
-            recoverable: false,
-            failureKind: "policy-blocked",
-          },
-        },
-        event,
-      });
-      return this.snapshot(projectId);
-    }
-    if (decision.decision === "changes-requested") {
-      this.repository.commitApproval({
-        decision,
-        nextState: {
-          ...state,
-          assetPlanApproval: decision,
-          status: "active",
-          stage: "asset-planning",
-        },
-        event,
-      });
-      await this.macro.advance(projectId, "approval-recorded");
-      return this.snapshot(projectId);
-    }
-    this.repository.commitApproval({
-      decision,
-      nextState: {
-        ...state,
-        assetPlanApproval: decision,
-        status: "active",
-        stage: "asset-plan-approval",
-      },
-      event,
-    });
-    await this.macro.advance(projectId, "approval-recorded");
-    return this.snapshot(projectId);
-  }
-
   approveSlice(projectId: string, input: ApprovalInput): ProjectSnapshot {
     if (this.isM1(projectId))
       throw new Error("M1 ends at sound-set approval and has no visual slice.");
@@ -245,26 +280,66 @@ export class ProjectCoordinator {
   increaseBudget(projectId: string, input: unknown): ProjectSnapshot {
     const parsed = IncreaseBudgetInputSchema.parse(input);
     const state = this.repository.getProject(projectId);
-    if (state.stage === "complete" || state.stage === "blocked")
+    const recoverableBudgetBlock =
+      state.stage === "blocked" &&
+      state.blockedReason?.code === "budget-refused" &&
+      state.blockedReason.recoverable;
+    if (
+      state.stage === "complete" ||
+      (state.stage === "blocked" && !recoverableBudgetBlock)
+    )
       throw new Error(
-        "A completed or blocked project cannot raise its budget.",
+        "A completed or blocked project cannot raise its budget unless it has a recoverable budget refusal.",
       );
+    if (parsed.meshyCreditBudget !== undefined) {
+      if (
+        state.milestone !== "m2" ||
+        state.mode !== "live" ||
+        state.assetProvider !== "meshy"
+      )
+        throw new Error(
+          "Only a live M2 Meshy project has a Meshy credit budget.",
+        );
+      const currentCredits = state.meshyCreditBudget ?? 0;
+      if (parsed.meshyCreditBudget <= currentCredits)
+        throw new Error(
+          `The new Meshy credit budget must exceed the current ${currentCredits}-credit cap.`,
+        );
+      this.repository.saveProject({
+        ...state,
+        meshyCreditBudget: parsed.meshyCreditBudget,
+        meshyCreditsReserved: state.meshyCreditsReserved ?? 0,
+        meshyCreditsConsumed: state.meshyCreditsConsumed ?? 0,
+      });
+      this.repository.appendEvent({
+        projectId,
+        runId: state.runId,
+        type: "meshy-credits.budget-increased",
+        payload: {
+          previousBudgetCredits: currentCredits,
+          budgetCredits: parsed.meshyCreditBudget,
+        },
+      });
+      return this.snapshot(projectId);
+    }
+
     if (state.milestone === "m1" && !hasMeteredRoutes(state))
       throw new Error("This project has no metered routes to budget.");
-    if (!(parsed.budgetUsd > state.budgetUsd))
+    const budgetUsd = parsed.budgetUsd!;
+    if (!(budgetUsd > state.budgetUsd))
       throw new Error(
         `The new budget must be greater than the current $${state.budgetUsd.toFixed(2)} cap.`,
       );
     const previousBudgetUsd = state.budgetUsd;
     this.repository.saveProject({
       ...state,
-      budgetUsd: parsed.budgetUsd,
+      budgetUsd,
     });
     this.repository.appendEvent({
       projectId,
       runId: state.runId,
       type: "budget.increased",
-      payload: { previousBudgetUsd, budgetUsd: parsed.budgetUsd },
+      payload: { previousBudgetUsd, budgetUsd },
     });
     return this.snapshot(projectId);
   }

@@ -100,6 +100,35 @@ const mascotView = {
   viewWidth: 3.1,
 };
 
+/* ---------- free mode: sitting *beside* the world, never on it ----------
+   Free mode has no measured diorama to clear himself against the way a dock
+   does — home simply hangs his canvas in the world panel's bottom-right
+   corner — so the composition used to centre the workshop in that canvas and
+   hope. It did not: the panel is almost all diorama, and on the 1500–1799px
+   step the plinth landed square on the board's raised platform, which made a
+   robot sitting on his own crate read as a robot sunk knee-deep in the grid.
+
+   The board is an isometric diamond, so the paper it leaves free is the wedge
+   below its front-right edge — narrow at the diamond's right corner and
+   widening all the way down. Park the workshop in that wedge's bottom-right
+   corner and it is clear at every width; the only price is scale, because the
+   wedge is what it is. FREE_SCALE is the largest fraction of the old fit that
+   keeps the plinth's top-left corner right of the board's front-right edge at
+   1366, 1536, 1707, 1920 and 2560 — the binding width is 1707, which allows
+   0.60. It leaves him about one diorama block tall, which is the same order as
+   the capture dock's own 0.38–0.62 block ratio, so the two compositions agree
+   about how big he is next to the world he is building. */
+const FREE_SCALE = 0.58;
+/** The canvas's own bottom-right corner is the panel's, so these are the paper
+ *  margins between the pile and the panel's border. The floor margin is the
+ *  tighter of the two on purpose: the wedge widens by about two pixels across
+ *  for every pixel down, so the last few pixels of descent are worth more
+ *  clearance than they cost in framing. */
+const FREE_PAD_X = 6;
+const FREE_PAD_Y = 2;
+/** He faces the reader in free mode; the rig is not turned. */
+const freeStageYaw = 0;
+
 /* ---------- living inside the build log's capture window ----------
    On the question screens he moves into the little framed diorama in the
    sidebar, so his performance and the world growing are one picture. That only
@@ -153,6 +182,16 @@ function frameBasis(azimuth: number, elevation: number) {
    flat grey slabs. He works in profile, watching the world he fills in. */
 const frameStageYaw = -90;
 
+/** …except on a perch, where there is nothing to build. Working in profile is
+ *  right when he is filling a world in; on a review screen he was simply
+ *  standing in the top-right corner with his back to the reader. The opposite
+ *  quarter-turn is the one that faces him out — verified by rendering the perch
+ *  at -90, -45, 0, 45, 90, 135 and 180 and reading the visor: 90 is the only
+ *  value where both eyes are on the reader. It also mirrors the crate and the
+ *  pile to either side of him, which keeps them off-square to the 45° camera so
+ *  they still read as boxes rather than flat slabs. */
+const perchStageYaw = 90;
+
 /** The workshop's screen-space geometry for a given yaw, in metres: x runs
  *  right, y runs *down*, both measured from the seat. Orthographic projection
  *  is linear, so these numbers scale straight to pixels by `zoom`. */
@@ -167,15 +206,21 @@ type StageGeometry = {
   clear: Array<{ x: number; y: number }>;
 };
 
-const stageGeometryCache = new Map<number, StageGeometry>();
+const stageGeometryCache = new Map<string, StageGeometry>();
 
-function stageGeometry(yawDeg: number): StageGeometry {
-  const cached = stageGeometryCache.get(yawDeg);
+/** `view` is the camera the geometry is measured under: the dock modes all
+ *  share the diorama's own projection, free mode has its own. */
+function stageGeometry(
+  yawDeg: number,
+  view: { azimuth: number; elevation: number } = frameView,
+): StageGeometry {
+  const key = `${yawDeg}:${view.azimuth}:${view.elevation}`;
+  const cached = stageGeometryCache.get(key);
   if (cached) return cached;
   const yaw = THREE.MathUtils.degToRad(yawDeg);
   const cos = Math.cos(yaw);
   const sin = Math.sin(yaw);
-  const { right, up } = frameBasis(frameView.azimuth, frameView.elevation);
+  const { right, up } = frameBasis(view.azimuth, view.elevation);
   const flat = (x: number, y: number, z: number) => {
     const point = new THREE.Vector3(x * cos + z * sin, y, z * cos - x * sin);
     return { x: point.dot(right), y: -point.dot(up) };
@@ -237,7 +282,7 @@ function stageGeometry(yawDeg: number): StageGeometry {
     },
     clear,
   };
-  stageGeometryCache.set(yawDeg, geometry);
+  stageGeometryCache.set(key, geometry);
   return geometry;
 }
 
@@ -296,7 +341,7 @@ function measureDock(host: HTMLDivElement): MascotDock | null {
        every viewport width and scrolls with it. The workshop simply fits the
        box, parked against its bottom-right corner; `still` (below) keeps his
        decisions from walking him off the shelf. */
-    const stage = stageGeometry(frameStageYaw);
+    const stage = stageGeometry(perchStageYaw);
     const pad = 10;
     const zoom = Math.min(
       (box.width - pad * 2) / (stage.span.x1 - stage.span.x0),
@@ -541,6 +586,7 @@ function easeInOut(t: number) {
 function MascotCamera({
   azimuth,
   elevation,
+  park,
   target,
   viewHeight,
   viewWidth,
@@ -548,6 +594,9 @@ function MascotCamera({
 }: {
   azimuth: number;
   elevation: number;
+  /** free mode: the workshop's own screen geometry, to be parked against the
+   *  canvas's bottom-right corner rather than centred on `target`. */
+  park?: StageGeometry | null;
   target: [number, number, number];
   viewHeight: number;
   viewWidth: number;
@@ -560,21 +609,47 @@ function MascotCamera({
 
   useLayoutEffect(() => {
     if (!(camera instanceof THREE.OrthographicCamera)) return;
+    let seat = target;
+    let scale =
+      zoom ?? Math.min(size.height / viewHeight, size.width / viewWidth);
+    if (park && zoom === undefined) {
+      /* Same algebra the perch dock uses, and for the same reason: the seat is
+         the rig's own origin, orthographic projection is linear, so the camera
+         target that puts the workshop's bottom-right corner on a given pixel
+         can be written down rather than solved. */
+      scale *= FREE_SCALE;
+      const seatX = size.width - FREE_PAD_X - park.span.x1 * scale;
+      const seatY = size.height - FREE_PAD_Y - park.span.y1 * scale;
+      const { right, up } = frameBasis(azimuth, elevation);
+      const point = new THREE.Vector3()
+        .addScaledVector(right, -(seatX - size.width / 2) / scale)
+        .addScaledVector(up, (seatY - size.height / 2) / scale);
+      seat = [point.x, point.y, point.z];
+    }
     const phi = THREE.MathUtils.degToRad(elevation);
     const theta = THREE.MathUtils.degToRad(azimuth);
     const radius = 14;
     camera.position.set(
-      target[0] + radius * Math.cos(phi) * Math.sin(theta),
-      target[1] + radius * Math.sin(phi),
-      target[2] + radius * Math.cos(phi) * Math.cos(theta),
+      seat[0] + radius * Math.cos(phi) * Math.sin(theta),
+      seat[1] + radius * Math.sin(phi),
+      seat[2] + radius * Math.cos(phi) * Math.cos(theta),
     );
-    camera.lookAt(target[0], target[1], target[2]);
+    camera.lookAt(seat[0], seat[1], seat[2]);
     camera.near = 0.1;
     camera.far = 40;
-    camera.zoom =
-      zoom ?? Math.min(size.height / viewHeight, size.width / viewWidth);
+    camera.zoom = scale;
     camera.updateProjectionMatrix();
-  }, [azimuth, camera, elevation, size, target, viewHeight, viewWidth, zoom]);
+  }, [
+    azimuth,
+    camera,
+    elevation,
+    park,
+    size,
+    target,
+    viewHeight,
+    viewWidth,
+    zoom,
+  ]);
 
   return null;
 }
@@ -739,6 +814,7 @@ function makeFlagProp(): PileBlock {
 }
 
 function MascotRover({
+  bare,
   flag,
   onClip,
   onPile,
@@ -749,6 +825,9 @@ function MascotRover({
   still,
   yaw,
 }: {
+  /** true where the screen is a wait rather than a build step: the crate and
+   *  the heap are packed away and he simply sits. */
+  bare: boolean;
   /** true on the completion screen, where the thing he carries is the flag. */
   flag: boolean;
   onClip: (clip: MascotClip) => void;
@@ -884,6 +963,8 @@ function MascotRover({
   spin.current = yaw;
   const parked = useRef(still);
   parked.current = still;
+  const stripped = useRef(bare);
+  stripped.current = bare;
 
   const play = useCallback(
     (index: number) => {
@@ -1045,7 +1126,10 @@ function MascotRover({
   /** Reduced motion: no trip, but the pile still spends a block per decision. */
   const spendQuietly = useCallback(() => {
     carried.current = null;
-    if (carryFlag.current) {
+    /* With the heap packed away there is no block to spend — the decision is
+       still recorded so the world reaches the truth, the pile just keeps the
+       shape it will come back to. */
+    if (carryFlag.current || stripped.current) {
       placed.current();
       return;
     }
@@ -1197,12 +1281,17 @@ function MascotRover({
        walk at the diorama is to point the room at it. */
     <group rotation={[0, yaw, 0]}>
       <primitive object={scene} ref={root} visible={false} />
-      <group ref={pileRoot} />
-      <MascotBox
-        position={[blockPickup[0], crateSize[1] / 2, blockPickup[2]]}
-        size={crateSize}
-        yaw={blockPickupYaw}
-      />
+      {/* The heap is hidden rather than unmounted: the blocks are added to
+          this group by hand (a carried one is re-parented onto a bone), so
+          taking them out of the tree on a prop change would fight that. */}
+      <group ref={pileRoot} visible={!bare} />
+      {!bare && (
+        <MascotBox
+          position={[blockPickup[0], crateSize[1] / 2, blockPickup[2]]}
+          size={crateSize}
+          yaw={blockPickupYaw}
+        />
+      )}
       <MascotBox position={plinthCentre} size={plinthSize} />
     </group>
   );
@@ -1219,6 +1308,7 @@ export function MascotStage({
   queue = false,
   screen,
   startDelay = 1150,
+  waiting = false,
 }: {
   /** Monotonic count of decisions taken so far — every rise queues a fetch. */
   decisions: number;
@@ -1237,6 +1327,11 @@ export function MascotStage({
   /** Which World Forge screen is on: CSS parks him in that screen's free corner. */
   screen: string;
   startDelay?: number;
+  /** true while the screen is a wait with nothing to build — the generating
+   *  screens. He keeps his stool and his idle; the crate and the heap are
+   *  packed away and a queued decision is spent where he sits rather than
+   *  performing a fetch for a block the screen has nowhere to put. */
+  waiting?: boolean;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const pending = useRef(0);
@@ -1398,6 +1493,7 @@ export function MascotStage({
       data-clip="load"
       data-dock={mode}
       data-screen={screen}
+      data-waiting={waiting ? "true" : "false"}
       ref={host}
       style={
         dock
@@ -1432,6 +1528,7 @@ export function MascotStage({
       >
         <MascotCamera
           {...mascotView}
+          park={dock ? null : stageGeometry(freeStageYaw, mascotView)}
           {...(dock
             ? { ...frameView, target: dock.target, zoom: dock.zoom }
             : null)}
@@ -1457,6 +1554,7 @@ export function MascotStage({
         />
         <Suspense fallback={null}>
           <MascotRover
+            bare={waiting}
             flag={mode === "finale"}
             onClip={onClip}
             onPile={onPile}
@@ -1464,7 +1562,7 @@ export function MascotStage({
             pending={pending}
             snapTarget={snapTarget}
             startDelay={startDelay}
-            still={mode === "panel" || mode === "perch"}
+            still={waiting || mode === "panel" || mode === "perch"}
             yaw={dock?.yaw ?? 0}
           />
           {/* y must stay *below* 0: drei renders its blur passes against a

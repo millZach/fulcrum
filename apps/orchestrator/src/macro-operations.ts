@@ -73,6 +73,10 @@ export interface M2MacroGraphSlots {
     z.infer<typeof TurntableEvaluationNodeOutputSchema>,
     z.infer<typeof RegenerationNodeOutputSchema>
   >;
+  assetFinishing?: MacroPhase<
+    z.infer<typeof RegenerationNodeOutputSchema>,
+    z.infer<typeof RegenerationNodeOutputSchema>
+  >;
 }
 
 const unavailable = <I, O>(slot: string): MacroPhase<I, O> => ({
@@ -97,10 +101,14 @@ export const unavailableM2MacroGraphSlots = (): M2MacroGraphSlots => ({
   deterministicQa: unavailable("deterministic-qa"),
   turntableEvaluation: unavailable("turntable-evaluation"),
   regeneration: unavailable("regeneration"),
+  assetFinishing: unavailable("asset-finishing"),
 });
 
 export type M2MacroGraphSlotOptions = {
-  assetProduction?: Pick<AssetProduction, "ensure" | "ensureMultiviewConcepts">;
+  assetProduction?: Pick<
+    AssetProduction,
+    "ensure" | "ensureMultiviewConcepts" | "finish"
+  >;
   assetQuality?: Pick<
     AssetQuality,
     "inspect" | "ensureSemantic" | "selectRegeneration"
@@ -192,7 +200,7 @@ export const createM2MacroGraphSlots = (
   ): { revision: RevisionRef; value: AssetPolicy } => {
     const ensured = repository.ensureRevision({
       projectId,
-      operationKey: `m2.asset-policy:${classification}:v1`,
+      operationKey: `m2.asset-policy:${classification}:v2`,
       entityId: `${projectId}:asset-policy:${classification}`,
       kind: "asset-policy",
       runId,
@@ -610,6 +618,117 @@ export const createM2MacroGraphSlots = (
             selected.revision,
           );
         }
+      },
+    },
+    assetFinishing: {
+      ensure: async (input) => {
+        if (!input.validated) return { status: "ready" as const, value: input };
+        const state = repository.getProject(input.projectId);
+        const { policy: handling } = planned(input);
+        const finished = await assets.finish({
+          projectId: input.projectId,
+          assetPlan: input.assetPlan,
+          assetId: input.assetId,
+          geometryAsset: input.bestAsset,
+        });
+        if (finished.status === "pending") return finished;
+        if (finished.status === "failed")
+          return productionFailure(finished.error, [
+            input.bestAsset.revisionId,
+          ]);
+        if (finished.value.revisionId === input.bestAsset.revisionId)
+          return { status: "ready" as const, value: input };
+
+        const classification = input.classification!;
+        const policy = ensurePolicy(
+          input.projectId,
+          state.runId,
+          classification,
+        );
+        let inspected;
+        try {
+          inspected = await quality.inspect({
+            projectId: input.projectId,
+            runId: state.runId,
+            asset: finished.value,
+            policy,
+          });
+        } catch (error) {
+          return qualityFailure(error, [finished.value.revisionId]);
+        }
+        if (!inspected.report.passed) {
+          return {
+            status: "ready" as const,
+            value: {
+              ...input,
+              candidateAsset: finished.value,
+              bestAsset: finished.value,
+              deterministicReport: inspected.deterministicReport,
+              finalDeterministicReport: inspected.deterministicReport,
+              turntable: undefined,
+              semanticReport: undefined,
+              finalSemanticReport: undefined,
+              disposition: "user-action-required" as const,
+              validated: false,
+            },
+          };
+        }
+
+        let finalSemanticReport: RevisionRef | undefined;
+        let validated = true;
+        if (handling.semanticQa !== "none") {
+          if (!inspected.turntable)
+            return slotFailure(
+              "asset-turntable-missing",
+              "The textured asset passed deterministic QA without a turntable.",
+              "terminal",
+              [inspected.deterministicReport.revisionId],
+            );
+          const semantic = await quality.ensureSemantic({
+            projectId: input.projectId,
+            runId: state.runId,
+            mode: state.mode,
+            asset: finished.value,
+            deterministicReport: inspected.deterministicReport,
+            turntable: inspected.turntable,
+            policy,
+            context: evaluationContext(input),
+          });
+          if (semantic.status === "pending") return semantic;
+          if (semantic.status === "failed")
+            return productionFailure(semantic.error, [
+              inspected.turntable.revisionId,
+            ]);
+          finalSemanticReport = semantic.value.revision;
+          validated = semantic.value.report.verdict === "pass";
+        }
+
+        return {
+          status: "ready" as const,
+          value: {
+            ...input,
+            candidateAsset: finished.value,
+            bestAsset: finished.value,
+            deterministicReport: inspected.deterministicReport,
+            finalDeterministicReport: inspected.deterministicReport,
+            ...(inspected.turntable
+              ? { turntable: inspected.turntable }
+              : { turntable: undefined }),
+            ...(finalSemanticReport
+              ? {
+                  semanticReport: finalSemanticReport,
+                  finalSemanticReport,
+                }
+              : {
+                  semanticReport: undefined,
+                  finalSemanticReport: undefined,
+                }),
+            disposition: validated
+              ? ("accept" as const)
+              : ("user-action-required" as const),
+            validated,
+          },
+        };
       },
     },
   };

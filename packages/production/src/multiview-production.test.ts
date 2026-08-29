@@ -8,6 +8,7 @@ import {
   AssetDocumentSchema,
   ConceptViewDocumentSchema,
   MultiviewConceptSetSchema,
+  type AssetClassification,
   type ArtifactRef,
   type ConceptViewRole,
 } from "@fulcrum/domain";
@@ -18,7 +19,7 @@ import {
   m2AssetIdempotencyKey,
   type AssetGenerationJob,
 } from "./asset-generation.js";
-import { AssetProduction } from "./index.js";
+import { AssetProduction, createReplayReliquary } from "./index.js";
 import { MeshyAssetAdapter } from "./meshy-adapter.js";
 import { TripoAssetAdapter } from "./tripo-adapter.js";
 
@@ -52,11 +53,13 @@ const fixture = (
   options: {
     mode?: "live" | "replay";
     assetProvider?: "meshy" | "tripo";
+    classification?: AssetClassification;
     withSet?: boolean;
   } = {},
 ) => {
   const mode = options.mode ?? "replay";
   const assetProvider = options.assetProvider ?? "meshy";
+  const classification = options.classification ?? "hero";
   const root = mkdtempSync(path.join(tmpdir(), "fulcrum-m2-production-"));
   roots.push(root);
   const repository = new ProjectRepository(root);
@@ -146,8 +149,16 @@ const fixture = (
         {
           assetId,
           name: "Ancient Reliquary",
-          classification: "hero",
+          classification,
           rationale: "The objective needs a hero asset.",
+          ...(classification === "procedural"
+            ? {
+                procedure: {
+                  generatorId: "fixture-procedure",
+                  parameters: { seed: 1 },
+                },
+              }
+            : {}),
           sourceRefs: {
             gameDesignSpec: {
               revisionId: gameDesignSpec.revisionId,
@@ -302,6 +313,13 @@ const fixture = (
     runId,
     budgetUsd: 5,
     spentUsd: 0,
+    ...(mode === "live" && assetProvider === "meshy"
+      ? {
+          meshyCreditBudget: 300,
+          meshyCreditsReserved: 0,
+          meshyCreditsConsumed: 0,
+        }
+      : {}),
     conceptReplacementCount: 0,
     brief,
     gameDesignSpec,
@@ -337,6 +355,11 @@ const multiviewJob = (
 ): AssetGenerationJob => ({
   projectId: context.projectId,
   assetId: context.assetId,
+  stage:
+    context.repository.getProject(context.projectId).assetProvider === "meshy"
+      ? "geometry"
+      : "complete",
+  qualityTarget: { maxTriangles: 250_000 },
   imageInput: {
     kind: "multiview",
     conceptSet: context.multiviewConceptSet,
@@ -351,7 +374,7 @@ const multiviewJob = (
 
 describe("AssetProduction M2 durability", () => {
   it.each([
-    ["meshy" as const, "FULCRUM_MESHY_MODEL", "meshy-6", "meshy-7"],
+    ["meshy" as const, "FULCRUM_MESHY_MODEL", "meshy-7", "meshy-6"],
     [
       "tripo" as const,
       "FULCRUM_TRIPO_MODEL_VERSION",
@@ -414,7 +437,7 @@ describe("AssetProduction M2 durability", () => {
   it("multiview_job_journals_full_hash_set_before_network", async () => {
     const context = fixture({ mode: "live" });
     process.env.MESHY_API_KEY = "test-key";
-    process.env.FULCRUM_MESHY_MODEL = "meshy-7";
+    process.env.FULCRUM_MESHY_MODEL = "meshy-6";
     process.env.FULCRUM_MESHY_RESERVE_USD = "0.20";
     const adapter = new MeshyAssetAdapter(context.repository);
     const idempotencyKey = m2AssetIdempotencyKey({
@@ -448,7 +471,7 @@ describe("AssetProduction M2 durability", () => {
   it("multiview_budget_is_reserved_once_before_paid_submission", async () => {
     const context = fixture({ mode: "live" });
     process.env.MESHY_API_KEY = "test-key";
-    process.env.FULCRUM_MESHY_MODEL = "meshy-7";
+    process.env.FULCRUM_MESHY_MODEL = "meshy-6";
     process.env.FULCRUM_MESHY_RESERVE_USD = "0.20";
     const fetchMock = vi.fn(async (request: string | URL | Request) => {
       const url = String(request);
@@ -464,8 +487,52 @@ describe("AssetProduction M2 durability", () => {
     expect(
       context.repository
         .listEvents(context.projectId)
-        .filter(({ type }) => type === "budget.reserved"),
+        .filter(({ type }) => type === "meshy-credits.reserved"),
     ).toHaveLength(1);
+    expect(context.repository.getProject(context.projectId)).toMatchObject({
+      meshyCreditsReserved: 20,
+      meshyCreditsConsumed: 0,
+      spentUsd: 0,
+    });
+    context.repository.close();
+  });
+
+  it.each([
+    "hero" as const,
+    "kit" as const,
+    "procedural" as const,
+    "functional" as const,
+  ])("live_meshy_%s_job_preserves_geometry_for_qa", async (classification) => {
+    const context = fixture({
+      mode: "live",
+      classification,
+      withSet: false,
+    });
+    process.env.MESHY_API_KEY = "test-key";
+    process.env.FULCRUM_MESHY_MODEL = "meshy-6";
+    process.env.FULCRUM_MESHY_RESERVE_USD = "0.20";
+    let body: Record<string, unknown> | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_request: string | URL | Request, init?: RequestInit) => {
+        body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return Response.json({ result: `meshy-${classification}-1` });
+      }),
+    );
+
+    expect(
+      (await new AssetProduction(context.repository).ensure(context.request))
+        .status,
+    ).toBe("pending");
+    expect(body).toMatchObject({
+      should_texture: false,
+      should_remesh: false,
+      image_enhancement: true,
+      auto_size: true,
+      origin_at: "bottom",
+      multi_view_thumbnails: true,
+    });
+    expect(body).not.toHaveProperty("target_polycount");
     context.repository.close();
   });
 
@@ -513,7 +580,7 @@ describe("AssetProduction M2 durability", () => {
   it("ambiguous_paid_post_blocks_without_duplicate_spend", async () => {
     const context = fixture({ mode: "live" });
     process.env.MESHY_API_KEY = "test-key";
-    process.env.FULCRUM_MESHY_MODEL = "meshy-7";
+    process.env.FULCRUM_MESHY_MODEL = "meshy-6";
     process.env.FULCRUM_MESHY_RESERVE_USD = "0.20";
     const fetchMock = vi.fn(async () => {
       throw new Error("socket hang up");
@@ -527,14 +594,18 @@ describe("AssetProduction M2 durability", () => {
     expect(first.status).toBe("failed");
     expect(second.status).toBe("failed");
     expect(fetchMock).toHaveBeenCalledOnce();
-    expect(context.repository.getProject(context.projectId).spentUsd).toBe(0.2);
+    expect(context.repository.getProject(context.projectId)).toMatchObject({
+      spentUsd: 0,
+      meshyCreditsReserved: 20,
+      meshyCreditsConsumed: 0,
+    });
     context.repository.close();
   });
 
   it("absent_views_fall_back_to_single_image_without_failure", async () => {
     const context = fixture({ mode: "live", withSet: false });
     process.env.MESHY_API_KEY = "test-key";
-    process.env.FULCRUM_MESHY_MODEL = "meshy-7";
+    process.env.FULCRUM_MESHY_MODEL = "meshy-6";
     process.env.FULCRUM_MESHY_RESERVE_USD = "0.20";
     const fetchMock = vi.fn(async (request: string | URL | Request) => {
       expect(String(request)).toContain("/image-to-3d");
@@ -550,7 +621,7 @@ describe("AssetProduction M2 durability", () => {
     context.repository.close();
   });
 
-  it("incapable_adapter_ignores_valid_views_and_uses_anchor", async () => {
+  it("non_meshy_6_configuration_is_rejected_before_network", async () => {
     const context = fixture({ mode: "live" });
     process.env.MESHY_API_KEY = "test-key";
     process.env.FULCRUM_MESHY_MODEL = "meshy-5";
@@ -562,10 +633,150 @@ describe("AssetProduction M2 durability", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
+    const outcome = await new AssetProduction(context.repository).ensure(
+      context.request,
+    );
+    expect(outcome.status).toBe("failed");
+    if (outcome.status === "failed")
+      expect(outcome.error.code).toBe("payload-invalid");
+    expect(fetchMock).not.toHaveBeenCalled();
+    context.repository.close();
+  });
+
+  it("meshy_6_geometry_and_4k_texture_are_separate_credit_gated_jobs", async () => {
+    const context = fixture({ mode: "live" });
+    process.env.MESHY_API_KEY = "test-key";
+    process.env.FULCRUM_MESHY_MODEL = "meshy-6";
+    const glb = await createReplayReliquary();
+    let geometryBody: Record<string, unknown> | undefined;
+    let textureBody: Record<string, unknown> | undefined;
+    const fetchMock = vi.fn(
+      async (
+        request: string | URL | Request,
+        init?: RequestInit,
+      ): Promise<Response> => {
+        const url = String(request);
+        if (url.endsWith("/multi-image-to-3d") && init?.method === "POST") {
+          geometryBody = JSON.parse(String(init.body)) as Record<
+            string,
+            unknown
+          >;
+          return Response.json({ result: "geometry-task-1" });
+        }
+        if (url.endsWith("/multi-image-to-3d/geometry-task-1"))
+          return Response.json({
+            status: "SUCCEEDED",
+            progress: 100,
+            consumed_credits: 20,
+            model_urls: { glb: "https://assets.test/geometry.glb" },
+            thumbnail_urls: {
+              front: "https://assets.test/front.png",
+              right: "https://assets.test/right.png",
+              back: "https://assets.test/back.png",
+              left: "https://assets.test/left.png",
+            },
+          });
+        if (url === "https://assets.test/geometry.glb")
+          return new Response(glb.buffer as ArrayBuffer);
+        if (url.endsWith(".png"))
+          return new Response(Uint8Array.from([137, 80, 78, 71]), {
+            headers: { "content-type": "image/png" },
+          });
+        if (url.endsWith("/retexture") && init?.method === "POST") {
+          textureBody = JSON.parse(String(init.body)) as Record<
+            string,
+            unknown
+          >;
+          return Response.json({ result: "texture-task-1" });
+        }
+        if (url.endsWith("/retexture/texture-task-1"))
+          return Response.json({
+            status: "SUCCEEDED",
+            progress: 100,
+            consumed_credits: 10,
+            model_urls: { glb: "https://assets.test/textured.glb" },
+            texture_urls: [{ base_color: "https://assets.test/base.png" }],
+          });
+        if (url === "https://assets.test/textured.glb")
+          return new Response(glb.buffer as ArrayBuffer);
+        throw new Error(`Unexpected fetch: ${url}`);
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const production = new AssetProduction(context.repository);
+
+    expect((await production.ensure(context.request)).status).toBe("pending");
+    const geometry = await production.ensure(context.request);
+    expect(geometry.status).toBe("ready");
+    if (geometry.status !== "ready") throw new Error("geometry not ready");
+    const geometryDocument = AssetDocumentSchema.parse(
+      context.repository.resolveRevision(geometry.value),
+    );
+    expect(geometryDocument).toMatchObject({
+      generationClaims: { textured: false, textureChannels: [] },
+      costCredits: 20,
+    });
+    expect(geometryDocument.providerEvidence?.map(({ role }) => role)).toEqual([
+      "provider-front",
+      "provider-right",
+      "provider-back",
+      "provider-left",
+    ]);
+    expect(geometryBody).toMatchObject({
+      ai_model: "meshy-6",
+      should_texture: false,
+      should_remesh: false,
+      image_enhancement: true,
+      multi_view_thumbnails: true,
+    });
+
+    const finishRequest = {
+      projectId: context.projectId,
+      assetPlan: context.assetPlan,
+      assetId: context.assetId,
+      geometryAsset: geometry.value,
+    };
+    expect((await production.finish(finishRequest)).status).toBe("pending");
+    const finished = await production.finish(finishRequest);
+    expect(finished.status).toBe("ready");
+    if (finished.status !== "ready") throw new Error("texture not ready");
+    const finishedDocument = AssetDocumentSchema.parse(
+      context.repository.resolveRevision(finished.value),
+    );
+    expect(finishedDocument).toMatchObject({
+      parentAssetRevisionId: geometry.value.revisionId,
+      generationClaims: {
+        textured: true,
+        textureChannels: ["base-color", "metallic-roughness", "normal"],
+      },
+      costCredits: 30,
+    });
+    expect(finishedDocument.providerEvidence?.map(({ role }) => role)).toEqual([
+      "provider-front",
+      "provider-right",
+      "provider-back",
+      "provider-left",
+      "provider-texture-0-base-color",
+    ]);
+    expect(textureBody).toMatchObject({
+      ai_model: "meshy-6",
+      enable_original_uv: true,
+      enable_pbr: true,
+      texture_resolution: "4k",
+      remove_lighting: true,
+      target_formats: ["glb"],
+    });
+    expect(context.repository.getProject(context.projectId)).toMatchObject({
+      spentUsd: 0,
+      meshyCreditsReserved: 0,
+      meshyCreditsConsumed: 30,
+    });
+    expect((await production.finish(finishRequest)).status).toBe("ready");
     expect(
-      (await new AssetProduction(context.repository).ensure(context.request))
-        .status,
-    ).toBe("pending");
+      context.repository
+        .listEvents(context.projectId)
+        .filter(({ type }) => type === "meshy-credits.reserved"),
+    ).toHaveLength(2);
     context.repository.close();
   });
 

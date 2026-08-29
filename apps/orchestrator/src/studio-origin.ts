@@ -2,11 +2,13 @@
  * Browser origins allowed to call the local orchestrator from the studio UI.
  * Keep this list exact — reflecting an arbitrary Origin is what let any tab
  * on the machine spend the signed-in OpenAI subscription.
+ * The HTTPS entry is the Tailscale Serve front for the same Vite studio.
  */
 export const STUDIO_ORIGINS = [
   "http://localhost:4311",
   "http://127.0.0.1:4311",
   "http://forge.tail5728ca.ts.net:4311",
+  "https://forge.tail5728ca.ts.net:8444",
 ] as const;
 
 /**

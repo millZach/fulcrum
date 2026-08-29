@@ -8,6 +8,7 @@ describe("studio origin allowlist", () => {
       "http://localhost:4311",
       "http://127.0.0.1:4311",
       "http://forge.tail5728ca.ts.net:4311",
+      "https://forge.tail5728ca.ts.net:8444",
     ]);
     for (const origin of STUDIO_ORIGINS)
       expect(isTrustedStudioOrigin(origin)).toBe(true);

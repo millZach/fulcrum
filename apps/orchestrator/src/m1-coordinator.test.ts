@@ -75,6 +75,29 @@ const finishInterrogation = async (
   return current;
 };
 
+/** The brief signoff now ends in the naming conversation, so every flow that
+ *  only wants to get past it confirms and then takes the first proposal. */
+const nameTheGame = async (
+  coordinator: ProjectCoordinator,
+  project: ProjectSnapshot,
+): Promise<ProjectSnapshot> =>
+  coordinator.m1.commitGameName(project.state.projectId, {
+    gameNameCandidatesRevisionId: project.state.gameNameCandidates!.revisionId,
+    candidateId: project.gameNameCandidates!.candidates[0]!.candidateId,
+  });
+
+const signOffBrief = async (
+  coordinator: ProjectCoordinator,
+  project: ProjectSnapshot,
+): Promise<ProjectSnapshot> =>
+  nameTheGame(
+    coordinator,
+    await coordinator.m1.confirmSharedUnderstanding(project.state.projectId, {
+      interrogationRevisionId: project.state.interrogation!.revisionId,
+      confirmed: true,
+    }),
+  );
+
 const confirmConceptPlan = async (
   coordinator: ProjectCoordinator,
   project: ProjectSnapshot,
@@ -141,24 +164,19 @@ const keepEveryGeneratedConcept = (
   return current;
 };
 
-const reachM2ConceptApproval = async (
+const reachConceptApproval = async (
   coordinator: ProjectCoordinator,
+  milestone: "m1" | "m2",
 ): Promise<ProjectSnapshot> => {
   let project = await coordinator.create({
-    milestone: "m2",
+    milestone,
     brief: M1_BRIEF,
     mode: "replay",
     imageProvider: "none",
     rightsConfirmed: true,
   });
   project = await finishInterrogation(coordinator, project);
-  project = await coordinator.creative.confirmSharedUnderstanding(
-    project.state.projectId,
-    {
-      interrogationRevisionId: project.state.interrogation!.revisionId,
-      confirmed: true,
-    },
-  );
+  project = await signOffBrief(coordinator, project);
   project = await coordinator.creative.approveGameDesign(
     project.state.projectId,
     {
@@ -189,6 +207,22 @@ const reachM2ConceptApproval = async (
   return project;
 };
 
+const reachM2ConceptApproval = async (
+  coordinator: ProjectCoordinator,
+): Promise<ProjectSnapshot> => reachConceptApproval(coordinator, "m2");
+
+/** A finished M1 world: every concept kept, sound palette approved. */
+const reachM1Complete = async (
+  coordinator: ProjectCoordinator,
+): Promise<ProjectSnapshot> =>
+  finishM1ThroughSounds(
+    coordinator,
+    keepEveryGeneratedConcept(
+      coordinator,
+      await reachConceptApproval(coordinator, "m1"),
+    ),
+  );
+
 const runM2ReplayAcceptance = async () => {
   const repository = new ProjectRepository(temporaryRoot());
   const coordinator = new ProjectCoordinator(repository);
@@ -204,31 +238,18 @@ const runM2ReplayAcceptance = async () => {
   });
 
   expect(project.state).toMatchObject({
-    stage: "asset-plan-approval",
-    status: "awaiting-approval",
+    stage: "complete",
+    status: "complete",
   });
-  expect(project.state.assetBatch).toBeUndefined();
-  expect(
-    repository
-      .listEvents(project.state.projectId)
-      .filter(({ type }) => type === "asset.completed"),
-  ).toHaveLength(0);
   expect(
     project.assetPlan?.assets.map((asset) => asset.classification),
   ).toEqual(
     expect.arrayContaining(["hero", "kit", "procedural", "functional"]),
   );
 
-  project = await coordinator.decideAssetPlan(project.state.projectId, {
-    targetType: "asset-plan",
-    targetRevisionId: project.state.assetPlan!.revisionId,
-    targetSha256: project.state.assetPlan!.artifact.sha256,
-    decision: "approved",
-  });
-
-  expect(project.state.stage).toBe("complete");
   expect(project.state.assetPlanApproval).toMatchObject({
     decision: "approved",
+    decidedBy: "fulcrum:auto-finalizer",
     targetRevisionId: project.state.assetPlan!.revisionId,
   });
   expect(Object.keys(project.state.assetBatch ?? {})).toHaveLength(
@@ -371,7 +392,7 @@ describe("CreativeFrontCoordinator M2 handoff", () => {
     repository.close();
   });
 
-  it("m2_rejected_concept_set_blocks_without_starting_macro_graph", async () => {
+  it("m2_rejected_concept_set_reopens_the_gate_without_starting_macro_graph", async () => {
     const repository = new ProjectRepository(temporaryRoot());
     const coordinator = new ProjectCoordinator(repository);
     let project = keepEveryGeneratedConcept(
@@ -385,7 +406,10 @@ describe("CreativeFrontCoordinator M2 handoff", () => {
       targetSha256: project.state.conceptSet!.artifact.sha256,
     });
 
-    expect(project.state.stage).toBe("blocked");
+    expect(project.state.stage).toBe("concept-set-approval");
+    expect(project.state.status).toBe("awaiting-approval");
+    expect(project.state.blockedReason).toBeUndefined();
+    expect(project.state.conceptSetApproval?.decision).toBe("rejected");
     expect(
       repository
         .listEvents(project.state.projectId)
@@ -490,13 +514,7 @@ describe("M1Coordinator replay path", () => {
     project = await finishInterrogation(coordinator, project);
     expect(project.interrogation?.rounds.length).toBeGreaterThanOrEqual(3);
     expect(project.interrogation?.frontier).toEqual([]);
-    project = await coordinator.m1.confirmSharedUnderstanding(
-      project.state.projectId,
-      {
-        interrogationRevisionId: project.state.interrogation!.revisionId,
-        confirmed: true,
-      },
-    );
+    project = await signOffBrief(coordinator, project);
     expect(project.state.stage).toBe("game-design-approval");
     expect(project.state.gameDesignSpec).toBeDefined();
     expect(project.state.projectGlossary).toBeDefined();
@@ -891,13 +909,7 @@ describe("M1Coordinator replay path", () => {
       rightsConfirmed: true,
     });
     rejected = await finishInterrogation(coordinator, rejected);
-    rejected = await coordinator.m1.confirmSharedUnderstanding(
-      rejected.state.projectId,
-      {
-        interrogationRevisionId: rejected.state.interrogation!.revisionId,
-        confirmed: true,
-      },
-    );
+    rejected = await signOffBrief(coordinator, rejected);
     rejected = await coordinator.m1.approveGameDesign(
       rejected.state.projectId,
       {
@@ -906,8 +918,9 @@ describe("M1Coordinator replay path", () => {
         targetSha256: rejected.state.gameDesignSpec!.artifact.sha256,
       },
     );
-    expect(rejected.state.stage).toBe("blocked");
-    expect(rejected.state.blockedReason?.recoverable).toBe(false);
+    expect(rejected.state.stage).toBe("game-design-approval");
+    expect(rejected.state.status).toBe("awaiting-approval");
+    expect(rejected.state.blockedReason).toBeUndefined();
 
     const m0 = await coordinator.create({
       brief: M0_FIXTURE_BRIEF,
@@ -963,13 +976,7 @@ describe("M1Coordinator replay path", () => {
       rightsConfirmed: true,
     });
     project = await finishInterrogation(coordinator, project);
-    project = await coordinator.m1.confirmSharedUnderstanding(
-      project.state.projectId,
-      {
-        interrogationRevisionId: project.state.interrogation!.revisionId,
-        confirmed: true,
-      },
-    );
+    project = await signOffBrief(coordinator, project);
     project = await coordinator.m1.approveGameDesign(project.state.projectId, {
       decision: "approved",
       targetRevisionId: project.state.gameDesignSpec!.revisionId,
@@ -1023,13 +1030,7 @@ describe("M1Coordinator replay path", () => {
       rightsConfirmed: true,
     });
     project = await finishInterrogation(coordinator, project);
-    project = await coordinator.m1.confirmSharedUnderstanding(
-      project.state.projectId,
-      {
-        interrogationRevisionId: project.state.interrogation!.revisionId,
-        confirmed: true,
-      },
-    );
+    project = await signOffBrief(coordinator, project);
     project = await coordinator.m1.approveGameDesign(project.state.projectId, {
       decision: "approved",
       targetRevisionId: project.state.gameDesignSpec!.revisionId,
@@ -1149,18 +1150,18 @@ describe("M1Coordinator replay path", () => {
     project = coordinator.snapshot(project.state.projectId);
 
     project = await finishInterrogation(coordinator, project);
-    project = await coordinator.m1.confirmSharedUnderstanding(
-      project.state.projectId,
-      {
-        interrogationRevisionId: project.state.interrogation!.revisionId,
-        confirmed: true,
+    project = await signOffBrief(coordinator, project);
+    repository.saveProject({
+      ...repository.getProject(project.state.projectId),
+      status: "blocked",
+      stage: "blocked",
+      blockedReason: {
+        code: "workflow-phase-failed",
+        message: "The orchestrator provider returned an unusable response.",
+        recoverable: false,
       },
-    );
-    project = await coordinator.m1.approveGameDesign(project.state.projectId, {
-      decision: "rejected",
-      targetRevisionId: project.state.gameDesignSpec!.revisionId,
-      targetSha256: project.state.gameDesignSpec!.artifact.sha256,
     });
+    project = coordinator.snapshot(project.state.projectId);
     expect(project.state.stage).toBe("blocked");
     expect(() =>
       coordinator.increaseBudget(project.state.projectId, { budgetUsd: 4 }),
@@ -1186,13 +1187,7 @@ describe("M1Coordinator replay path", () => {
         rightsConfirmed: true,
       });
       project = await finishInterrogation(coordinator, project);
-      project = await coordinator.m1.confirmSharedUnderstanding(
-        project.state.projectId,
-        {
-          interrogationRevisionId: project.state.interrogation!.revisionId,
-          confirmed: true,
-        },
-      );
+      project = await signOffBrief(coordinator, project);
       expect(project.gameDesignSpec?.facts[0]?.text).toContain(brief);
       project = await coordinator.m1.approveGameDesign(
         project.state.projectId,
@@ -1228,6 +1223,21 @@ const fakeImageRunner = () =>
     expect(prompt.length).toBeGreaterThan(0);
     return { bytes: PNG_1x1, model: "gpt-image-2", costUsd: 0 };
   });
+
+const LIVE_NAMES = {
+  candidates: [
+    { name: "Glasshouse Run", rationale: "The escape happens under glass." },
+    { name: "Pollenfall", rationale: "One word for the drifting greenhouse." },
+    {
+      name: "The Quiet Airlock",
+      rationale: "Names the exit you are running for.",
+    },
+    {
+      name: "Keeper of the Vines",
+      rationale: "Puts the role in front of the place.",
+    },
+  ],
+};
 
 const LIVE_SPEC = {
   title: "Lunar Greenhouse Escape",
@@ -1315,72 +1325,75 @@ const defaultLiveTextExecution = (): StructuredModelExecution & {
           }
         : tagged("[m1-interrogation-next]")
           ? { understandingComplete: true, questions: [] }
-          : tagged("[m1-game-design]") || tagged("[m1-game-design-revise]")
-            ? LIVE_SPEC
-            : tagged("[m1-directions]")
-              ? {
-                  directions: [
-                    LIVE_DIRECTION("glass-tide", "Glass Tide", [
-                      "#173B36",
-                      "#B76647",
-                      "#F6D36B",
-                    ]),
-                    LIVE_DIRECTION("ink-rows", "Ink Rows", [
-                      "#11131A",
-                      "#D8D0B8",
-                      "#E05A47",
-                    ]),
-                    LIVE_DIRECTION("copper-weather", "Copper Weather", [
-                      "#33475B",
-                      "#5E9C8B",
-                      "#F0B95A",
-                    ]),
-                  ],
-                }
-              : tagged("[m1-direction-replace]")
-                ? LIVE_DIRECTION("paper-theatre", "Paper Theatre", [
-                    "#33263F",
-                    "#77A98F",
-                    "#F1A85B",
-                  ])
-                : tagged("[m1-direction-focused-change]")
-                  ? {
-                      title: "Focused Greenhouse Revision",
-                      rationale: "Apply the requested focused change.",
-                      overallStyle: "Revised greenhouse style",
-                      shapeLanguage: "Unchanged planter masses",
-                      materials: ["frosted glass", "patinated copper"],
-                      palette: [
-                        {
-                          name: "Night glass",
-                          hex: "#173B36",
-                          role: "primary mass",
-                        },
-                        {
-                          name: "Copper vein",
-                          hex: "#B76647",
-                          role: "world accent",
-                        },
-                        {
-                          name: "Alert lime",
-                          hex: "#F6D36B",
-                          role: "gameplay focus",
-                        },
-                      ],
-                      lighting: "Hard midnight moonlight through the glass",
-                      atmosphere: "Thin condensation and slow drifting pollen",
-                      textureLanguage: "Broad frosted planes",
-                      cameraLanguage:
-                        "First-person camera with a readable alert horizon",
-                      readabilityRules: [
-                        "Reserve the gameplay-focus color for actionable goals",
-                      ],
-                    }
-                  : (() => {
-                      throw new Error(
-                        `Unexpected live text prompt: ${input.systemPrompt.slice(0, 80)}`,
-                      );
-                    })();
+          : tagged("[m1-game-names]")
+            ? LIVE_NAMES
+            : tagged("[m1-game-design]") || tagged("[m1-game-design-revise]")
+              ? LIVE_SPEC
+              : tagged("[m1-directions]")
+                ? {
+                    directions: [
+                      LIVE_DIRECTION("glass-tide", "Glass Tide", [
+                        "#173B36",
+                        "#B76647",
+                        "#F6D36B",
+                      ]),
+                      LIVE_DIRECTION("ink-rows", "Ink Rows", [
+                        "#11131A",
+                        "#D8D0B8",
+                        "#E05A47",
+                      ]),
+                      LIVE_DIRECTION("copper-weather", "Copper Weather", [
+                        "#33475B",
+                        "#5E9C8B",
+                        "#F0B95A",
+                      ]),
+                    ],
+                  }
+                : tagged("[m1-direction-replace]")
+                  ? LIVE_DIRECTION("paper-theatre", "Paper Theatre", [
+                      "#33263F",
+                      "#77A98F",
+                      "#F1A85B",
+                    ])
+                  : tagged("[m1-direction-focused-change]")
+                    ? {
+                        title: "Focused Greenhouse Revision",
+                        rationale: "Apply the requested focused change.",
+                        overallStyle: "Revised greenhouse style",
+                        shapeLanguage: "Unchanged planter masses",
+                        materials: ["frosted glass", "patinated copper"],
+                        palette: [
+                          {
+                            name: "Night glass",
+                            hex: "#173B36",
+                            role: "primary mass",
+                          },
+                          {
+                            name: "Copper vein",
+                            hex: "#B76647",
+                            role: "world accent",
+                          },
+                          {
+                            name: "Alert lime",
+                            hex: "#F6D36B",
+                            role: "gameplay focus",
+                          },
+                        ],
+                        lighting: "Hard midnight moonlight through the glass",
+                        atmosphere:
+                          "Thin condensation and slow drifting pollen",
+                        textureLanguage: "Broad frosted planes",
+                        cameraLanguage:
+                          "First-person camera with a readable alert horizon",
+                        readabilityRules: [
+                          "Reserve the gameplay-focus color for actionable goals",
+                        ],
+                      }
+                    : (() => {
+                        throw new Error(
+                          `Unexpected live text prompt: ${input.systemPrompt.slice(0, 80)}`,
+                        );
+                      })();
       const parsed = input.schema.safeParse(value);
       if (!parsed.success)
         throw new Error(
@@ -1412,13 +1425,7 @@ const reachConceptPlanning = async (
     rightsConfirmed: true,
   });
   project = await finishInterrogation(coordinator, project);
-  project = await coordinator.m1.confirmSharedUnderstanding(
-    project.state.projectId,
-    {
-      interrogationRevisionId: project.state.interrogation!.revisionId,
-      confirmed: true,
-    },
-  );
+  project = await signOffBrief(coordinator, project);
   project = await coordinator.m1.approveGameDesign(project.state.projectId, {
     decision: "approved",
     targetRevisionId: project.state.gameDesignSpec!.revisionId,
@@ -1963,24 +1970,30 @@ describe("M1Coordinator live creative text", () => {
       rightsConfirmed: true,
     });
     project = await finishInterrogation(coordinator, project);
-    await expect(
-      coordinator.m1.confirmSharedUnderstanding(project.state.projectId, {
-        interrogationRevisionId: project.state.interrogation!.revisionId,
-        confirmed: true,
-      }),
-    ).rejects.toThrow(/could not parse a valid m1-game-design result/i);
-    const afterFailure = coordinator.snapshot(project.state.projectId);
-    expect(afterFailure.state.stage).toBe("interrogation");
-    expect(afterFailure.state.gameDesignSpec).toBeUndefined();
     project = await coordinator.m1.confirmSharedUnderstanding(
-      afterFailure.state.projectId,
+      project.state.projectId,
       {
-        interrogationRevisionId: afterFailure.state.interrogation!.revisionId,
+        interrogationRevisionId: project.state.interrogation!.revisionId,
         confirmed: true,
       },
     );
+    expect(project.state.stage).toBe("interrogation");
+    expect(project.gameNameCandidates?.candidates).toHaveLength(4);
+    /* The spec is drafted when the name is committed, so that is where an
+       invalid live spec now surfaces — and the naming batch has to survive
+       it. */
+    await expect(nameTheGame(coordinator, project)).rejects.toThrow(
+      /could not parse a valid m1-game-design result/i,
+    );
+    const afterFailure = coordinator.snapshot(project.state.projectId);
+    expect(afterFailure.state.stage).toBe("interrogation");
+    expect(afterFailure.state.gameDesignSpec).toBeUndefined();
+    expect(afterFailure.state.gameName).toBeUndefined();
+    project = await nameTheGame(coordinator, afterFailure);
     expect(project.state.stage).toBe("game-design-approval");
-    expect(project.gameDesignSpec?.title).toBe(LIVE_SPEC.title);
+    expect(project.state.name).toBe(LIVE_NAMES.candidates[0]!.name);
+    /* The user's choice titles the spec, not the model's own suggestion. */
+    expect(project.gameDesignSpec?.title).toBe(LIVE_NAMES.candidates[0]!.name);
     expect(specTurns).toBe(2);
     repository.close();
   });
@@ -2004,6 +2017,646 @@ describe("M1Coordinator live creative text", () => {
         confirmed: true,
       }),
     ).rejects.toThrow(/frontier is unresolved/);
+    repository.close();
+  });
+});
+
+describe("approval gate rejection stays reviewable", () => {
+  const reachVisualDirectionApproval = async (
+    coordinator: ProjectCoordinator,
+  ): Promise<ProjectSnapshot> => {
+    let project = await coordinator.create({
+      milestone: "m1",
+      brief: M1_BRIEF,
+      mode: "replay",
+      imageProvider: "none",
+      budgetUsd: 1,
+      rightsConfirmed: true,
+    });
+    project = await finishInterrogation(coordinator, project);
+    project = await signOffBrief(coordinator, project);
+    return await coordinator.m1.approveGameDesign(project.state.projectId, {
+      decision: "approved",
+      targetRevisionId: project.state.gameDesignSpec!.revisionId,
+      targetSha256: project.state.gameDesignSpec!.artifact.sha256,
+    });
+  };
+
+  it("a_rejected_direction_can_be_rejected_again_then_a_different_one_approved", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const coordinator = new ProjectCoordinator(repository);
+    let project = await reachVisualDirectionApproval(coordinator);
+    const directions = project.visualDirections!.directions;
+    const first = repository.getRevision(directions[0]!.revisionId);
+    const reject = {
+      decision: "rejected" as const,
+      targetRevisionId: first.revisionId,
+      targetSha256: first.artifact.sha256,
+    };
+
+    project = await coordinator.m1.approveDirection(
+      project.state.projectId,
+      reject,
+    );
+    expect(project.state).toMatchObject({
+      status: "awaiting-approval",
+      stage: "visual-direction-approval",
+    });
+    expect(project.state.blockedReason).toBeUndefined();
+
+    project = await coordinator.m1.approveDirection(
+      project.state.projectId,
+      reject,
+    );
+    expect(project.state).toMatchObject({
+      status: "awaiting-approval",
+      stage: "visual-direction-approval",
+    });
+    expect(project.state.directionApproval?.decision).toBe("rejected");
+    expect(project.state.selectedVisualDirectionRevisionId).toBeUndefined();
+    expect(
+      project.visualDirections?.directions.map((d) => d.revisionId),
+    ).toEqual(directions.map((d) => d.revisionId));
+
+    const second = repository.getRevision(directions[1]!.revisionId);
+    project = await coordinator.m1.approveDirection(project.state.projectId, {
+      decision: "approved",
+      targetRevisionId: second.revisionId,
+      targetSha256: second.artifact.sha256,
+    });
+
+    expect(project.state.stage).toBe("concept-planning");
+    expect(project.state.selectedVisualDirectionRevisionId).toBe(
+      second.revisionId,
+    );
+    repository.close();
+  });
+
+  it("a_direction_block_persisted_before_the_fix_is_rescuable", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const coordinator = new ProjectCoordinator(repository);
+    const project = await reachVisualDirectionApproval(coordinator);
+    const projectId = project.state.projectId;
+    repository.saveProject({
+      ...repository.getProject(projectId),
+      status: "blocked",
+      stage: "blocked",
+      blockedReason: {
+        code: "visual-direction-not-approved",
+        message:
+          "A visual direction must be approved before concepts can be generated.",
+        recoverable: false,
+      },
+    });
+
+    expect(coordinator.snapshot(projectId).state.blockedReason).toMatchObject({
+      code: "visual-direction-not-approved",
+      recoverable: true,
+      reviewGate: "visual-direction",
+      resumeStage: "visual-direction-approval",
+    });
+
+    const reopened = coordinator.reopenApprovalReview(projectId, {
+      gate: "visual-direction",
+    });
+
+    expect(reopened.state).toMatchObject({
+      status: "awaiting-approval",
+      stage: "visual-direction-approval",
+    });
+    expect(reopened.state.blockedReason).toBeUndefined();
+    expect(reopened.visualDirections?.directions).toHaveLength(
+      project.visualDirections!.directions.length,
+    );
+
+    const direction = repository.getRevision(
+      reopened.visualDirections!.directions[0]!.revisionId,
+    );
+    const approvedAgain = await coordinator.m1.approveDirection(projectId, {
+      decision: "approved",
+      targetRevisionId: direction.revisionId,
+      targetSha256: direction.artifact.sha256,
+    });
+
+    expect(approvedAgain.state.stage).toBe("concept-planning");
+    repository.close();
+  });
+
+  it("a_concept_set_block_persisted_before_the_fix_is_rescuable", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const coordinator = new ProjectCoordinator(repository);
+    const project = keepEveryGeneratedConcept(
+      coordinator,
+      await reachM2ConceptApproval(coordinator),
+    );
+    const projectId = project.state.projectId;
+    repository.saveProject({
+      ...repository.getProject(projectId),
+      status: "blocked",
+      stage: "blocked",
+      blockedReason: {
+        code: "concept-set-not-approved",
+        message: "The concept set was not approved.",
+        recoverable: false,
+      },
+    });
+
+    const reopened = coordinator.reopenApprovalReview(projectId, {
+      gate: "concept-set",
+    });
+
+    expect(reopened.state).toMatchObject({
+      status: "awaiting-approval",
+      stage: "concept-set-approval",
+    });
+    expect(reopened.state.blockedReason).toBeUndefined();
+    expect(reopened.state.conceptSet?.revisionId).toBe(
+      project.state.conceptSet?.revisionId,
+    );
+    expect(
+      repository
+        .listEvents(projectId)
+        .some(({ type }) => type.startsWith("workflow.")),
+    ).toBe(false);
+
+    const approvedAgain = coordinator.creative.approveConceptSet(projectId, {
+      decision: "approved",
+      targetRevisionId: reopened.state.conceptSet!.revisionId,
+      targetSha256: reopened.state.conceptSet!.artifact.sha256,
+    });
+
+    expect(approvedAgain.state.stage).toBe("asset-planning");
+    repository.close();
+  });
+});
+
+describe("continuing a finished M1 world into M2", () => {
+  it("seeds an M2 world at asset planning from the approved M1 package", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const coordinator = new ProjectCoordinator(repository);
+    const source = await reachM1Complete(coordinator);
+    const sourceId = source.state.projectId;
+    const sourceStateBefore = repository.getProject(sourceId);
+    const sourceEventsBefore = repository.listEvents(sourceId).length;
+
+    const continued = coordinator.creative.continueIntoM2(sourceId, {});
+    const state = continued.state;
+
+    expect(state.projectId).not.toBe(sourceId);
+    expect(state).toMatchObject({
+      milestone: "m2",
+      stage: "asset-planning",
+      status: "active",
+      soundProvider: "none",
+      mode: source.state.mode,
+      orchestratorProvider: source.state.orchestratorProvider,
+      imageProvider: source.state.imageProvider,
+      assetProvider: source.state.assetProvider,
+      spentUsd: 0,
+    });
+    expect(state.name).toBe(source.gameDesignSpec!.title);
+    expect(state.continuedFrom).toMatchObject({
+      projectId: sourceId,
+      milestone: "m1",
+      conceptSetRevisionId: source.state.conceptSet!.revisionId,
+      gameDesignSpecRevisionId: source.state.gameDesignSpec!.revisionId,
+      visualDirectionRevisionId: source.state.visualBible!.revisionId,
+    });
+
+    // The approved package is referenced, so lineage and hashes are identical.
+    expect(state.gameDesignSpec).toEqual(source.state.gameDesignSpec);
+    expect(state.conceptSet).toEqual(source.state.conceptSet);
+    expect(state.visualBible).toEqual(source.state.visualBible);
+    expect(state.visualDirectionSet).toEqual(source.state.visualDirectionSet);
+    expect(state.conceptPlan).toEqual(source.state.conceptPlan);
+    expect(state.interrogation).toEqual(source.state.interrogation);
+    expect(state.brief).toEqual(source.state.brief);
+    expect(state.selectedVisualDirectionRevisionId).toBe(
+      source.state.selectedVisualDirectionRevisionId,
+    );
+
+    // The approvals are new, because an approval belongs to one project.
+    for (const [approval, targetType, revision] of [
+      [state.gameDesignApproval, "game-design", state.gameDesignSpec],
+      [state.directionApproval, "visual-direction", state.visualBible],
+      [state.conceptSetApproval, "concept-set", state.conceptSet],
+    ] as const) {
+      expect(approval).toMatchObject({
+        projectId: state.projectId,
+        targetType,
+        decision: "approved",
+        targetRevisionId: revision!.revisionId,
+        targetSha256: revision!.artifact.sha256,
+      });
+    }
+    expect(state.gameDesignApproval?.approvalId).not.toBe(
+      source.state.gameDesignApproval?.approvalId,
+    );
+
+    // Nothing is generated, submitted, or carried from M1 sound work.
+    expect(state.assetPlan).toBeUndefined();
+    expect(state.assetBatch).toBeUndefined();
+    expect(state.soundPlan).toBeUndefined();
+    expect(state.soundSet).toBeUndefined();
+    expect(state.soundSetApproval).toBeUndefined();
+    expect(continued.soundSet).toBeUndefined();
+    expect(
+      repository
+        .listEvents(state.projectId)
+        .map(({ type }) => type)
+        .sort(),
+    ).toEqual(["project.continued-into-m2", "project.created"]);
+
+    // The source world is never written to.
+    expect(repository.getProject(sourceId)).toEqual(sourceStateBefore);
+    expect(repository.listEvents(sourceId)).toHaveLength(sourceEventsBefore);
+
+    // The seeded snapshot resolves the whole referenced creative package.
+    expect(continued.gameDesignSpec).toEqual(source.gameDesignSpec);
+    expect(continued.conceptSet).toEqual(source.conceptSet);
+    expect(continued.conceptDocuments).toEqual(source.conceptDocuments);
+    expect(continued.briefText).toBe(source.briefText);
+    repository.close();
+  });
+
+  it("plans the asset batch on the seeded world end to end in replay", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const coordinator = new ProjectCoordinator(repository);
+    const source = await reachM1Complete(coordinator);
+    const seeded = coordinator.creative.continueIntoM2(
+      source.state.projectId,
+      {},
+    );
+
+    const project = await coordinator.advance(seeded.state.projectId);
+
+    expect(project.state.stage).toBe("complete");
+    expect(project.state.status).toBe("complete");
+    expect(
+      project.assetPlan?.assets.map(({ classification }) => classification),
+    ).toEqual(
+      expect.arrayContaining(["hero", "kit", "procedural", "functional"]),
+    );
+    expect(
+      project.assetPlan?.assets[0]?.sourceRefs.gameDesignSpec,
+    ).toMatchObject({
+      revisionId: source.state.gameDesignSpec!.revisionId,
+      sha256: source.state.gameDesignSpec!.artifact.sha256,
+    });
+
+    expect(project.state.assetPlanApproval).toMatchObject({
+      decision: "approved",
+      decidedBy: "fulcrum:auto-finalizer",
+      targetRevisionId: project.state.assetPlan!.revisionId,
+    });
+    expect(Object.keys(project.state.assetBatch ?? {})).toHaveLength(
+      project.assetPlan!.assets.length,
+    );
+    // The finished M1 source is still finished, and still M1.
+    const sourceAfter = repository.getProject(source.state.projectId);
+    expect(sourceAfter.milestone).toBe("m1");
+    expect(sourceAfter.stage).toBe("complete");
+    expect(sourceAfter.assetPlan).toBeUndefined();
+    repository.close();
+  });
+
+  it("continues twice into two independent M2 worlds", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const coordinator = new ProjectCoordinator(repository);
+    const source = await reachM1Complete(coordinator);
+
+    const first = coordinator.creative.continueIntoM2(
+      source.state.projectId,
+      {},
+    );
+    const second = coordinator.creative.continueIntoM2(
+      source.state.projectId,
+      {},
+    );
+
+    expect(second.state.projectId).not.toBe(first.state.projectId);
+    expect(second.state.continuedFrom?.projectId).toBe(source.state.projectId);
+    const planned = await coordinator.advance(first.state.projectId);
+    expect(planned.state.stage).toBe("complete");
+    // The sibling is untouched by its twin's planning run.
+    const sibling = repository.getProject(second.state.projectId);
+    expect(sibling.stage).toBe("asset-planning");
+    expect(sibling.assetPlan).toBeUndefined();
+    repository.close();
+  });
+
+  it("refuses a world that has not approved its concept set", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const coordinator = new ProjectCoordinator(repository);
+    const project = keepEveryGeneratedConcept(
+      coordinator,
+      await reachConceptApproval(coordinator, "m1"),
+    );
+
+    expect(() =>
+      coordinator.creative.continueIntoM2(project.state.projectId, {}),
+    ).toThrow(/approved concept set/i);
+    repository.close();
+  });
+
+  it("refuses to continue a world that is already an M2 world", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const coordinator = new ProjectCoordinator(repository);
+    const project = keepEveryGeneratedConcept(
+      coordinator,
+      await reachM2ConceptApproval(coordinator),
+    );
+
+    expect(() =>
+      coordinator.creative.continueIntoM2(project.state.projectId, {}),
+    ).toThrow(/Only an M1 world/i);
+    repository.close();
+  });
+});
+
+describe("naming the game between the brief and the spec", () => {
+  const reachNaming = async (
+    coordinator: ProjectCoordinator,
+  ): Promise<ProjectSnapshot> => {
+    const created = await coordinator.create({
+      milestone: "m1",
+      brief: M1_BRIEF,
+      mode: "replay",
+      imageProvider: "none",
+      rightsConfirmed: true,
+    });
+    const answered = await finishInterrogation(coordinator, created);
+    return await coordinator.m1.confirmSharedUnderstanding(
+      answered.state.projectId,
+      {
+        interrogationRevisionId: answered.state.interrogation!.revisionId,
+        confirmed: true,
+      },
+    );
+  };
+
+  it("signing off the brief proposes names instead of writing the spec", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const coordinator = new ProjectCoordinator(repository);
+    const project = await reachNaming(coordinator);
+
+    expect(project.state).toMatchObject({
+      stage: "interrogation",
+      status: "awaiting-input",
+    });
+    expect(project.state.gameDesignSpec).toBeUndefined();
+    expect(project.state.gameName).toBeUndefined();
+    expect(project.gameNameCandidates?.round).toBe(1);
+    expect(project.gameNameCandidates?.candidates).toHaveLength(4);
+    expect(
+      repository
+        .listEvents(project.state.projectId)
+        .filter(({ type }) => type === "game-name.candidates-proposed"),
+    ).toHaveLength(1);
+    repository.close();
+  });
+
+  it("steers the batch as many times as the user wants without generating anything", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const coordinator = new ProjectCoordinator(repository);
+    let project = await reachNaming(coordinator);
+    const firstNames = project.gameNameCandidates!.candidates.map(
+      ({ name }) => name,
+    );
+
+    project = await coordinator.m1.suggestGameNames(project.state.projectId, {
+      gameNameCandidatesRevisionId:
+        project.state.gameNameCandidates!.revisionId,
+      feedback: "Shorter, and darker.",
+    });
+    expect(project.gameNameCandidates?.round).toBe(2);
+    expect(project.gameNameCandidates?.feedback).toBe("Shorter, and darker.");
+    const secondNames = project.gameNameCandidates!.candidates.map(
+      ({ name }) => name,
+    );
+    expect(secondNames.some((name) => firstNames.includes(name))).toBe(false);
+
+    project = await coordinator.m1.suggestGameNames(project.state.projectId, {
+      gameNameCandidatesRevisionId:
+        project.state.gameNameCandidates!.revisionId,
+      feedback: "Now lose the article.",
+    });
+    expect(project.gameNameCandidates?.round).toBe(3);
+    expect(project.state.stage).toBe("interrogation");
+    expect(project.state.gameDesignSpec).toBeUndefined();
+    repository.close();
+  });
+
+  it("commits a chosen candidate, titles the spec with it, and moves to the spec gate", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const coordinator = new ProjectCoordinator(repository);
+    let project = await reachNaming(coordinator);
+    project = await coordinator.m1.suggestGameNames(project.state.projectId, {
+      gameNameCandidatesRevisionId:
+        project.state.gameNameCandidates!.revisionId,
+      feedback: "Shorter, and darker.",
+    });
+    const chosen = project.gameNameCandidates!.candidates[1]!;
+
+    project = await coordinator.m1.commitGameName(project.state.projectId, {
+      gameNameCandidatesRevisionId:
+        project.state.gameNameCandidates!.revisionId,
+      candidateId: chosen.candidateId,
+    });
+
+    expect(project.state).toMatchObject({
+      stage: "game-design-approval",
+      status: "awaiting-approval",
+      name: chosen.name,
+    });
+    expect(project.gameName).toMatchObject({
+      name: chosen.name,
+      origin: "candidate",
+      candidateId: chosen.candidateId,
+      rounds: 2,
+    });
+    expect(project.gameDesignSpec?.title).toBe(chosen.name);
+    expect(
+      repository
+        .listEvents(project.state.projectId)
+        .filter(({ type }) => type === "game-name.decided")
+        .map(({ payload }) => payload.name),
+    ).toEqual([chosen.name]);
+    repository.close();
+  });
+
+  it("takes a name the user typed instead", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const coordinator = new ProjectCoordinator(repository);
+    let project = await reachNaming(coordinator);
+    project = await coordinator.m1.commitGameName(project.state.projectId, {
+      gameNameCandidatesRevisionId:
+        project.state.gameNameCandidates!.revisionId,
+      name: "  Saltglass  ",
+    });
+
+    expect(project.state.name).toBe("Saltglass");
+    expect(project.gameName).toMatchObject({
+      name: "Saltglass",
+      origin: "custom",
+      rounds: 1,
+    });
+    expect(project.gameName?.candidateId).toBeUndefined();
+    expect(project.gameDesignSpec?.title).toBe("Saltglass");
+    repository.close();
+  });
+
+  it("refuses a stale batch, an unknown candidate, both-or-neither input, and a second naming", async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const coordinator = new ProjectCoordinator(repository);
+    const project = await reachNaming(coordinator);
+    const candidates = project.state.gameNameCandidates!.revisionId;
+    const first = project.gameNameCandidates!.candidates[0]!;
+
+    await expect(
+      coordinator.m1.commitGameName(project.state.projectId, {
+        gameNameCandidatesRevisionId: "not-the-current-batch",
+        candidateId: first.candidateId,
+      }),
+    ).rejects.toThrow(/name candidates changed/i);
+    await expect(
+      coordinator.m1.commitGameName(project.state.projectId, {
+        gameNameCandidatesRevisionId: candidates,
+        candidateId: "name-not-in-this-batch",
+      }),
+    ).rejects.toThrow(/not in the current batch/i);
+    await expect(
+      coordinator.m1.commitGameName(project.state.projectId, {
+        gameNameCandidatesRevisionId: candidates,
+        candidateId: first.candidateId,
+        name: "Both At Once",
+      }),
+    ).rejects.toThrow(/Choose one proposed name or type one of your own/i);
+    await expect(
+      coordinator.m1.commitGameName(project.state.projectId, {
+        gameNameCandidatesRevisionId: candidates,
+      }),
+    ).rejects.toThrow(/Choose one proposed name or type one of your own/i);
+
+    const named = await coordinator.m1.commitGameName(project.state.projectId, {
+      gameNameCandidatesRevisionId: candidates,
+      name: "Saltglass",
+    });
+    expect(named.state.gameName).toBeDefined();
+    await expect(
+      coordinator.m1.suggestGameNames(project.state.projectId, {
+        gameNameCandidatesRevisionId: candidates,
+        feedback: "One more batch.",
+      }),
+    ).rejects.toThrow(/not in the interrogation stage|already has a name/i);
+    repository.close();
+  });
+});
+
+describe("pasted image attachments", () => {
+  const swatchDataUrl = `data:image/png;base64,${PNG_1x1.toString("base64")}`;
+
+  const replayProject = async () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const coordinator = new ProjectCoordinator(repository);
+    const project = await coordinator.create({
+      milestone: "m1",
+      brief: M1_BRIEF,
+      mode: "replay",
+      imageProvider: "none",
+      rightsConfirmed: true,
+    });
+    return { coordinator, repository, project };
+  };
+
+  it("stores a pasted image and admits a replay world will not read it", async () => {
+    const { coordinator, repository, project } = await replayProject();
+    const stored = await coordinator.creative.storeAttachment(
+      project.state.projectId,
+      { dataUrl: swatchDataUrl },
+    );
+
+    expect(stored.reachesModel).toBe(false);
+    expect(stored.attachment.mediaType).toBe("image/png");
+    expect(stored.attachment.uri).toBe(
+      `/api/artifacts/${stored.attachment.artifactId}`,
+    );
+    expect(
+      repository
+        .listEvents(project.state.projectId)
+        .some((event) => event.type === "attachment.stored"),
+    ).toBe(true);
+    repository.close();
+  });
+
+  it("records the attachment on the answer it was pasted into", async () => {
+    const { coordinator, repository, project } = await replayProject();
+    const stored = await coordinator.creative.storeAttachment(
+      project.state.projectId,
+      { dataUrl: swatchDataUrl },
+    );
+    const round = project.interrogation!.rounds.at(-1)!;
+    const [first, ...rest] = project.interrogation!.frontier;
+    const answered = await coordinator.m1.answerFrontier(
+      project.state.projectId,
+      {
+        interrogationRevisionId: project.state.interrogation!.revisionId,
+        roundId: round.roundId,
+        answers: [
+          {
+            questionId: first!.questionId,
+            value: "It should read like this reference.",
+            attachmentArtifactIds: [stored.attachment.artifactId],
+          },
+          ...rest.map((question) => ({
+            questionId: question.questionId,
+            value: `Resolved ${question.branchId} with one concrete choice.`,
+          })),
+        ],
+      },
+    );
+
+    const recorded = answered.interrogation!.rounds[0]!.answers.find(
+      (answer) => answer.questionId === first!.questionId,
+    );
+    expect(recorded?.attachments?.[0]?.sha256).toBe(stored.attachment.sha256);
+    /* Untouched answers keep the shape they had before attachments existed. */
+    expect(
+      answered.interrogation!.rounds[0]!.answers.filter(
+        (answer) => answer.attachments !== undefined,
+      ),
+    ).toHaveLength(1);
+    repository.close();
+  });
+
+  it("refuses an artifact id that belongs to another project", async () => {
+    const { coordinator, repository, project } = await replayProject();
+    const other = await coordinator.create({
+      milestone: "m1",
+      brief: M1_BRIEF,
+      mode: "replay",
+      imageProvider: "none",
+      rightsConfirmed: true,
+    });
+    const foreign = await coordinator.creative.storeAttachment(
+      other.state.projectId,
+      { dataUrl: swatchDataUrl },
+    );
+    const round = project.interrogation!.rounds.at(-1)!;
+
+    await expect(
+      coordinator.m1.answerFrontier(project.state.projectId, {
+        interrogationRevisionId: project.state.interrogation!.revisionId,
+        roundId: round.roundId,
+        answers: project.interrogation!.frontier.map((question, index) => ({
+          questionId: question.questionId,
+          value: `Resolved ${question.branchId}.`,
+          ...(index === 0
+            ? { attachmentArtifactIds: [foreign.attachment.artifactId] }
+            : {}),
+        })),
+      }),
+    ).rejects.toThrow(/does not exist/);
     repository.close();
   });
 });

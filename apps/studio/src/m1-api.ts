@@ -1,11 +1,13 @@
 import type {
   AnswerFrontierRoundInput,
-  AssetPlanApprovalInput,
+  ApprovalGate,
   ChangeVisualDirectionInput,
+  CommitGameNameInput,
   ConfigurationStatus,
   ConfirmConceptPlanInput,
   ConfirmSoundPlanInput,
   ConfirmSharedUnderstandingInput,
+  ContinueIntoM2Input,
   CreateProjectInput,
   IncreaseBudgetInput,
   M1ApprovalInput,
@@ -15,6 +17,8 @@ import type {
   ReplaceVisualDirectionInput,
   ReviseGameDesignSpecInput,
   SelectConceptRevisionInput,
+  StoredImageAttachment,
+  SuggestGameNamesInput,
 } from "@fulcrum/domain";
 
 import { api } from "./api.js";
@@ -33,6 +37,11 @@ export const listProjects = (): Promise<ProjectSnapshot[]> =>
 export const getProject = (projectId: string): Promise<ProjectSnapshot> =>
   api<ProjectSnapshot>(`/api/projects/${projectId}`);
 
+export const advanceProject = (projectId: string): Promise<ProjectSnapshot> =>
+  api<ProjectSnapshot>(`/api/projects/${projectId}/advance`, {
+    method: "POST",
+  });
+
 export const createM1Project = (
   input: CreateProjectInput,
 ): Promise<ProjectSnapshot> =>
@@ -42,6 +51,17 @@ export const createM2Project = (
   input: CreateProjectInput,
 ): Promise<ProjectSnapshot> =>
   api<ProjectSnapshot>("/api/projects", json({ ...input, milestone: "m2" }));
+
+/** Park an image pasted into a text box. Returns the stored ref plus the
+ *  project's honest answer about whether a model will ever read it. */
+export const storeAttachment = (
+  projectId: string,
+  dataUrl: string,
+): Promise<StoredImageAttachment> =>
+  api<StoredImageAttachment>(
+    `/api/projects/${projectId}/attachments`,
+    json({ dataUrl }),
+  );
 
 export const answerFrontier = (
   projectId: string,
@@ -60,6 +80,37 @@ export const confirmSharedUnderstanding = (
     `/api/projects/${projectId}/interrogation/confirm`,
     json(input),
   );
+
+/** Another batch of candidate titles, steered by what the user said about the
+ *  last one. Repeatable — that repetition is the conversation. */
+export const suggestGameNames = (
+  projectId: string,
+  input: SuggestGameNamesInput,
+): Promise<ProjectSnapshot> =>
+  api<ProjectSnapshot>(
+    `/api/projects/${projectId}/game-name/suggest`,
+    json(input),
+  );
+
+/** Settles the name — a proposed one or the user's own — and writes the Game
+ *  Design Spec under it. */
+export const commitGameName = (
+  projectId: string,
+  input: CommitGameNameInput,
+): Promise<ProjectSnapshot> =>
+  api<ProjectSnapshot>(
+    `/api/projects/${projectId}/game-name/commit`,
+    json(input),
+  );
+
+/** Seeds a new M2 world from a finished M1 one and returns the descendant.
+ *  The source world is untouched, and the descendant lands at asset planning
+ *  with nothing generated. */
+export const continueIntoM2 = (
+  projectId: string,
+  input: ContinueIntoM2Input = {},
+): Promise<ProjectSnapshot> =>
+  api<ProjectSnapshot>(`/api/projects/${projectId}/continue/m2`, json(input));
 
 export const approveGameDesign = (
   projectId: string,
@@ -155,15 +206,6 @@ export const approveConceptSet = (
     json(input),
   );
 
-export const decideAssetPlan = (
-  projectId: string,
-  input: AssetPlanApprovalInput,
-): Promise<ProjectSnapshot> =>
-  api<ProjectSnapshot>(
-    `/api/projects/${projectId}/approvals/asset-plan`,
-    json(input),
-  );
-
 export const confirmSoundPlan = (
   projectId: string,
   input: ConfirmSoundPlanInput,
@@ -194,6 +236,15 @@ export const approveSoundSet = (
     json(input),
   );
 
+/** Returns a project blocked by a rejection to that gate's review. */
+export const reopenApprovalReview = (
+  projectId: string,
+  gate: ApprovalGate,
+): Promise<ProjectSnapshot> =>
+  api<ProjectSnapshot>(`/api/projects/${projectId}/approvals/${gate}/reopen`, {
+    method: "POST",
+  });
+
 export const increaseBudget = (
   projectId: string,
   input: IncreaseBudgetInput,
@@ -202,6 +253,18 @@ export const increaseBudget = (
 
 export const m1Projects = (projects: ProjectSnapshot[]): ProjectSnapshot[] =>
   projects.filter((project) => project.state.milestone === "m1");
+
+/** The one world list both studios show. The shell is milestone-aware but not
+ *  milestone-exclusive: an M1 world and an M2 world belong to the same person
+ *  and the same list, and opening the "wrong" one just mounts the other studio.
+ *  M0 predates this shell and has its own screen, so it stays out. */
+export const studioProjects = (
+  projects: ProjectSnapshot[],
+): ProjectSnapshot[] =>
+  projects.filter(
+    (project) =>
+      project.state.milestone === "m1" || project.state.milestone === "m2",
+  );
 
 export const m2Projects = (projects: ProjectSnapshot[]): ProjectSnapshot[] =>
   projects.filter((project) => project.state.milestone === "m2");

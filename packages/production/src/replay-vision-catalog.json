@@ -3,7 +3,7 @@
   "version": 1,
   "fixtures": [
     {
-      "requestDigest": "a513b9b40e9eac10023c72b69d0f966cf44fdf3a32ad1c13c08e783d93ae0022",
+      "requestDigest": "ce80f5382b896fbba01f160876f5bfaee69e34ec6b1689e43b0ea06df82c4075",
       "description": "baseline replay reliquary",
       "response": {
         "verdict": "revise",
@@ -34,7 +34,7 @@
       }
     },
     {
-      "requestDigest": "3dc1801f3b1f301a020e53dab363240b33a59abeeb384e7595183e91aa6e82cc",
+      "requestDigest": "bfc34ee8c986f061c306d7b4cfe7b25d702239321953ab5d37a0ef3e0fb87ae1",
       "description": "rear-defined replay reliquary",
       "response": {
         "verdict": "pass",

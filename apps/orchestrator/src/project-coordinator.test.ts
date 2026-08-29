@@ -246,19 +246,72 @@ const coordinatorFixture = () => {
   return { ...fixture, coordinator, slots, generation };
 };
 
-const decisionInput = (
-  plan: RevisionRef,
-  decision: "approved" | "rejected" | "changes-requested",
-  notes?: string,
-) => ({
-  targetType: "asset-plan" as const,
-  targetRevisionId: plan.revisionId,
-  targetSha256: plan.artifact.sha256,
-  decision,
-  ...(notes ? { notes } : {}),
-});
+describe("M2 asset-plan coordination", () => {
+  it("recoverable_budget_block_can_raise_its_cap_before_explicit_resume", () => {
+    const fixture = coordinatorFixture();
+    const state = fixture.repository.getProject(fixture.projectId);
+    fixture.repository.saveProject({
+      ...state,
+      mode: "live",
+      budgetUsd: 5,
+      spentUsd: 4.8,
+      status: "blocked",
+      stage: "blocked",
+      blockedReason: {
+        code: "budget-refused",
+        message:
+          "Budget exhausted: meshy image-to-3d requires $0.60, but only $0.20 remains.",
+        recoverable: true,
+        failureKind: "retryable",
+        resumeStage: "asset-batch",
+      },
+    });
 
-describe("M2 asset-plan coordinator gate", () => {
+    const raised = fixture.coordinator.increaseBudget(fixture.projectId, {
+      budgetUsd: 7,
+    });
+
+    expect(raised.state).toMatchObject({
+      status: "blocked",
+      stage: "blocked",
+      budgetUsd: 7,
+      spentUsd: 4.8,
+      blockedReason: { code: "budget-refused", recoverable: true },
+    });
+    expect(
+      fixture.repository
+        .listEvents(fixture.projectId)
+        .filter(({ type }) => type === "budget.increased"),
+    ).toEqual([
+      expect.objectContaining({
+        payload: { previousBudgetUsd: 5, budgetUsd: 7 },
+      }),
+    ]);
+    fixture.repository.close();
+  });
+
+  it("non_budget_block_cannot_raise_its_cap", () => {
+    const fixture = coordinatorFixture();
+    const state = fixture.repository.getProject(fixture.projectId);
+    fixture.repository.saveProject({
+      ...state,
+      budgetUsd: 5,
+      status: "blocked",
+      stage: "blocked",
+      blockedReason: {
+        code: "asset-plan-replan-limit",
+        message: "M2 permits one asset-plan replan.",
+        recoverable: false,
+        failureKind: "policy-blocked",
+      },
+    });
+
+    expect(() =>
+      fixture.coordinator.increaseBudget(fixture.projectId, { budgetUsd: 7 }),
+    ).toThrow(/recoverable budget refusal/i);
+    fixture.repository.close();
+  });
+
   it("asset_planning_requires_exact_approved_gds_and_concept_set", async () => {
     const fixture = m2PlanningFixture();
     const state = fixture.repository.getProject(fixture.projectId);
@@ -281,15 +334,19 @@ describe("M2 asset-plan coordinator gate", () => {
     fixture.repository.close();
   });
 
-  it("completed_plan_suspends_at_asset_plan_approval", async () => {
+  it("finalizes a completed plan before continuing downstream", async () => {
     const fixture = coordinatorFixture();
 
     const snapshot = await fixture.coordinator.advance(fixture.projectId);
 
     expect(snapshot.state).toMatchObject({
-      stage: "asset-plan-approval",
-      status: "awaiting-approval",
+      stage: "asset-batch",
+      status: "active",
       assetPlanReplanCount: 0,
+      assetPlanApproval: {
+        decision: "approved",
+        decidedBy: "fulcrum:auto-finalizer",
+      },
     });
     expect(
       snapshot.assetPlan?.assets.map((asset) => asset.classification),
@@ -299,151 +356,15 @@ describe("M2 asset-plan coordinator gate", () => {
     fixture.repository.close();
   });
 
-  it("generation_cannot_start_without_an_exact_asset_plan_approval", async () => {
-    const fixture = coordinatorFixture();
-
-    await fixture.coordinator.advance(fixture.projectId);
-
-    expect(fixture.generation).not.toHaveBeenCalled();
-    expect(fixture.repository.getProject(fixture.projectId).stage).toBe(
-      "asset-plan-approval",
-    );
-    fixture.repository.close();
-  });
-
-  it("approved_plan_resumes_the_d1_downstream_slot", async () => {
-    const fixture = coordinatorFixture();
-    const planned = await fixture.coordinator.advance(fixture.projectId);
-
-    const resumed = await fixture.coordinator.decideAssetPlan(
-      fixture.projectId,
-      decisionInput(planned.state.assetPlan!, "approved"),
-    );
-
-    expect(resumed.state.stage).toBe("asset-batch");
-    expect(fixture.generation).toHaveBeenCalled();
-    fixture.repository.close();
-  });
-
-  it("changes_requested_records_the_old_hash_and_creates_one_descendant", async () => {
-    const fixture = coordinatorFixture();
-    const planned = await fixture.coordinator.advance(fixture.projectId);
-    const oldPlan = planned.state.assetPlan!;
-
-    const replanned = await fixture.coordinator.decideAssetPlan(
-      fixture.projectId,
-      decisionInput(
-        oldPlan,
-        "changes-requested",
-        "Give the kit a stronger material tie to the hero.",
-      ),
-    );
-    const document = AssetPlanSchema.parse(
-      fixture.repository.resolveRevision(replanned.state.assetPlan!),
-    );
-
-    expect(replanned.state).toMatchObject({
-      stage: "asset-plan-approval",
-      assetPlanReplanCount: 1,
-    });
-    expect(replanned.state.assetPlan?.revisionId).not.toBe(oldPlan.revisionId);
-    expect(document).toMatchObject({
-      changeRequest: {
-        previousPlanRevisionId: oldPlan.revisionId,
-        notes: "Give the kit a stronger material tie to the hero.",
-      },
-      provenance: { operation: "asset-plan.replan" },
-    });
-    expect(document.provenance.parentRevisionIds).toContain(oldPlan.revisionId);
-    fixture.repository.close();
-  });
-
-  it("old_plan_cannot_be_approved_after_replanning", async () => {
-    const fixture = coordinatorFixture();
-    const planned = await fixture.coordinator.advance(fixture.projectId);
-    const oldPlan = planned.state.assetPlan!;
-    await fixture.coordinator.decideAssetPlan(
-      fixture.projectId,
-      decisionInput(
-        oldPlan,
-        "changes-requested",
-        "Strengthen the hero silhouette.",
-      ),
-    );
-
-    await expect(
-      fixture.coordinator.decideAssetPlan(
-        fixture.projectId,
-        decisionInput(oldPlan, "approved"),
-      ),
-    ).rejects.toThrow("current immutable revision");
-    fixture.repository.close();
-  });
-
-  it("second_changes_request_is_policy_blocked_before_model_execution", async () => {
-    const fixture = coordinatorFixture();
-    const planned = await fixture.coordinator.advance(fixture.projectId);
-    const replanned = await fixture.coordinator.decideAssetPlan(
-      fixture.projectId,
-      decisionInput(
-        planned.state.assetPlan!,
-        "changes-requested",
-        "Strengthen the hero silhouette.",
-      ),
-    );
-    const replanEventsBefore = fixture.repository
-      .listEvents(fixture.projectId)
-      .filter((event) => event.type === "asset-plan.replanned").length;
-
-    const blocked = await fixture.coordinator.decideAssetPlan(
-      fixture.projectId,
-      decisionInput(
-        replanned.state.assetPlan!,
-        "changes-requested",
-        "Change it again.",
-      ),
-    );
-
-    expect(blocked.state).toMatchObject({
-      stage: "blocked",
-      blockedReason: {
-        code: "asset-plan-replan-limit",
-        failureKind: "policy-blocked",
-      },
-    });
-    expect(
-      fixture.repository
-        .listEvents(fixture.projectId)
-        .filter((event) => event.type === "asset-plan.replanned"),
-    ).toHaveLength(replanEventsBefore);
-    fixture.repository.close();
-  });
-
-  it("rejected_asset_plan_blocks_without_generation", async () => {
-    const fixture = coordinatorFixture();
-    const planned = await fixture.coordinator.advance(fixture.projectId);
-
-    const blocked = await fixture.coordinator.decideAssetPlan(
-      fixture.projectId,
-      decisionInput(planned.state.assetPlan!, "rejected"),
-    );
-
-    expect(blocked.state).toMatchObject({
-      stage: "blocked",
-      blockedReason: { code: "asset-plan-not-approved" },
-    });
-    expect(fixture.generation).not.toHaveBeenCalled();
-    fixture.repository.close();
-  });
-
   it("restart_during_replan_reuses_the_submission_and_finishes_the_pointer", async () => {
     const fixture = m2PlanningFixture();
     const initialSlots = createM2MacroGraphSlots(fixture.repository);
-    const firstDriver = new ProjectCoordinator(fixture.repository, {
-      m2Slots: initialSlots,
+    const initialPlan = await initialSlots.assetPlanning.ensure({
+      projectId: fixture.projectId,
     });
-    const planned = await firstDriver.advance(fixture.projectId);
-    const oldPlan = planned.state.assetPlan!;
+    if (initialPlan.status !== "ready")
+      throw new Error("Initial replay asset plan was not ready.");
+    const oldPlan = initialPlan.value.assetPlan;
     const decision: ApprovalDecision = {
       approvalId: "manual-replan-decision",
       projectId: fixture.projectId,
@@ -460,6 +381,7 @@ describe("M2 asset-plan coordinator gate", () => {
       decision,
       nextState: {
         ...state,
+        assetPlan: oldPlan,
         status: "active",
         stage: "asset-planning",
         assetPlanApproval: decision,
@@ -480,13 +402,27 @@ describe("M2 asset-plan coordinator gate", () => {
 
     const restartedSlots = createM2MacroGraphSlots(fixture.repository);
     const restarted = new ProjectCoordinator(fixture.repository, {
-      m2Slots: restartedSlots,
+      m2Slots: {
+        ...unavailableM2MacroGraphSlots(),
+        assetPlanning: restartedSlots.assetPlanning,
+        multiviewConcepts: {
+          ensure: async () => ({
+            status: "pending",
+            requestId: "future-asset-amendment-downstream",
+            resumeAfter: "2026-08-24T12:00:05.000Z",
+          }),
+        },
+      },
     });
     const snapshot = await restarted.advance(fixture.projectId);
 
     expect(snapshot.state).toMatchObject({
-      stage: "asset-plan-approval",
+      stage: "asset-batch",
       assetPlanReplanCount: 1,
+      assetPlanApproval: {
+        decision: "approved",
+        decidedBy: "fulcrum:auto-finalizer",
+      },
     });
     expect(snapshot.state.assetPlan?.revisionId).toBe(
       readyBeforeRestart.status === "ready"

@@ -25,7 +25,10 @@ import { AssetQuality, createReplayReliquary } from "./index.js";
 import { renderTurntable } from "./turntable.js";
 import {
   ASSET_VISION_RUBRIC_V1,
+  BipedDetectionVerdictSchema,
+  LiveBipedDetectionPort,
   REPLAY_VISION_CATALOG,
+  ReplayBipedDetectionPort,
   ReplayVisionEvaluationPort,
   VisionEvaluationError,
   VisionFindingsWireSchema,
@@ -495,7 +498,7 @@ describe("ReplayVisionEvaluationPort", () => {
     ] as const) {
       const bytes = await createReplayReliquary(variant);
       const document = await new NodeIO().readBinary(bytes);
-      const frames = renderTurntable(
+      const frames = await renderTurntable(
         document,
         DEFAULT_ASSET_POLICIES.hero.turntable,
       );
@@ -519,6 +522,88 @@ describe("ReplayVisionEvaluationPort", () => {
 
       expect(fixture?.requestDigest).toBe(visionRequestDigest(request));
     }
+  });
+});
+
+describe("biped detection ports", () => {
+  const bipedInput = (name: string, description: string) => {
+    const bytes = Uint8Array.from([1, 2, 3, 4]);
+    return {
+      assetId: `asset:${name}`,
+      name,
+      description,
+      classification: "hero" as const,
+      frontImage: artifact(
+        `front:${name}`,
+        createHash("sha256").update(bytes).digest("hex"),
+      ),
+      frontImageBytes: bytes,
+    };
+  };
+
+  it("classifies replay metadata deterministically without live execution", async () => {
+    const port = new ReplayBipedDetectionPort();
+    await expect(
+      port.detect(
+        bipedInput("Foundry Warden", "A humanoid boss with two legs."),
+        "biped:one",
+      ),
+    ).resolves.toMatchObject({
+      verdict: { biped: true },
+      provider: "fulcrum-replay",
+      model: "replay-biped-heuristic-v1",
+      costUsd: 0,
+    });
+    await expect(
+      port.detect(
+        bipedInput("Ancient Reliquary", "A stone objective chest."),
+        "biped:two",
+      ),
+    ).resolves.toMatchObject({ verdict: { biped: false } });
+  });
+
+  it("sends live detection one front image plus the asset metadata", async () => {
+    const call = vi.fn(async (input) => ({
+      value: input.schema.parse({
+        biped: true,
+        confidence: 0.94,
+        rationale: "The front view shows one torso, two arms and two legs.",
+      }),
+      provider: "openai" as const,
+      model: "vision-fixture",
+    }));
+    const port = new LiveBipedDetectionPort(
+      { generateStructuredVision: call } as StructuredVisionExecution,
+      "openai",
+      "/tmp",
+    );
+    const input = bipedInput(
+      "Foundry Boss",
+      "A heavily armored humanoid boss.",
+    );
+
+    await expect(port.detect(input, "biped:live")).resolves.toMatchObject({
+      verdict: { biped: true, confidence: 0.94 },
+      provider: "openai",
+      model: "vision-fixture",
+    });
+    expect(call).toHaveBeenCalledOnce();
+    expect(call).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "openai",
+        idempotencyKey: "biped:live",
+        frames: [
+          expect.objectContaining({
+            label: "approved front reference",
+            bytes: input.frontImageBytes,
+          }),
+        ],
+        prompt: expect.stringContaining("Foundry Boss"),
+      }),
+    );
+    expect(() =>
+      assertStrictCompatibleJsonSchema(BipedDetectionVerdictSchema),
+    ).not.toThrow();
   });
 });
 

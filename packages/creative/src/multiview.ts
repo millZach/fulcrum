@@ -5,6 +5,7 @@ import {
   ConceptSetSchema,
   ConceptViewDocumentSchema,
   ConceptViewGenerationRequestSchema,
+  FinalizedAssetPlanBindingSchema,
   M1ConceptDocumentSchema,
   MultiviewConceptSetSchema,
   RegenerationDecisionReportSchema,
@@ -254,15 +255,15 @@ export class MultiviewConceptProduction {
       if (
         !state.assetPlan ||
         !sameRevision(state.assetPlan, request.assetPlan) ||
-        state.assetPlanApproval?.decision !== "approved" ||
-        state.assetPlanApproval.targetRevisionId !==
-          request.assetPlan.revisionId ||
-        state.assetPlanApproval.targetSha256 !==
-          request.assetPlan.artifact.sha256
+        !FinalizedAssetPlanBindingSchema.safeParse({
+          projectId: request.projectId,
+          plan: request.assetPlan,
+          finalization: state.assetPlanApproval,
+        }).success
       ) {
         throw new MultiviewProductionError(
           "asset-plan-approval-invalid",
-          "Multiview generation requires the current hash-approved asset plan.",
+          "Multiview generation requires the current finalized asset plan.",
           "policy-blocked",
         );
       }

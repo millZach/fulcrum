@@ -48,6 +48,31 @@ export const isMeteredExecutionProvider = (
   provider: ExecutionProvider,
 ): boolean => provider === "openai-api";
 
+/**
+ * Orchestrator routes that can actually read an attached image.
+ *
+ * `openai-api` sends `input_image` parts on the Responses API and `openai`
+ * (the signed-in Codex CLI) takes `--image` files. The other three execution
+ * providers are text-only stdin pipes here, so an image handed to them would
+ * be silently dropped — which is why this predicate exists rather than an
+ * optimistic assumption. Replay never calls a provider at all.
+ */
+export const readsImageAttachments = (provider: ExecutionProvider): boolean =>
+  provider === "openai" || provider === "openai-api";
+
+/**
+ * Whether an image pasted into a free-text box on this project will be seen
+ * by the model that answers it. False is not a failure: the attachment is
+ * still stored against the project, it just does not reach a provider, and
+ * the studio says so rather than implying vision it does not have.
+ */
+export const attachmentsReachOrchestrator = (routing: {
+  mode: ProviderMode;
+  orchestratorProvider: ExecutionProvider;
+}): boolean =>
+  routing.mode === "live" &&
+  readsImageAttachments(routing.orchestratorProvider);
+
 export const isMeteredImageProvider = (provider: ImageProvider): boolean =>
   provider === "openai-gpt-image-2" || provider === "custom-api";
 
@@ -67,9 +92,16 @@ export const hasMeteredRoutes = (routing: ProjectRouting): boolean =>
     isMeteredSoundProvider(routing.soundProvider));
 
 export const projectNeedsBudget = (project: ProjectBudgetRouting): boolean =>
-  project.milestone === "m0" ||
-  (project.milestone === "m2" && project.mode === "live") ||
-  hasMeteredRoutes(project);
+  project.milestone === "m0" || hasMeteredRoutes(project);
+
+export const projectNeedsMeshyCredits = (project: {
+  milestone: Milestone;
+  mode: ProviderMode;
+  assetProvider?: AssetProvider;
+}): boolean =>
+  project.milestone === "m2" &&
+  project.mode === "live" &&
+  (project.assetProvider ?? "meshy") === "meshy";
 
 export const SOUND_PROMPT_MAX = 450;
 
@@ -139,10 +171,45 @@ export const InterrogationQuestionSchema = z.object({
 });
 export type InterrogationQuestion = z.infer<typeof InterrogationQuestionSchema>;
 
+/** Images pasted into a free-text box. Every attachment is normalized to PNG
+ *  and stored in the canonical artifact store, so the bytes — not a per-run
+ *  id — are its identity and the same screenshot pasted twice is one file. */
+export const MAX_IMAGE_ATTACHMENTS = 4;
+export const MAX_IMAGE_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+export const IMAGE_ATTACHMENT_DATA_URL_PATTERN =
+  /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/;
+
+export const StoreImageAttachmentInputSchema = z.object({
+  dataUrl: z.string().regex(IMAGE_ATTACHMENT_DATA_URL_PATTERN),
+});
+export type StoreImageAttachmentInput = z.infer<
+  typeof StoreImageAttachmentInputSchema
+>;
+
+export const StoredImageAttachmentSchema = z.object({
+  attachment: ArtifactRefSchema,
+  /** Honest routing answer, decided by the project, not by the browser:
+   *  false means the image is kept but no model will look at it. */
+  reachesModel: z.boolean(),
+});
+export type StoredImageAttachment = z.infer<typeof StoredImageAttachmentSchema>;
+
+export const ImageAttachmentListSchema = z
+  .array(ArtifactRefSchema)
+  .max(MAX_IMAGE_ATTACHMENTS);
+
+export const AttachmentArtifactIdsSchema = z
+  .array(z.string().min(1))
+  .max(MAX_IMAGE_ATTACHMENTS);
+
 export const InterrogationAnswerSchema = z.object({
   questionId: z.string().min(1),
   value: z.string().min(1),
   origin: InformationOriginSchema,
+  /* Optional, not defaulted: an answer with no pictures keeps exactly the
+     bytes it had before attachments existed, so replay revisions stay
+     byte-identical to earlier runs of the same brief. */
+  attachments: ImageAttachmentListSchema.optional(),
 });
 export type InterrogationAnswer = z.infer<typeof InterrogationAnswerSchema>;
 
@@ -202,6 +269,67 @@ export const GameDesignSpecSchema = GameDesignDigestSchema.omit({
   ),
 });
 export type GameDesignSpec = z.infer<typeof GameDesignSpecSchema>;
+
+/* ---------- the game name decider ----------
+   A game's name is part of its identity, so Fulcrum proposes and the human
+   decides. Candidates are drafted from the signed-off interrogation record,
+   steered by free-text feedback as many times as the human wants, and the
+   committed decision is what the Game Design Spec is titled with. */
+
+export const GAME_NAME_CANDIDATE_COUNT = 4;
+export const GAME_NAME_MAX_CHARS = 60;
+export const GAME_NAME_FEEDBACK_MAX_CHARS = 500;
+
+export const GameNameCandidateSchema = z.object({
+  candidateId: z.string().min(1),
+  name: z.string().trim().min(2).max(GAME_NAME_MAX_CHARS),
+  rationale: z.string().trim().min(1).max(240),
+});
+export type GameNameCandidate = z.infer<typeof GameNameCandidateSchema>;
+
+export const GameNameCandidateSetSchema = z.object({
+  candidateSetId: z.string().min(1),
+  /** 1 for the first batch; each steered batch is one more round. */
+  round: z.number().int().positive(),
+  /** The steer that produced this batch. Absent on the first one. */
+  feedback: z
+    .string()
+    .trim()
+    .min(1)
+    .max(GAME_NAME_FEEDBACK_MAX_CHARS)
+    .optional(),
+  candidates: z.array(GameNameCandidateSchema).min(3).max(6),
+  sourceInterrogationRevisionId: z.string().min(1),
+  previousCandidateSetRevisionId: z.string().min(1).optional(),
+  /** "replay" or the execution provider that drafted the batch. */
+  provider: z.string().min(1),
+});
+export type GameNameCandidateSet = z.infer<typeof GameNameCandidateSetSchema>;
+
+export const GameNameDecisionSchema = z
+  .object({
+    name: z.string().trim().min(2).max(GAME_NAME_MAX_CHARS),
+    origin: z.enum(["candidate", "custom"]),
+    candidateId: z.string().min(1).optional(),
+    sourceCandidateSetRevisionId: z.string().min(1),
+    /** How many batches the conversation took before this name won. */
+    rounds: z.number().int().positive(),
+    decidedBy: z.string().min(1),
+    decidedAt: z.string().datetime(),
+  })
+  .superRefine((decision, context) => {
+    if (
+      (decision.origin === "candidate") !==
+      (decision.candidateId !== undefined)
+    )
+      context.addIssue({
+        code: "custom",
+        path: ["candidateId"],
+        message:
+          "A chosen candidate carries its candidate ID; a typed name carries none.",
+      });
+  });
+export type GameNameDecision = z.infer<typeof GameNameDecisionSchema>;
 
 export const PaletteTokenSchema = z.object({
   name: z.string().min(1),
@@ -428,6 +556,19 @@ export const AssetClassificationSchema = z.enum([
 ]);
 export type AssetClassification = z.infer<typeof AssetClassificationSchema>;
 
+/** The five sections the staged asset gate exposes to a human. The persisted
+ * planner classification is intentionally coarser: hero assets include
+ * characters, environments and props, while procedural references cover both
+ * procedural and runtime-authored work. */
+export const AssetPlanSectionSchema = z.enum([
+  "hero",
+  "environment",
+  "modular-kit",
+  "prop",
+  "procedural-reference",
+]);
+export type AssetPlanSection = z.infer<typeof AssetPlanSectionSchema>;
+
 export const ConceptViewRoleSchema = z.enum(["front", "left", "back", "right"]);
 export type ConceptViewRole = z.infer<typeof ConceptViewRoleSchema>;
 
@@ -528,6 +669,83 @@ export const MultiviewConceptSetSchema = z
     });
   });
 export type MultiviewConceptSet = z.infer<typeof MultiviewConceptSetSchema>;
+
+/**
+ * The reference views a human approved for one planned asset in the Images
+ * stage, in cardinal order.
+ *
+ * This is the durable answer to "what will Meshy actually see". Approving a
+ * set spends nothing — the staged gate's geometry button is the first thing
+ * that costs credits — but it is the only input the geometry request has, so
+ * it is stored as an owned, content-addressed revision rather than left in a
+ * browser tab as a blob URL.
+ */
+export const MAX_ASSET_REFERENCE_VIEWS = 4;
+/** Total decoded bytes across one approved set. Four 8 MB views would not fit
+ *  under the orchestrator's 12 MB body limit, so the set has its own ceiling
+ *  and can say so instead of failing as a truncated request. */
+export const MAX_ASSET_REFERENCE_SET_BYTES = 8 * 1024 * 1024;
+
+export const AssetReferenceViewSchema = z.object({
+  role: ConceptViewRoleSchema,
+  source: z.enum(["generated", "uploaded"]),
+  image: ArtifactRefSchema,
+});
+export type AssetReferenceView = z.infer<typeof AssetReferenceViewSchema>;
+
+const assertCardinalViewRoles = (
+  views: readonly { role: ConceptViewRole }[],
+  context: z.RefinementCtx,
+) => {
+  const roles = views.map(({ role }) => role);
+  if (new Set(roles).size !== roles.length)
+    context.addIssue({
+      code: "custom",
+      path: ["views"],
+      message: "An approved reference set cannot repeat a view role.",
+    });
+  if (!roles.includes("front"))
+    context.addIssue({
+      code: "custom",
+      path: ["views"],
+      message: "An approved reference set requires a front view.",
+    });
+};
+
+export const AssetReferenceSetSchema = z
+  .object({
+    assetId: z.string().min(1),
+    /** The plan revision the asset belonged to when the set was approved. */
+    sourceAssetPlanRevisionId: z.string().min(1),
+    views: z
+      .array(AssetReferenceViewSchema)
+      .min(1)
+      .max(MAX_ASSET_REFERENCE_VIEWS),
+    approvedAt: z.string().datetime(),
+  })
+  .superRefine((set, context) => assertCardinalViewRoles(set.views, context));
+export type AssetReferenceSet = z.infer<typeof AssetReferenceSetSchema>;
+
+export const StoreAssetReferenceSetInputSchema = z
+  .object({
+    assetId: z.string().min(1),
+    views: z
+      .array(
+        z.object({
+          role: ConceptViewRoleSchema,
+          source: z.enum(["generated", "uploaded"]).default("generated"),
+          dataUrl: z.string().regex(IMAGE_ATTACHMENT_DATA_URL_PATTERN),
+        }),
+      )
+      .min(1)
+      .max(MAX_ASSET_REFERENCE_VIEWS),
+  })
+  .superRefine((input, context) =>
+    assertCardinalViewRoles(input.views, context),
+  );
+export type StoreAssetReferenceSetInput = z.infer<
+  typeof StoreAssetReferenceSetInputSchema
+>;
 
 const MultiviewConceptRequestBaseSchema = z.object({
   projectId: z.string().min(1),
@@ -652,8 +870,17 @@ export const AssetDocumentSchema = z.object({
   parentAssetRevisionId: z.string().min(1).optional(),
   regenerationStrategyRevisionId: z.string().min(1).optional(),
   generationClaims: AssetGenerationClaimsSchema.optional(),
+  providerEvidence: z
+    .array(
+      z.object({
+        role: z.string().min(1),
+        artifact: ArtifactRefSchema,
+      }),
+    )
+    .optional(),
   externalJobId: z.string().min(1),
   costUsd: z.number().nonnegative(),
+  costCredits: z.number().int().nonnegative().optional(),
 });
 export type AssetDocument = z.infer<typeof AssetDocumentSchema>;
 
@@ -779,6 +1006,37 @@ export const ApprovalDecisionSchema = z.object({
 });
 export type ApprovalDecision = z.infer<typeof ApprovalDecisionSchema>;
 
+/** The human review gates a project can be returned to after a rejection. */
+export const ApprovalGateSchema = z.enum([
+  "game-design",
+  "visual-direction",
+  "concept-set",
+  "sound-set",
+  "asset-plan",
+]);
+export type ApprovalGate = z.infer<typeof ApprovalGateSchema>;
+
+export const APPROVAL_GATE_REVIEW_STAGES = {
+  "game-design": "game-design-approval",
+  "visual-direction": "visual-direction-approval",
+  "concept-set": "concept-set-approval",
+  "sound-set": "sound-set-approval",
+  "asset-plan": "asset-plan-approval",
+} as const satisfies Record<ApprovalGate, ProjectStage>;
+
+/**
+ * Blocked-reason codes that record a human rejection at a gate rather than a
+ * workflow failure. Projects blocked before the rejection-reopens-the-gate fix
+ * persisted these codes with `recoverable: false`; they are normalized on read.
+ */
+export const APPROVAL_GATE_REJECTION_CODES = {
+  "game-design-not-approved": "game-design",
+  "visual-direction-not-approved": "visual-direction",
+  "concept-set-not-approved": "concept-set",
+  "sound-set-not-approved": "sound-set",
+  "asset-plan-not-approved": "asset-plan",
+} as const satisfies Record<string, ApprovalGate>;
+
 export const FailureKindSchema = z.enum([
   "retryable",
   "strategy-changing",
@@ -802,6 +1060,8 @@ export const BlockedReasonSchema = z.object({
   recoverable: z.boolean(),
   failureKind: FailureKindSchema.optional(),
   resumeStage: ProjectStageSchema.optional(),
+  /** Set when the block is a human rejection the studio can reopen. */
+  reviewGate: ApprovalGateSchema.optional(),
 });
 export type BlockedReason = z.infer<typeof BlockedReasonSchema>;
 
@@ -1048,7 +1308,11 @@ export const TurntableManifestSchema = z.object({
   assetId: z.string().min(1),
   assetRevisionId: z.string().min(1),
   sourceArtifactHashes: z.array(z.string().regex(/^[a-f0-9]{64}$/)).min(1),
-  rendererVersion: z.literal("software-rasterizer-v1"),
+  rendererVersion: z.enum([
+    "software-rasterizer-v1",
+    "software-rasterizer-v2",
+    "software-rasterizer-v3",
+  ]),
   config: AssetPolicySchema.shape.turntable,
   frames: z
     .array(
@@ -1276,6 +1540,9 @@ export const PlannedAssetProcedureSchema = z.object({
     ),
 });
 
+export const CharacterPoseModeSchema = z.enum(["a-pose", "t-pose"]);
+export type CharacterPoseMode = z.infer<typeof CharacterPoseModeSchema>;
+
 export const PlannedAssetSourceSchema = z.object({
   gameDesignSpec: RevisionAncestorSchema,
   conceptSet: RevisionAncestorSchema,
@@ -1297,6 +1564,7 @@ export const PlannedAssetSchema = z
     rationale: z.string().trim().min(1).max(600),
     sourceRefs: PlannedAssetSourceSchema,
     dependsOnAssetIds: z.array(z.string().min(1)).max(11),
+    poseMode: CharacterPoseModeSchema.optional(),
     procedure: PlannedAssetProcedureSchema.optional(),
     acceptanceCriteria: z
       .array(z.string().trim().min(1).max(300))
@@ -1313,11 +1581,101 @@ export const PlannedAssetSchema = z
           "Procedural assets require parameters; other classes must omit them.",
       });
     }
+    if (asset.poseMode && asset.classification !== "hero") {
+      context.addIssue({
+        code: "custom",
+        path: ["poseMode"],
+        message: "Only riggable hero assets may request a character pose.",
+      });
+    }
   });
 export type PlannedAsset = z.infer<typeof PlannedAssetSchema>;
 
+const assetPlanEnvironmentTerms =
+  /\b(environment|playable area|arena|level|room|world|terrain|landscape|scene)\b/;
+const assetPlanPropTerms =
+  /\b(prop|item|object|tool|weapon|vehicle|door|gate|switch|lever|crate|furniture|device|station|assembly)\b/;
+
+/** Single source of truth for the section shown at the staged gate and the
+ * section boundary enforced by asset-plan amendments. */
+export const assetPlanSectionFor = (asset: PlannedAsset): AssetPlanSection => {
+  if (asset.classification === "kit") return "modular-kit";
+  if (
+    asset.classification === "procedural" ||
+    asset.classification === "functional"
+  )
+    return "procedural-reference";
+  if (asset.poseMode) return "hero";
+  const searchable = [
+    asset.name,
+    asset.rationale,
+    ...asset.acceptanceCriteria,
+    ...asset.sourceRefs.conceptSlots.map(({ slotId }) => slotId),
+  ]
+    .join(" ")
+    .toLowerCase();
+  if (assetPlanEnvironmentTerms.test(searchable)) return "environment";
+  if (assetPlanPropTerms.test(searchable)) return "prop";
+  return "hero";
+};
+
+/**
+ * A human's post-plan call about whether one asset should enter the humanoid
+ * rigging path. This is deliberately separate from the immutable asset plan:
+ * correcting biped detection must not consume the plan's one replan window.
+ */
+export const AssetRigEligibilityOverrideSchema = z
+  .object({
+    assetId: z.string().min(1),
+    sourceAssetPlanRevisionId: z.string().min(1),
+    biped: z.boolean(),
+    poseMode: CharacterPoseModeSchema.optional(),
+    decidedBy: z.string().min(1),
+    decidedAt: z.string().datetime(),
+  })
+  .superRefine((decision, context) => {
+    if (decision.biped !== Boolean(decision.poseMode))
+      context.addIssue({
+        code: "custom",
+        path: ["poseMode"],
+        message: decision.biped
+          ? "A biped override requires a pose mode."
+          : "A not-biped override must clear the pose mode.",
+      });
+  });
+export type AssetRigEligibilityOverride = z.infer<
+  typeof AssetRigEligibilityOverrideSchema
+>;
+
+export const OverrideAssetRigEligibilityInputSchema = z.object({
+  assetId: z.string().min(1),
+  biped: z.boolean(),
+  poseMode: CharacterPoseModeSchema.optional(),
+});
+export type OverrideAssetRigEligibilityInput = z.infer<
+  typeof OverrideAssetRigEligibilityInputSchema
+>;
+
+/** The structured vision verdict recorded for one approved front reference. */
+export const AssetBipedDetectionSchema = z.object({
+  assetId: z.string().min(1),
+  sourceAssetPlanRevisionId: z.string().min(1),
+  sourceReferenceSetRevisionId: z.string().min(1),
+  biped: z.boolean(),
+  confidence: z.number().min(0).max(1),
+  rationale: z.string().trim().min(1).max(600),
+  provider: z.string().min(1),
+  model: z.string().min(1),
+  detectedAt: z.string().datetime(),
+});
+export type AssetBipedDetection = z.infer<typeof AssetBipedDetectionSchema>;
+
 export const AssetPlanProvenanceSchema = ProvenanceSchema.extend({
-  operation: z.enum(["asset-plan.initial", "asset-plan.replan"]),
+  operation: z.enum([
+    "asset-plan.initial",
+    "asset-plan.replan",
+    "asset-plan.amend",
+  ]),
 });
 
 export const ASSET_PLAN_MAX_ASSETS = 12;
@@ -1490,6 +1848,12 @@ export const AssetPlanSchema = z
   });
 export type AssetPlan = z.infer<typeof AssetPlanSchema>;
 
+export const AmendAssetPlanInputSchema = z.object({
+  section: AssetPlanSectionSchema,
+  request: z.string().trim().min(1).max(1_000),
+});
+export type AmendAssetPlanInput = z.infer<typeof AmendAssetPlanInputSchema>;
+
 export const handlingForPlannedAsset = (plan: AssetPlan, assetId: string) => {
   const asset = plan.assets.find((candidate) => candidate.assetId === assetId);
   if (!asset) throw new Error(`Unknown planned asset: ${assetId}`);
@@ -1615,28 +1979,46 @@ export const AssetPlanningOutcomeSchema = z.discriminatedUnion("status", [
 ]);
 export type AssetPlanningOutcome = z.infer<typeof AssetPlanningOutcomeSchema>;
 
-export const ApprovedAssetPlanBindingSchema = z
+/**
+ * The immutable asset-plan revision the workflow finalized for production.
+ *
+ * `assetPlanApproval` remains an ApprovalDecision in persisted project state so
+ * projects written before automatic finalization keep loading. New decisions
+ * are written by the workflow rather than a human review screen.
+ */
+export const AssetPlanFinalizationSchema = ApprovalDecisionSchema.extend({
+  targetType: z.literal("asset-plan"),
+  decision: z.literal("approved"),
+});
+export type AssetPlanFinalization = z.infer<typeof AssetPlanFinalizationSchema>;
+
+export const FinalizedAssetPlanBindingSchema = z
   .object({
+    projectId: z.string().min(1),
     plan: RevisionRefSchema,
-    approval: ApprovalDecisionSchema.extend({
-      targetType: z.literal("asset-plan"),
-      decision: z.literal("approved"),
-    }),
+    finalization: AssetPlanFinalizationSchema,
   })
-  .superRefine(({ plan, approval }, context) => {
+  .superRefine(({ projectId, plan, finalization }, context) => {
+    if (finalization.projectId !== projectId) {
+      context.addIssue({
+        code: "custom",
+        path: ["finalization", "projectId"],
+        message: "The asset-plan finalization belongs to another project.",
+      });
+    }
     if (
-      approval.targetRevisionId !== plan.revisionId ||
-      approval.targetSha256 !== plan.artifact.sha256
+      finalization.targetRevisionId !== plan.revisionId ||
+      finalization.targetSha256 !== plan.artifact.sha256
     ) {
       context.addIssue({
         code: "custom",
-        path: ["approval"],
-        message: "The asset-plan approval is stale.",
+        path: ["finalization"],
+        message: "The asset-plan finalization is stale.",
       });
     }
   });
-export type ApprovedAssetPlanBinding = z.infer<
-  typeof ApprovedAssetPlanBindingSchema
+export type FinalizedAssetPlanBinding = z.infer<
+  typeof FinalizedAssetPlanBindingSchema
 >;
 
 export const AssetBatchEntrySchema = z.object({
@@ -1654,6 +2036,425 @@ export const AssetBatchEntrySchema = z.object({
   staleReason: z.string().optional(),
 });
 export type AssetBatchEntry = z.infer<typeof AssetBatchEntrySchema>;
+
+/* ------------------------------------------------------------------------- *
+ * Staged Meshy asset lifecycle
+ *
+ * Meshy bills a finished asset in four separately-priced tasks, and each one
+ * is a decision a human should make with the previous one on screen. Modelling
+ * them as one 30-credit "resolve" hid two thirds of the spend behind a single
+ * click and gave nobody a chance to scrap a bad silhouette before paying to
+ * texture it. These schemas are that lifecycle: one record per asset, one run
+ * per paid task, one decision per human choice.
+ * ------------------------------------------------------------------------- */
+
+export const MeshyStageSchema = z.enum([
+  "geometry",
+  "texture",
+  "rig",
+  "animation",
+]);
+export type MeshyStage = z.infer<typeof MeshyStageSchema>;
+
+/**
+ * Meshy's per-task price list, in credits. Every one of these is real money:
+ * Meshy publishes no free-retry path on the public API, so a retry is a new
+ * `geometry` task at full price. The web app's 12 free retries per asset are
+ * not exposed to `POST /openapi/v1/*` and are deliberately not modelled here.
+ */
+export const MESHY_STAGE_CREDITS = {
+  geometry: 20,
+  texture: 10,
+  rig: 5,
+  animation: 3,
+} as const satisfies Record<MeshyStage, number>;
+
+export const MeshyTaskStatusSchema = z.enum([
+  "running",
+  "succeeded",
+  "failed",
+  "expired",
+  "canceled",
+]);
+export type MeshyTaskStatus = z.infer<typeof MeshyTaskStatusSchema>;
+
+/**
+ * `expired` is not a flavour of `failed`. A failed task is refunded and can be
+ * re-run against the same inputs; an expired one *succeeded*, was billed, and
+ * then Meshy deleted the result before Fulcrum persisted it. The only recovery
+ * is a visible new spend, so the two must never collapse into one status.
+ */
+export const AssetStageStatusSchema = z.enum([
+  "not-started",
+  "running",
+  "review",
+  "accepted",
+  "scrapped",
+  "failed",
+  "expired",
+]);
+export type AssetStageStatus = z.infer<typeof AssetStageStatusSchema>;
+
+export const AssetStageDecisionSchema = z.enum([
+  "scrap",
+  "retry",
+  "texture",
+  "accept",
+  "retexture",
+  "rig",
+  "animate",
+]);
+export type AssetStageDecision = z.infer<typeof AssetStageDecisionSchema>;
+
+/** What each decision costs the moment it is taken. Zero means it is free. */
+export const ASSET_STAGE_DECISION_CREDITS = {
+  scrap: 0,
+  accept: 0,
+  retry: MESHY_STAGE_CREDITS.geometry,
+  texture: MESHY_STAGE_CREDITS.texture,
+  retexture: MESHY_STAGE_CREDITS.texture,
+  rig: MESHY_STAGE_CREDITS.rig,
+  animate: MESHY_STAGE_CREDITS.animation,
+} as const satisfies Record<AssetStageDecision, number>;
+
+/** The stage a decision submits. Absent for the two free decisions. */
+export const ASSET_STAGE_DECISION_STAGES = {
+  retry: "geometry",
+  texture: "texture",
+  retexture: "texture",
+  rig: "rig",
+  animate: "animation",
+} as const satisfies Record<
+  Exclude<AssetStageDecision, "scrap" | "accept">,
+  MeshyStage
+>;
+
+export const AssetStageRunSchema = z.object({
+  stage: MeshyStageSchema,
+  /** 1-based attempt counter within this stage. A retry increments it. */
+  round: z.number().int().min(1),
+  status: MeshyTaskStatusSchema,
+  progress: z.number().int().min(0).max(100),
+  /** The durable submission record that owns this task's credit reservation. */
+  requestId: z.string().min(1),
+  externalJobId: z.string().min(1).optional(),
+  reservedCredits: z.number().int().nonnegative(),
+  consumedCredits: z.number().int().nonnegative().optional(),
+  /** The persisted GLB. Present once the run succeeds and bytes are stored. */
+  model: ArtifactRefSchema.optional(),
+  supporting: z
+    .array(
+      z.object({
+        role: z.string().min(1),
+        artifact: ArtifactRefSchema,
+      }),
+    )
+    .optional(),
+  error: z.string().min(1).optional(),
+  startedAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  finishedAt: z.string().datetime().optional(),
+});
+export type AssetStageRun = z.infer<typeof AssetStageRunSchema>;
+
+export const AssetStageDecisionRecordSchema = z.object({
+  decision: AssetStageDecisionSchema,
+  /** The stage and round the human was looking at when they decided. */
+  reviewedStage: MeshyStageSchema,
+  reviewedRound: z.number().int().min(1),
+  credits: z.number().int().nonnegative(),
+  note: z.string().trim().max(600).optional(),
+  decidedAt: z.string().datetime(),
+});
+export type AssetStageDecisionRecord = z.infer<
+  typeof AssetStageDecisionRecordSchema
+>;
+
+/** The durable half of an asset's lifecycle. Everything else is derived. */
+export const AssetStageRecordSchema = z.object({
+  assetId: z.string().min(1),
+  status: AssetStageStatusSchema,
+  stage: MeshyStageSchema,
+  runs: z.array(AssetStageRunSchema),
+  decisions: z.array(AssetStageDecisionRecordSchema),
+  terminalReason: z.string().min(1).optional(),
+  updatedAt: z.string().datetime(),
+});
+export type AssetStageRecord = z.infer<typeof AssetStageRecordSchema>;
+
+/**
+ * One CTA the studio may render. A rig or animation offer is absent until the
+ * eligibility decision allows it; the character card carries the explanation
+ * and override instead of presenting a spend button that cannot run.
+ */
+export const AssetStageOfferSchema = z.object({
+  decision: AssetStageDecisionSchema,
+  credits: z.number().int().nonnegative(),
+  label: z.string().min(1),
+  available: z.boolean(),
+  unavailableReason: z.string().min(1).optional(),
+});
+export type AssetStageOffer = z.infer<typeof AssetStageOfferSchema>;
+
+export const AssetStagePreviewSchema = z.object({
+  glb: ArtifactRefSchema,
+  stage: MeshyStageSchema,
+  round: z.number().int().min(1),
+  textured: z.boolean(),
+  rigged: z.boolean(),
+  animated: z.boolean(),
+});
+export type AssetStagePreview = z.infer<typeof AssetStagePreviewSchema>;
+
+/** The projection the studio renders: durable record plus everything derived. */
+export const AssetStageViewSchema = AssetStageRecordSchema.extend({
+  name: z.string().min(1),
+  classification: AssetClassificationSchema,
+  /** The effective pose after manual, automatic and plan evidence is merged. */
+  poseMode: CharacterPoseModeSchema.optional(),
+  rigEligible: z.boolean(),
+  rigEligibilityReason: z.string().min(1),
+  rigEligibilitySource: z
+    .enum([
+      "classification",
+      "manual-biped",
+      "manual-not-biped",
+      "auto-biped",
+      "auto-not-biped",
+      "plan",
+      "none",
+    ])
+    .optional(),
+  rigEligibilityOverride: AssetRigEligibilityOverrideSchema.optional(),
+  bipedDetection: AssetBipedDetectionSchema.optional(),
+  /** 0-100. Mirrors the active run, or the last completed run when idle. */
+  progress: z.number().int().min(0).max(100),
+  activeRun: AssetStageRunSchema.optional(),
+  preview: AssetStagePreviewSchema.optional(),
+  offers: z.array(AssetStageOfferSchema),
+  creditsReserved: z.number().int().nonnegative(),
+  creditsConsumed: z.number().int().nonnegative(),
+});
+export type AssetStageView = z.infer<typeof AssetStageViewSchema>;
+
+/**
+ * Whether Meshy's rigger will accept this asset. A human override is the
+ * authority for every classification. Without one, only heroes can inherit
+ * eligibility from automatic biped detection or the plan's `poseMode`.
+ */
+export type AssetRigEligibilityEvidence = {
+  override?: AssetRigEligibilityOverride | undefined;
+  detection?: AssetBipedDetection | undefined;
+};
+
+export type AssetRigEligibility = {
+  eligible: boolean;
+  reason: string;
+  poseMode?: CharacterPoseMode | undefined;
+  source:
+    | "classification"
+    | "manual-biped"
+    | "manual-not-biped"
+    | "auto-biped"
+    | "auto-not-biped"
+    | "plan"
+    | "none";
+};
+
+export const assetRigEligibility = (
+  asset: {
+    classification: AssetClassification;
+    poseMode?: CharacterPoseMode | undefined;
+  },
+  evidence: AssetRigEligibilityEvidence = {},
+): AssetRigEligibility => {
+  if (evidence.override)
+    return evidence.override.biped
+      ? {
+          eligible: true,
+          poseMode: evidence.override.poseMode ?? "a-pose",
+          reason:
+            asset.classification === "hero"
+              ? `You marked this hero as a biped in ${evidence.override.poseMode === "t-pose" ? "T-pose" : "A-pose"}.`
+              : `You marked this ${asset.classification} as a rigged biped, overriding its planned classification.`,
+          source: "manual-biped",
+        }
+      : {
+          eligible: false,
+          reason: `You marked this ${asset.classification} as not bipedal, so rigging is off.`,
+          source: "manual-not-biped",
+        };
+  if (asset.classification !== "hero")
+    return {
+      eligible: false,
+      reason: `Meshy rigs humanoid heroes only; this asset is planned as ${asset.classification}.`,
+      source: "classification",
+    };
+  if (evidence.detection)
+    return evidence.detection.biped
+      ? {
+          eligible: true,
+          poseMode: "a-pose",
+          reason: `Vision detected a biped (${Math.round(evidence.detection.confidence * 100)}% confidence): ${evidence.detection.rationale}`,
+          source: "auto-biped",
+        }
+      : {
+          eligible: false,
+          reason: `Vision did not detect a biped (${Math.round(evidence.detection.confidence * 100)}% confidence): ${evidence.detection.rationale}`,
+          source: "auto-not-biped",
+        };
+  if (!asset.poseMode)
+    return {
+      eligible: false,
+      reason:
+        "The asset plan did not mark this hero as a rigging-bound humanoid, so no pose was requested.",
+      source: "none",
+    };
+  return {
+    eligible: true,
+    poseMode: asset.poseMode,
+    reason: `The plan marks this hero as a humanoid in ${asset.poseMode === "a-pose" ? "A-pose" : "T-pose"}, intended for rigging.`,
+    source: "plan",
+  };
+};
+
+const OFFER_LABELS = {
+  scrap: "Scrap this asset",
+  retry: "Generate new geometry",
+  texture: "Texture this geometry",
+  accept: "Accept this asset",
+  retexture: "Texture again",
+  rig: "Rig this character",
+  animate: "Add a walk and run clip",
+} as const satisfies Record<AssetStageDecision, string>;
+
+const offer = (
+  decision: AssetStageDecision,
+  unavailableReason?: string,
+): AssetStageOffer => ({
+  decision,
+  credits: ASSET_STAGE_DECISION_CREDITS[decision],
+  label: OFFER_LABELS[decision],
+  available: unavailableReason === undefined,
+  ...(unavailableReason ? { unavailableReason } : {}),
+});
+
+/**
+ * The decisions a human may take right now. Pure, so the studio, the routes
+ * and the tests all agree on what is legal without re-deriving the rules.
+ */
+export const assetStageOffers = (
+  record: Pick<AssetStageRecord, "status" | "stage">,
+  eligibility: { eligible: boolean; reason: string },
+): AssetStageOffer[] => {
+  switch (record.status) {
+    case "not-started":
+    case "running":
+      return [];
+    case "failed":
+    case "expired":
+      return [offer("retry"), offer("scrap")];
+    case "accepted":
+    case "scrapped":
+      return [];
+    case "review":
+      break;
+  }
+  switch (record.stage) {
+    case "geometry":
+      return [offer("texture"), offer("retry"), offer("scrap")];
+    case "texture":
+      return [
+        offer("accept"),
+        offer("retexture"),
+        ...(eligibility.eligible ? [offer("rig")] : []),
+        offer("scrap"),
+      ];
+    case "rig":
+      return [
+        offer("accept"),
+        ...(eligibility.eligible ? [offer("animate")] : []),
+        offer("scrap"),
+      ];
+    case "animation":
+      return [offer("accept"), offer("scrap")];
+  }
+};
+
+/* ------------------------------------------------------------------------- *
+ * Meshy request configuration
+ *
+ * Every default below is a rule paid for in credits, not a preference:
+ * `modelVersion` is pinned because "latest" silently repointed and quadrupled
+ * a bill; `targetPolycount` has a *floor* because Meshy's remesher destroys
+ * form at low targets, and low-poly delivery is a local decimation concern;
+ * `textureResolution` tops out at 4k because 8k costs more and drops PBR maps.
+ * ------------------------------------------------------------------------- */
+
+export const MESHY_PINNED_MODEL_VERSION = "meshy-6" as const;
+
+/**
+ * How many triangles the *delivered* asset should end up at. Fulcrum never
+ * decimates — Meshy is always asked for the high target. This is plan intent
+ * carried to whatever tool does the reduction downstream.
+ */
+export const DELIVERED_POLYCOUNT_TARGETS = {
+  background: 2_000,
+  standard: 6_000,
+  hero: 10_000,
+} as const;
+
+export const DeliveredPolycountPresetSchema = z.enum([
+  "background",
+  "standard",
+  "hero",
+]);
+export type DeliveredPolycountPreset = z.infer<
+  typeof DeliveredPolycountPresetSchema
+>;
+
+export const MESHY_MIN_TARGET_POLYCOUNT = 10_000;
+
+export const MeshyConfigSchema = z.object({
+  /** Never "latest". A repoint is a silent price change. */
+  modelVersion: z.literal(MESHY_PINNED_MODEL_VERSION).default("meshy-6"),
+  topology: z.enum(["triangle"]).default("triangle"),
+  /** Requested from Meshy. Floored, because a low remesh target ruins form. */
+  targetPolycount: z
+    .number()
+    .int()
+    .min(MESHY_MIN_TARGET_POLYCOUNT)
+    .max(300_000)
+    .default(MESHY_MIN_TARGET_POLYCOUNT),
+  textureResolution: z.enum(["2k", "4k"]).default("4k"),
+  poseMode: CharacterPoseModeSchema.default("a-pose"),
+  /** Drives Meshy's rig resize. Meshy's own default is 1.7 m. */
+  realWorldHeightMeters: z.number().positive().max(100).optional(),
+  /** Metadata only. Fulcrum does not decimate. */
+  deliveredPolycountPreset: DeliveredPolycountPresetSchema.default("standard"),
+  removeLighting: z.boolean().default(true),
+  imageEnhancement: z.boolean().default(true),
+});
+export type MeshyConfig = z.infer<typeof MeshyConfigSchema>;
+export type MeshyConfigInput = z.input<typeof MeshyConfigSchema>;
+
+export const DEFAULT_MESHY_CONFIG: MeshyConfig = MeshyConfigSchema.parse({});
+
+/** Where a continued project came from. The source world is never written to,
+ *  so this pointer in the descendant is the whole record of the lineage. */
+export const ContinuationProvenanceSchema = z.object({
+  projectId: z.string().min(1),
+  milestone: MilestoneSchema,
+  runId: z.string().min(1),
+  name: z.string().min(1),
+  gameDesignSpecRevisionId: z.string().min(1),
+  visualDirectionRevisionId: z.string().min(1),
+  conceptSetRevisionId: z.string().min(1),
+  continuedAt: z.string().datetime(),
+});
+export type ContinuationProvenance = z.infer<
+  typeof ContinuationProvenanceSchema
+>;
 
 const stagesByMilestone: Record<Milestone, ReadonlySet<ProjectStage>> = {
   m0: new Set([
@@ -1715,6 +2516,9 @@ export const ProjectStateSchema = z
     maxConcurrentExternalJobs: z.number().int().min(1).max(8).optional(),
     budgetUsd: z.number().nonnegative().default(0),
     spentUsd: z.number().nonnegative(),
+    meshyCreditBudget: z.number().int().nonnegative().optional(),
+    meshyCreditsReserved: z.number().int().nonnegative().optional(),
+    meshyCreditsConsumed: z.number().int().nonnegative().optional(),
     conceptReplacementCount: z.number().int().min(0).max(1).default(0),
     directionReplacementCount: z.number().int().min(0).max(1).optional(),
     focusedDirectionChangeCount: z.number().int().min(0).max(1).optional(),
@@ -1727,6 +2531,12 @@ export const ProjectStateSchema = z
     brief: RevisionRefSchema,
     creativeCapabilities: RevisionRefSchema.optional(),
     interrogation: RevisionRefSchema.optional(),
+    /** The latest batch of proposed names. Present from signoff onward. */
+    gameNameCandidates: RevisionRefSchema.optional(),
+    /** The committed name decision. Its name is the project's display name. */
+    gameName: RevisionRefSchema.optional(),
+    /** Set on an M2 project seeded from a finished M1 world. */
+    continuedFrom: ContinuationProvenanceSchema.optional(),
     gameDesign: RevisionRefSchema.optional(),
     gameDesignSpec: RevisionRefSchema.optional(),
     projectGlossary: RevisionRefSchema.optional(),
@@ -1745,9 +2555,27 @@ export const ProjectStateSchema = z
     conceptSetApproval: ApprovalDecisionSchema.optional(),
     soundSetApproval: ApprovalDecisionSchema.optional(),
     assetPlan: RevisionRefSchema.optional(),
+    /** The exact plan finalization. The field name is retained for old worlds. */
     assetPlanApproval: ApprovalDecisionSchema.optional(),
     assetPlanReplanCount: z.number().int().min(0).max(1).optional(),
     assetBatch: z.record(z.string().min(1), AssetBatchEntrySchema).optional(),
+    /** Approved Images-stage reference views, keyed by planned asset id. The
+     *  staged geometry request reads these first. */
+    assetReferenceSets: z
+      .record(z.string().min(1), RevisionRefSchema)
+      .optional(),
+    /** Latest automatic biped verdict per asset. Values are owned revisions. */
+    assetBipedDetections: z
+      .record(z.string().min(1), RevisionRefSchema)
+      .optional(),
+    /** Latest post-plan human biped decision per asset. */
+    assetRigEligibilityOverrides: z
+      .record(z.string().min(1), RevisionRefSchema)
+      .optional(),
+    /** Per-project Meshy request settings. Absent means the pinned defaults. */
+    meshyConfig: RevisionRefSchema.optional(),
+    /** The staged geometry/texture/rig lifecycle, keyed by planned asset id. */
+    assetStages: z.record(z.string().min(1), AssetStageRecordSchema).optional(),
     asset: RevisionRefSchema.optional(),
     assetEvaluation: RevisionRefSchema.optional(),
     scene: RevisionRefSchema.optional(),
@@ -1769,9 +2597,67 @@ export const ProjectStateSchema = z
 export type ProjectState = z.infer<typeof ProjectStateSchema>;
 export type ProjectStateInput = z.input<typeof ProjectStateSchema>;
 
+export const isStageForMilestone = (
+  milestone: Milestone,
+  stage: ProjectStage,
+): boolean => stagesByMilestone[milestone].has(stage);
+
+/**
+ * The gate a blocked project can be returned to, when the block records a
+ * human rejection. Undefined for genuine failures, which stay unrecoverable
+ * or recover through the workflow graph instead.
+ */
+export const approvalGateBlock = (state: {
+  milestone: Milestone;
+  status?: ProjectStatus;
+  blockedReason?: BlockedReason | undefined;
+}): { gate: ApprovalGate; reviewStage: ProjectStage } | undefined => {
+  const reason = state.blockedReason;
+  if (!reason) return undefined;
+  const gate: ApprovalGate | undefined =
+    reason.reviewGate ??
+    APPROVAL_GATE_REJECTION_CODES[
+      reason.code as keyof typeof APPROVAL_GATE_REJECTION_CODES
+    ];
+  if (!gate) return undefined;
+  const reviewStage = APPROVAL_GATE_REVIEW_STAGES[gate];
+  return isStageForMilestone(state.milestone, reviewStage)
+    ? { gate, reviewStage }
+    : undefined;
+};
+
+/**
+ * Rejection blocks persisted before rejection reopened its gate carry
+ * `recoverable: false` and no gate. Normalizing on read makes those projects
+ * rescuable without rewriting history.
+ */
+export const normalizeBlockedReason = <T extends ProjectState>(state: T): T => {
+  const block = approvalGateBlock(state);
+  if (!block || !state.blockedReason) return state;
+  const reason = state.blockedReason;
+  if (
+    reason.recoverable &&
+    reason.reviewGate === block.gate &&
+    reason.resumeStage === block.reviewStage
+  )
+    return state;
+  return {
+    ...state,
+    blockedReason: {
+      ...reason,
+      recoverable: true,
+      failureKind: reason.failureKind ?? "user-action-required",
+      resumeStage: block.reviewStage,
+      reviewGate: block.gate,
+    },
+  };
+};
+
 export const M1InFlightActionSchema = z.enum([
   "answers",
   "confirm",
+  "suggest-names",
+  "name-game",
   "revise",
   "approve-gds",
   "replace",
@@ -1819,6 +2705,8 @@ export const ProjectSnapshotSchema = z.object({
   briefText: z.string(),
   inFlight: M1InFlightSchema.optional(),
   interrogation: InterrogationStateSchema.optional(),
+  gameNameCandidates: GameNameCandidateSetSchema.optional(),
+  gameName: GameNameDecisionSchema.optional(),
   gameDesign: GameDesignDigestSchema.optional(),
   gameDesignSpec: GameDesignSpecSchema.optional(),
   visualDirections: VisualDirectionSetSchema.optional(),
@@ -1841,6 +2729,15 @@ export const ProjectSnapshotSchema = z.object({
   assetQualityEvidence: z
     .record(z.string().min(1), AssetQualityEvidenceSchema)
     .optional(),
+  /** Resolved settings, defaults included, so the studio never guesses. */
+  meshyConfig: MeshyConfigSchema.optional(),
+  /** Everything the staged asset gate renders: progress, previews, CTAs. */
+  assetStages: z.record(z.string().min(1), AssetStageViewSchema).optional(),
+  /** Resolved approved reference sets, so a reloaded gate shows the views a
+   *  human already approved instead of empty slots. */
+  assetReferenceSets: z
+    .record(z.string().min(1), AssetReferenceSetSchema)
+    .optional(),
   asset: AssetDocumentSchema.optional(),
   assetEvaluation: AssetEvaluationSchema.optional(),
   scene: FulcrumSceneSpecV0Schema.optional(),
@@ -1859,6 +2756,7 @@ export const CreateProjectInputSchema = z
     soundProvider: SoundProviderSchema.default("none"),
     maxConcurrentExternalJobs: z.number().int().min(1).max(8).default(2),
     budgetUsd: z.number().positive().optional(),
+    meshyCreditBudget: z.number().int().positive().optional(),
     rightsConfirmed: z.literal(true),
   })
   .superRefine((value, context) => {
@@ -1876,6 +2774,16 @@ export const CreateProjectInputSchema = z
         message: "A positive USD budget is required for metered routes.",
       });
     }
+    if (
+      projectNeedsMeshyCredits(value) &&
+      value.meshyCreditBudget === undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["meshyCreditBudget"],
+        message: "A positive Meshy credit budget is required for live M2.",
+      });
+    }
   });
 export type CreateProjectInput = z.input<typeof CreateProjectInputSchema>;
 
@@ -1886,12 +2794,14 @@ export const MacroGraphNodeIdSchema = z.enum([
   "m0.scene-composition",
   "m2.asset-planning",
   "m2.asset-plan-approval",
+  "m2.staged-asset-gate",
   "m2.expand-asset-paths",
   "m2.asset.multiview-concept",
   "m2.asset.production",
   "m2.asset.deterministic-qa",
   "m2.asset.turntable-evaluation",
   "m2.asset.regeneration",
+  "m2.asset.finishing",
   "m2.asset-batch-aggregation",
   "m2.complete",
 ]);
@@ -1995,22 +2905,36 @@ export const ApprovalInputSchema = z.object({
 });
 export type ApprovalInput = z.infer<typeof ApprovalInputSchema>;
 
-export const AssetPlanApprovalInputSchema = ApprovalInputSchema.extend({
-  targetType: z.literal("asset-plan"),
-  targetRevisionId: z.string().min(1),
-  targetSha256: z.string().regex(/^[a-f0-9]{64}$/),
-  notes: z.string().trim().max(1_000).optional(),
-}).superRefine((input, context) => {
-  if (input.decision === "changes-requested" && !input.notes) {
-    context.addIssue({
-      code: "custom",
-      path: ["notes"],
-      message: "Describe the requested asset-plan change.",
-    });
-  }
+/** Returns a project blocked by a rejection to that gate's review. */
+export const ReopenApprovalReviewInputSchema = z.object({
+  gate: ApprovalGateSchema,
 });
-export type AssetPlanApprovalInput = z.infer<
-  typeof AssetPlanApprovalInputSchema
+export type ReopenApprovalReviewInput = z.infer<
+  typeof ReopenApprovalReviewInputSchema
+>;
+
+/** Kicks off the first paid task — 20 credits of geometry — for one asset. */
+export const StartAssetStageInputSchema = z.object({
+  assetId: z.string().min(1),
+});
+export type StartAssetStageInput = z.infer<typeof StartAssetStageInputSchema>;
+
+/**
+ * A human's call at a review gate. `acknowledgedCredits` is not decoration:
+ * the studio must echo back the price it showed, so a stale CTA rendered
+ * against an older price list cannot silently authorize a different spend.
+ */
+export const DecideAssetStageInputSchema = z.object({
+  assetId: z.string().min(1),
+  decision: AssetStageDecisionSchema,
+  acknowledgedCredits: z.number().int().nonnegative(),
+  note: z.string().trim().max(600).optional(),
+});
+export type DecideAssetStageInput = z.infer<typeof DecideAssetStageInputSchema>;
+
+export const UpdateMeshyConfigInputSchema = MeshyConfigSchema.partial();
+export type UpdateMeshyConfigInput = z.input<
+  typeof UpdateMeshyConfigInputSchema
 >;
 
 export const AnswerFrontierRoundInputSchema = z.object({
@@ -2021,6 +2945,10 @@ export const AnswerFrontierRoundInputSchema = z.object({
       z.object({
         questionId: z.string().min(1),
         value: z.string().min(1),
+        /** Ids returned by the attachment upload route. The refs themselves
+         *  are re-read from the store server-side so a browser cannot claim
+         *  bytes, a hash, or another project's artifact. */
+        attachmentArtifactIds: AttachmentArtifactIdsSchema.optional(),
       }),
     )
     .min(1),
@@ -2036,6 +2964,93 @@ export const ConfirmSharedUnderstandingInputSchema = z.object({
 export type ConfirmSharedUnderstandingInput = z.infer<
   typeof ConfirmSharedUnderstandingInputSchema
 >;
+
+export const SuggestGameNamesInputSchema = z.object({
+  gameNameCandidatesRevisionId: z.string().min(1),
+  feedback: z.string().trim().min(1).max(GAME_NAME_FEEDBACK_MAX_CHARS),
+  attachmentArtifactIds: AttachmentArtifactIdsSchema.optional(),
+});
+export type SuggestGameNamesInput = z.infer<typeof SuggestGameNamesInputSchema>;
+
+export const CommitGameNameInputSchema = z
+  .object({
+    gameNameCandidatesRevisionId: z.string().min(1),
+    candidateId: z.string().min(1).optional(),
+    name: z.string().trim().min(2).max(GAME_NAME_MAX_CHARS).optional(),
+  })
+  .superRefine((input, context) => {
+    if ((input.candidateId === undefined) === (input.name === undefined))
+      context.addIssue({
+        code: "custom",
+        path: [],
+        message: "Choose one proposed name or type one of your own.",
+      });
+  });
+export type CommitGameNameInput = z.infer<typeof CommitGameNameInputSchema>;
+
+/**
+ * What a continuation genuinely has to collect. Everything else — routing,
+ * concurrency, the approved package — is carried over from the source world.
+ * A live Meshy continuation needs its own credit cap because the source M1
+ * world never had one; replay needs nothing at all.
+ */
+export const ContinueIntoM2InputSchema = z.object({
+  meshyCreditBudget: z.number().int().positive().optional(),
+  budgetUsd: z.number().positive().optional(),
+  maxConcurrentExternalJobs: z.number().int().min(1).max(8).optional(),
+});
+export type ContinueIntoM2Input = z.infer<typeof ContinueIntoM2InputSchema>;
+
+/** Why a world cannot be continued into M2, or undefined when it can. */
+export const M1_CONTINUATION_ISSUES = {
+  "not-m1": "Only an M1 world can be continued into M2.",
+  "concept-set-not-approved":
+    "M2 starts from an approved concept set. Approve the concept package first.",
+  "game-design-not-approved":
+    "The Game Design Spec approval no longer binds this world's current spec.",
+  "visual-direction-not-approved":
+    "The visual direction approval no longer binds this world's Visual Bible.",
+} as const;
+export type M1ContinuationIssue = keyof typeof M1_CONTINUATION_ISSUES;
+
+const bindsRevision = (
+  approval: ApprovalDecision | undefined,
+  revision: RevisionRef | undefined,
+): boolean =>
+  approval?.decision === "approved" &&
+  revision !== undefined &&
+  approval.targetRevisionId === revision.revisionId &&
+  approval.targetSha256 === revision.artifact.sha256;
+
+/**
+ * M2 reuses M1's interrogation, Game Design Spec, visual direction, concept
+ * plan, concept generation, and concept-set approval, and skips M1 sound work.
+ * So the seam is exactly the concept-set approval: any M1 world whose three
+ * creative approvals still bind its current revisions holds everything an M2
+ * project needs at asset planning. A finished M1 world always qualifies.
+ */
+export const m1ContinuationIssue = (state: {
+  milestone: Milestone;
+  gameDesignSpec?: RevisionRef | undefined;
+  gameDesignApproval?: ApprovalDecision | undefined;
+  visualBible?: RevisionRef | undefined;
+  directionApproval?: ApprovalDecision | undefined;
+  conceptSet?: RevisionRef | undefined;
+  conceptSetApproval?: ApprovalDecision | undefined;
+}): M1ContinuationIssue | undefined => {
+  if (state.milestone !== "m1") return "not-m1";
+  if (!bindsRevision(state.conceptSetApproval, state.conceptSet))
+    return "concept-set-not-approved";
+  if (!bindsRevision(state.gameDesignApproval, state.gameDesignSpec))
+    return "game-design-not-approved";
+  if (!bindsRevision(state.directionApproval, state.visualBible))
+    return "visual-direction-not-approved";
+  return undefined;
+};
+
+export const canContinueIntoM2 = (
+  state: Parameters<typeof m1ContinuationIssue>[0],
+): boolean => m1ContinuationIssue(state) === undefined;
 
 export const ConceptPlanPromptOverrideSchema = z.object({
   slotId: z.string().min(1),
@@ -2141,9 +3156,22 @@ export type ReviseGameDesignSpecInput = z.infer<
   typeof ReviseGameDesignSpecInputSchema
 >;
 
-export const IncreaseBudgetInputSchema = z.object({
-  budgetUsd: z.number().positive(),
-});
+export const IncreaseBudgetInputSchema = z
+  .object({
+    budgetUsd: z.number().positive().optional(),
+    meshyCreditBudget: z.number().int().positive().optional(),
+  })
+  .superRefine((value, context) => {
+    if (
+      (value.budgetUsd === undefined) ===
+      (value.meshyCreditBudget === undefined)
+    )
+      context.addIssue({
+        code: "custom",
+        path: [],
+        message: "Raise either the USD budget or the Meshy credit budget.",
+      });
+  });
 export type IncreaseBudgetInput = z.infer<typeof IncreaseBudgetInputSchema>;
 
 export const ConfigurationStatusSchema = z.object({

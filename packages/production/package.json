@@ -17,6 +17,7 @@
     "@fulcrum/project": "workspace:*",
     "@gltf-transform/core": "latest",
     "fflate": "^0.8.3",
+    "sharp": "latest",
     "three": "latest",
     "zod": "latest"
   },

@@ -1,5 +1,6 @@
 import {
-  ApprovedAssetPlanBindingSchema,
+  approvalGateBlock,
+  FinalizedAssetPlanBindingSchema,
   AssetBatchNodeOutputSchema,
   AssetPlanSchema,
   AssetPathBaseSchema,
@@ -16,9 +17,12 @@ import {
   TurntableEvaluationNodeOutputSchema,
   WorkflowFailureSchema,
   ProjectSnapshotSchema,
+  projectNeedsMeshyCredits,
   type MacroPhase,
+  type ApprovalDecision,
   type WorkflowFailure,
   type ProjectSnapshot,
+  type RevisionRef,
 } from "@fulcrum/domain";
 import { randomUUID } from "node:crypto";
 import { ProjectRepository } from "@fulcrum/project";
@@ -37,12 +41,14 @@ import {
 export const M2_GRAPH_SLOTS = {
   assetPlanning: "m2.asset-planning",
   assetPlanApproval: "m2.asset-plan-approval",
+  stagedAssetGate: "m2.staged-asset-gate",
   expandAssetPaths: "m2.expand-asset-paths",
   multiviewConcepts: "m2.asset.multiview-concept",
   assetProduction: "m2.asset.production",
   deterministicQa: "m2.asset.deterministic-qa",
   turntableEvaluation: "m2.asset.turntable-evaluation",
   regeneration: "m2.asset.regeneration",
+  assetFinishing: "m2.asset.finishing",
   assetBatchAggregation: "m2.asset-batch-aggregation",
   complete: "m2.complete",
 } as const;
@@ -55,6 +61,26 @@ const PlanningRuntimeSchema = RoutedInputSchema.extend({
   orderedAssetIds: AssetPlanningNodeOutputSchema.shape.orderedAssetIds,
 });
 const BatchRuntimeSchema = AssetBatchNodeOutputSchema;
+
+const parksAtStagedAssetGate = (state: ProjectSnapshot["state"]): boolean =>
+  state.stage === "asset-batch" && projectNeedsMeshyCredits(state);
+
+export const ASSET_PLAN_FINALIZER = "fulcrum:auto-finalizer";
+
+export const createAutomaticAssetPlanFinalization = (
+  projectId: string,
+  plan: RevisionRef,
+  decidedAt = new Date().toISOString(),
+): ApprovalDecision => ({
+  approvalId: randomUUID(),
+  projectId,
+  targetType: "asset-plan",
+  targetRevisionId: plan.revisionId,
+  targetSha256: plan.artifact.sha256,
+  decision: "approved",
+  decidedBy: ASSET_PLAN_FINALIZER,
+  decidedAt,
+});
 
 export class WorkflowNodeFailure extends Error {
   constructor(readonly failure: WorkflowFailure) {
@@ -169,6 +195,11 @@ const createM0Tail = (operations: PostConceptOperations) => {
 };
 
 const createM2AssetPath = (slots: M2MacroGraphSlots) => {
+  const finishPhase =
+    slots.assetFinishing ??
+    ({
+      ensure: async (input) => ({ status: "ready" as const, value: input }),
+    } satisfies NonNullable<M2MacroGraphSlots["assetFinishing"]>);
   const multiview = createStep({
     id: M2_GRAPH_SLOTS.multiviewConcepts,
     inputSchema: AssetPathBaseSchema,
@@ -249,6 +280,22 @@ const createM2AssetPath = (slots: M2MacroGraphSlots) => {
         inputData.assetId,
       ),
   });
+  const finishing = createStep({
+    id: M2_GRAPH_SLOTS.assetFinishing,
+    inputSchema: RegenerationNodeOutputSchema,
+    outputSchema: RegenerationNodeOutputSchema,
+    suspendSchema: MacroGraphSuspendSchema,
+    resumeSchema: MacroGraphResumeSchema,
+    execute: async ({ inputData, suspend }) =>
+      await runM2Step(
+        finishPhase,
+        inputData,
+        suspend,
+        M2_GRAPH_SLOTS.assetFinishing,
+        inputData.projectId,
+        inputData.assetId,
+      ),
+  });
   return createWorkflow({
     id: "m2-asset-path",
     inputSchema: AssetPathBaseSchema,
@@ -259,6 +306,7 @@ const createM2AssetPath = (slots: M2MacroGraphSlots) => {
     .then(qa)
     .then(turntable)
     .then(regeneration)
+    .then(finishing)
     .commit();
 };
 
@@ -270,6 +318,14 @@ const createM2AssetIteration = (slots: M2MacroGraphSlots) =>
     suspendSchema: MacroGraphSuspendSchema,
     resumeSchema: MacroGraphResumeSchema,
     execute: async ({ inputData, suspend }) => {
+      const finishPhase =
+        slots.assetFinishing ??
+        ({
+          ensure: async (input) => ({
+            status: "ready" as const,
+            value: input,
+          }),
+        } satisfies NonNullable<M2MacroGraphSlots["assetFinishing"]>);
       const multiview = await runM2Phase(
         slots.multiviewConcepts,
         inputData,
@@ -314,8 +370,17 @@ const createM2AssetIteration = (slots: M2MacroGraphSlots) =>
         inputData.projectId,
         inputData.assetId,
       );
-      return regenerated.status === "ready"
-        ? regenerated.value
+      if (regenerated.status === "suspended") return undefined as never;
+      const finished = await runM2Phase(
+        finishPhase,
+        regenerated.value,
+        suspend,
+        M2_GRAPH_SLOTS.assetFinishing,
+        inputData.projectId,
+        inputData.assetId,
+      );
+      return finished.status === "ready"
+        ? finished.value
         : (undefined as never);
     },
   });
@@ -357,7 +422,7 @@ const createM2Batch = (
             assetPlanReplanCount: wasReplan
               ? (state.assetPlanReplanCount ?? 0) + 1
               : (state.assetPlanReplanCount ?? 0),
-            status: "awaiting-approval",
+            status: "active",
             stage: "asset-plan-approval",
           },
           event: {
@@ -381,21 +446,19 @@ const createM2Batch = (
     id: M2_GRAPH_SLOTS.assetPlanApproval,
     inputSchema: PlanningRuntimeSchema,
     outputSchema: PlanningRuntimeSchema,
-    suspendSchema: MacroGraphSuspendSchema,
-    resumeSchema: MacroGraphResumeSchema,
-    execute: async ({ inputData, suspend }) => {
+    execute: async ({ inputData }) => {
       const state = repository.getProject(inputData.projectId);
-      const decision = state.assetPlanApproval;
-      const binding = ApprovedAssetPlanBindingSchema.safeParse({
+      const binding = FinalizedAssetPlanBindingSchema.safeParse({
+        projectId: state.projectId,
         plan: inputData.assetPlan,
-        approval: decision,
+        finalization: state.assetPlanApproval,
       });
       if (binding.success) {
         if (state.stage === "asset-plan-approval")
           repository.commitWorkflowCheckpoint({
             projectId: state.projectId,
             runId: state.runId,
-            checkpointKey: `${M2_GRAPH_SLOTS.assetPlanApproval}:${binding.data.approval.approvalId}`,
+            checkpointKey: `${M2_GRAPH_SLOTS.assetPlanApproval}:${binding.data.finalization.approvalId}`,
             expectedStage: "asset-plan-approval",
             nextState: { ...state, status: "active", stage: "asset-batch" },
             event: {
@@ -405,33 +468,80 @@ const createM2Batch = (
                 stage: "asset-batch",
                 inputRevisionIds: [inputData.assetPlan.revisionId],
                 outputRevisionIds: [],
+                approvalId: binding.data.finalization.approvalId,
+                decision: "approved",
+                decidedBy: binding.data.finalization.decidedBy,
+                automatic:
+                  binding.data.finalization.decidedBy === ASSET_PLAN_FINALIZER,
+                targetRevisionId: binding.data.finalization.targetRevisionId,
+                targetSha256: binding.data.finalization.targetSha256,
               },
             },
           });
         return inputData;
       }
-      if (decision)
-        return failed({
-          code: "asset-plan-not-approved",
-          message:
-            "The current asset plan does not have an exact approved decision.",
-          kind: "user-action-required",
-          evidenceRevisionIds: [inputData.assetPlan.revisionId],
-        });
-      const checkpointKey = `${M2_GRAPH_SLOTS.assetPlanApproval}:${inputData.assetPlan.revisionId}`;
+
+      const finalization = createAutomaticAssetPlanFinalization(
+        state.projectId,
+        inputData.assetPlan,
+      );
+      const checkpointKey = `${M2_GRAPH_SLOTS.assetPlanApproval}:${finalization.approvalId}`;
+      repository.commitApproval({
+        decision: finalization,
+        nextState: {
+          ...state,
+          assetPlan: inputData.assetPlan,
+          assetPlanApproval: finalization,
+          status: "active",
+          stage: "asset-batch",
+        },
+        event: {
+          runId: state.runId,
+          type: "workflow.node.completed",
+          payload: {
+            checkpointKey,
+            nodeId: M2_GRAPH_SLOTS.assetPlanApproval,
+            stage: "asset-batch",
+            inputRevisionIds: [inputData.assetPlan.revisionId],
+            outputRevisionIds: [],
+            approvalId: finalization.approvalId,
+            decision: finalization.decision,
+            decidedBy: finalization.decidedBy,
+            automatic: true,
+            targetRevisionId: finalization.targetRevisionId,
+            targetSha256: finalization.targetSha256,
+          },
+        },
+      });
+      return inputData;
+    },
+  });
+  const stagedAssetGate = createStep({
+    id: M2_GRAPH_SLOTS.stagedAssetGate,
+    inputSchema: PlanningRuntimeSchema,
+    outputSchema: PlanningRuntimeSchema,
+    suspendSchema: MacroGraphSuspendSchema,
+    resumeSchema: MacroGraphResumeSchema,
+    execute: async ({ inputData, suspend }) => {
+      const state = repository.getProject(inputData.projectId);
+      if (!projectNeedsMeshyCredits(state)) return inputData;
+
+      const checkpointKey = `${M2_GRAPH_SLOTS.stagedAssetGate}:${inputData.assetPlan.revisionId}`;
+      // Live M2 spend belongs only to the staged routes. Legacy submissions
+      // already marked pending stay historical and are never polled from here.
       repository.appendWorkflowEvent({
         projectId: state.projectId,
         runId: state.runId,
         type: "workflow.node.suspended",
         payload: {
           checkpointKey,
-          nodeId: M2_GRAPH_SLOTS.assetPlanApproval,
+          nodeId: M2_GRAPH_SLOTS.stagedAssetGate,
           stage: state.stage,
         },
       });
       return suspend({
         projectId: state.projectId,
-        nodeId: M2_GRAPH_SLOTS.assetPlanApproval,
+        nodeId: M2_GRAPH_SLOTS.stagedAssetGate,
         reason: "approval-required",
       });
     },
@@ -572,6 +682,7 @@ const createM2Batch = (
   })
     .then(planning)
     .then(approval)
+    .then(stagedAssetGate)
     .then(expand)
     .foreach(assetPath, {
       concurrency: ({ getInitData }) =>
@@ -819,9 +930,11 @@ export class PostConceptGraphDriver {
       throw new Error(`Project ${projectId} has no post-concept graph.`);
     if (state.status === "complete") return this.snapshot(projectId);
     if (state.status === "blocked") {
+      // A rejected gate reopens through its explicit review action, never here.
       if (
         trigger !== "explicit-advance" ||
-        state.blockedReason?.recoverable !== true
+        state.blockedReason?.recoverable !== true ||
+        approvalGateBlock(state)
       )
         return this.snapshot(projectId);
       const resumeStage = recoverableResumeStage(this.repository, state);
@@ -833,7 +946,15 @@ export class PostConceptGraphDriver {
         blockedReason: undefined,
       });
     }
-    if (state.status === "awaiting-approval" && trigger === "http-poll")
+    if (parksAtStagedAssetGate(state)) {
+      this.activeRuns.delete(projectId);
+      return this.snapshot(projectId);
+    }
+    if (
+      state.status === "awaiting-approval" &&
+      trigger === "http-poll" &&
+      !(state.milestone === "m2" && state.stage === "asset-plan-approval")
+    )
       return this.snapshot(projectId);
 
     let active = this.activeRuns.get(projectId);
@@ -918,7 +1039,10 @@ export class PostConceptGraphDriver {
         },
       });
       this.activeRuns.delete(projectId);
-    } else if (result.status !== "suspended") {
+    } else if (
+      result.status !== "suspended" ||
+      parksAtStagedAssetGate(this.repository.getProject(projectId))
+    ) {
       this.activeRuns.delete(projectId);
     }
     return this.snapshot(projectId);

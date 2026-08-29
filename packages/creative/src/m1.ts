@@ -7,18 +7,22 @@ import {
   ConceptSetSchema,
   ConceptPlanSchema,
   GameDesignSpecSchema,
+  GameNameCandidateSetSchema,
   InterrogationStateSchema,
   M1ConceptDocumentSchema,
   ProviderPreflightCodeSchema,
   ProviderPreflightError,
   ProviderUsageCodeSchema,
   ProviderUsageError,
+  readsImageAttachments,
   StructuredVisualBibleSchema,
   VisualDirectionSetSchema,
+  type ArtifactRef,
   type ConceptSet,
   type ConceptPlan,
   type ExecutionProvider,
   type GameDesignSpec,
+  type GameNameCandidateSet,
   type ImageProvider,
   type InformationOrigin,
   type InterrogationAnswer,
@@ -47,6 +51,7 @@ import {
 } from "./durable-image.js";
 import { SoundPalette } from "./sound-palette.js";
 import type { SoundGenerationRunner } from "./durable-sound.js";
+import { attachmentFrames } from "./image-attachment.js";
 import {
   assertDistinctDirectionIdentities,
   ensureDurableStructured,
@@ -55,6 +60,10 @@ import {
   gameDesignSpecPrompt,
   gameDesignSystemPrompt,
   gameDesignReviseSystemPrompt,
+  gameNameAttachmentLabel,
+  gameNamesPrompt,
+  gameNamesSystemPrompt,
+  interrogationAttachmentFrameRefs,
   interrogationFirstRoundPrompt,
   interrogationFirstRoundSystemPrompt,
   interrogationNextRoundPrompt,
@@ -64,6 +73,7 @@ import {
   LiveDirectionTemplateSchema,
   LiveFocusedDirectionOutputSchema,
   LiveGameDesignSpecOutputSchema,
+  LiveGameNamesOutputSchema,
   LiveInterrogationFirstRoundSchema,
   LiveInterrogationNextRoundSchema,
   M1_INTERROGATION_ROUND_CAP,
@@ -403,6 +413,321 @@ const titleFromBrief = (brief: string): string => {
     .join(" ");
 };
 
+/* ---- the game name decider -----------------------------------------------
+   Replay proposes titles the way replay does everything else: by deriving
+   them from what the user actually wrote. The vocabulary is the brief and the
+   recorded answers, the shapes are fixed, and the steer rotates the picks — so
+   asking again really does return a different batch, offline and
+   deterministically. */
+
+const NAME_STOPWORDS = new Set([
+  "about",
+  "after",
+  "again",
+  "against",
+  "already",
+  "also",
+  "always",
+  "among",
+  "another",
+  "around",
+  "because",
+  "been",
+  "before",
+  "being",
+  "below",
+  "between",
+  "both",
+  "cannot",
+  "come",
+  "could",
+  "does",
+  "doing",
+  "done",
+  "down",
+  "during",
+  "each",
+  "either",
+  "else",
+  "enough",
+  "even",
+  "ever",
+  "every",
+  "first",
+  "from",
+  "game",
+  "games",
+  "give",
+  "gives",
+  "going",
+  "have",
+  "having",
+  "here",
+  "hold",
+  "into",
+  "just",
+  "keep",
+  "keeps",
+  "kind",
+  "last",
+  "less",
+  "like",
+  "little",
+  "long",
+  "made",
+  "make",
+  "makes",
+  "making",
+  "many",
+  "might",
+  "more",
+  "most",
+  "much",
+  "must",
+  "must",
+  "near",
+  "need",
+  "needs",
+  "never",
+  "next",
+  "none",
+  "once",
+  "only",
+  "other",
+  "others",
+  "over",
+  "player",
+  "players",
+  "same",
+  "session",
+  "should",
+  "since",
+  "some",
+  "something",
+  "such",
+  "take",
+  "takes",
+  "than",
+  "that",
+  "their",
+  "them",
+  "then",
+  "there",
+  "these",
+  "they",
+  "thing",
+  "things",
+  "this",
+  "those",
+  "through",
+  "time",
+  "times",
+  "together",
+  "toward",
+  "turn",
+  "turns",
+  "under",
+  "until",
+  "upon",
+  "used",
+  "uses",
+  "using",
+  "very",
+  "want",
+  "wants",
+  "well",
+  "were",
+  "what",
+  "when",
+  "where",
+  "which",
+  "while",
+  "will",
+  "with",
+  "within",
+  "without",
+  "would",
+  "your",
+]);
+
+const NAME_COMPOUND_SUFFIXES = [
+  "fall",
+  "wake",
+  "light",
+  "song",
+  "reach",
+  "tide",
+];
+
+/* Process vocabulary. These words are all over an interview transcript and
+   none of them belong in a title. */
+const NAME_PROCESS_WORDS = new Set([
+  "above",
+  "accomplishment",
+  "answer",
+  "answers",
+  "behind",
+  "below",
+  "beneath",
+  "beyond",
+  "boundary",
+  "branch",
+  "central",
+  "choice",
+  "complete",
+  "concrete",
+  "constraint",
+  "encounter",
+  "expression",
+  "fantasy",
+  "fulcrum",
+  "interrogation",
+  "legible",
+  "loop",
+  "milestone",
+  "name",
+  "names",
+  "objective",
+  "observable",
+  "pressure",
+  "proof",
+  "readability",
+  "resolve",
+  "resolved",
+  "result",
+  "slice",
+  "spec",
+  "success",
+  "successful",
+  "testable",
+  "tradeoff",
+]);
+
+/* No part-of-speech data here, so the shapes lean on a suffix heuristic:
+   words that end like adjectives or participles are treated as modifiers and
+   everything else as a noun. It is wrong sometimes ("crystal"), and being
+   wrong costs a slightly odd suggestion the user can steer away from. */
+const MODIFIER_ENDINGS = [
+  "ing",
+  "less",
+  "ful",
+  "ous",
+  "ive",
+  "ish",
+  "ic",
+  "ed",
+  "en",
+  "al",
+  "y",
+];
+
+const capitalize = (word: string): string =>
+  `${word.charAt(0).toUpperCase()}${word.slice(1)}`;
+
+const isNameModifier = (word: string): boolean =>
+  MODIFIER_ENDINGS.some(
+    (ending) => word.endsWith(ending) && word.length > ending.length + 2,
+  );
+
+/** The words the user actually wrote, the brief's first. A brief carries the
+ *  flavor; answers carry the mechanics, so they come second. */
+const nameVocabulary = (
+  brief: string,
+  state: InterrogationState,
+): { modifiers: string[]; nouns: string[] } => {
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+  const sources = [
+    brief,
+    ...state.rounds.flatMap((round) =>
+      round.answers.map((answer) => answer.value),
+    ),
+  ];
+  for (const source of sources)
+    for (const word of normalize(source).match(/[a-z][a-z]{3,}/g) ?? []) {
+      /* Adverbs never title anything, and the transcript is full of them. */
+      if (word.endsWith("ly")) continue;
+      if (NAME_STOPWORDS.has(word) || NAME_PROCESS_WORDS.has(word)) continue;
+      if (seen.has(word)) continue;
+      seen.add(word);
+      ordered.push(word);
+    }
+  const modifiers = ordered.filter(isNameModifier);
+  const nouns = ordered.filter((word) => !isNameModifier(word));
+  return {
+    modifiers:
+      modifiers.length >= 3
+        ? modifiers
+        : [...modifiers, "quiet", "drifting", "hollow"],
+    nouns: nouns.length >= 5 ? nouns : [...nouns, "forge", "signal", "ember"],
+  };
+};
+
+const nameOffset = (key: string, span: number): number =>
+  span < 2
+    ? 0
+    : parseInt(createHash("sha256").update(key).digest("hex").slice(0, 8), 16) %
+      span;
+
+/** Four shapes, so a batch offers a real choice and not four synonyms. */
+const draftGameNames = (input: {
+  brief: string;
+  state: InterrogationState;
+  round: number;
+  feedback?: string;
+  taken: string[];
+}): Array<{ name: string; rationale: string }> => {
+  const { modifiers, nouns } = nameVocabulary(input.brief, input.state);
+  const taken = new Set(input.taken.map((name) => normalize(name)));
+  /* Steering rotates the picks, but only within the head of the vocabulary:
+     the words a brief opens with are the ones carrying its flavor, and a
+     hash free to land anywhere in a 60-word list kept naming the game after
+     the last clause of the last answer. */
+  const key = `${input.round}:${input.feedback ?? "first"}`;
+  const nounBase = nameOffset(key, Math.min(nouns.length, 8));
+  const modifierBase = nameOffset(
+    `${key}:modifier`,
+    Math.min(modifiers.length, 4),
+  );
+  for (let attempt = 0; attempt < nouns.length; attempt += 1) {
+    const noun = (index: number): string =>
+      nouns[(nounBase + attempt + index) % nouns.length]!;
+    const modifier = (index: number): string =>
+      modifiers[(modifierBase + attempt + index) % modifiers.length]!;
+    const suffix =
+      NAME_COMPOUND_SUFFIXES[
+        (nounBase + attempt + input.round) % NAME_COMPOUND_SUFFIXES.length
+      ]!;
+    const batch = [
+      {
+        name: `${capitalize(modifier(0))} ${capitalize(noun(0))}`,
+        rationale: `Your own words for the thing and the mood it is in — "${modifier(0)}" and "${noun(0)}" both come straight out of the brief.`,
+      },
+      {
+        name: `${capitalize(noun(1))}${suffix}`,
+        rationale: `One coined word from "${noun(1)}" — short enough for a title bar, a logo, and a search.`,
+      },
+      {
+        name: `The ${capitalize(modifier(1))} ${capitalize(noun(2))}`,
+        rationale: `The article slows the read and makes the ${noun(2)} sound like a place you go rather than a mechanic you use.`,
+      },
+      {
+        name: `${capitalize(noun(3))} of the ${capitalize(noun(4))}`,
+        rationale: `Names what the player is doing and what they are doing it to, which is how the interview described the loop.`,
+      },
+    ];
+    const names = batch.map((candidate) => normalize(candidate.name));
+    if (
+      new Set(names).size === batch.length &&
+      names.every((name) => !taken.has(name))
+    )
+      return batch;
+  }
+  throw new Error(
+    "The brief has too few distinctive words to propose names from.",
+  );
+};
+
 const verbsFrom = (value: string): string[] => {
   const haystack = normalize(value);
   const known = [
@@ -436,6 +761,7 @@ const verbsFrom = (value: string): string[] => {
 const buildGameDesignSpec = (
   brief: string,
   state: InterrogationState,
+  gameName?: string,
 ): GameDesignSpec => {
   const playerPromise =
     answerForBranch(state, "experience.player-promise") ??
@@ -467,7 +793,7 @@ const buildGameDesignSpec = (
     .filter(Boolean)
     .slice(0, 5);
   return GameDesignSpecSchema.parse({
-    title: titleFromBrief(brief),
+    title: gameName ?? titleFromBrief(brief),
     genre: inferGenre(brief),
     camera,
     coreFantasy: sentence(playerPromise),
@@ -1210,17 +1536,16 @@ const focusedAlternateRequest = (note: string): string =>
 
 const PROMPT_GUARD = "No text, UI, logos, or unrelated project history.";
 
-/** Join parts in priority order without ever exceeding the domain cap. The
- *  guard tail is always kept; the first part that no longer fits is cut at
- *  a word boundary (or dropped when the remainder is too small to matter),
- *  and everything after it is dropped. Live specs write token values long
- *  enough to overflow — replay fixtures never did, which hid this.
- *  Exported for direct testing. */
-export const fitConceptPrompt = (parts: string[], tail: string): string => {
-  const budget = CONCEPT_PROMPT_MAX_CHARS - tail.length - 1;
+/** Join parts in priority order until the budget runs out. The first part
+ *  that no longer fits is cut at a word boundary (or dropped when the
+ *  remainder is too small to matter), and everything after it is dropped.
+ *  Live specs write token values long enough to overflow — replay fixtures
+ *  never did, which hid this. */
+const fitParts = (parts: readonly string[], budget: number): string[] => {
   const kept: string[] = [];
   let used = 0;
   for (const part of parts) {
+    if (!part) continue;
     const cost = part.length + (kept.length > 0 ? 1 : 0);
     if (used + cost <= budget) {
       kept.push(part);
@@ -1232,33 +1557,171 @@ export const fitConceptPrompt = (parts: string[], tail: string): string => {
     if (cut.length >= 40) kept.push(`${cut}…`);
     break;
   }
-  return [...kept, tail].join(" ");
+  return kept;
 };
+
+/** Join parts in priority order without ever exceeding the domain cap. The
+ *  guard tail is always kept. Used by the multiview view-prompt compiler,
+ *  which still spends the full domain budget. Exported for direct testing. */
+export const fitConceptPrompt = (parts: string[], tail: string): string =>
+  [...fitParts(parts, CONCEPT_PROMPT_MAX_CHARS - tail.length - 1), tail].join(
+    " ",
+  );
+
+/** ImageGen weights the opening of a prompt and skims the rest, so a concept
+ *  prompt states the shot and the approved look and stops. The subject says
+ *  what the image must show; the style capsule says how the approved
+ *  direction looks. Everything else — the material list, the full
+ *  readability rules, the whole palette with prose — stays in the revision
+ *  it came from, where a human reads it. */
+export const CONCEPT_SUBJECT_MAX_CHARS = 560;
+
+/** A capsule longer than a few clauses stops being a direction and starts
+ *  being a spec sheet the model averages away. */
+export const CONCEPT_STYLE_CAPSULE_MAX_CHARS = 400;
+
+/** More than three named colors reads as a spec sheet. Two carrier colors
+ *  plus the gameplay-focus color is the whole story. */
+const CAPSULE_PALETTE_LIMIT = 2;
+
+/** Must-hold constraints, not the whole readability rulebook. Both survive
+ *  only while they stay short; past that the leading rule goes alone rather
+ *  than dragging a half-sentence behind it. */
+const SUBJECT_CONSTRAINT_LIMIT = 2;
+const MUST_HOLD_MAX_CHARS = 120;
+
+/** No single clause may eat the budget its neighbours need. */
+const CLAUSE_MAX_CHARS = 180;
+
+const collapse = (value: string): string => value.trim().replace(/\s+/g, " ");
+
+/** The opening claim, unpunctuated. Live bibles write paragraphs where
+ *  replay templates write phrases; only the claim survives into a prompt. */
+const firstSentence = (value: string): string => {
+  const text = collapse(value);
+  const match = /^[^.!?]*[.!?]/.exec(text);
+  return (match ? match[0] : text).replace(/\s*[.!?]+$/, "");
+};
+
+const clause = (label: string, value: string | undefined): string => {
+  if (!value) return "";
+  const text = firstSentence(value);
+  const trimmed =
+    text.length <= CLAUSE_MAX_CHARS
+      ? text
+      : `${text.slice(0, CLAUSE_MAX_CHARS).replace(/\s+\S*$/, "")}…`;
+  return trimmed ? `${label}: ${trimmed}.` : "";
+};
+
+const valuesOf = (
+  tokens: VisualToken[],
+  category: VisualToken["category"],
+): string[] =>
+  tokens
+    .filter((token) => token.category === category)
+    .map(({ value }) => value);
+
+const firstValue = (
+  tokens: VisualToken[],
+  category: VisualToken["category"],
+): string | undefined => valuesOf(tokens, category)[0];
+
+const mustHoldRules = (tokens: VisualToken[]): string => {
+  const rules = valuesOf(tokens, "readability")
+    .slice(0, SUBJECT_CONSTRAINT_LIMIT)
+    .map(firstSentence)
+    .filter(Boolean);
+  const joined = rules.join("; ");
+  return joined.length <= MUST_HOLD_MAX_CHARS ? joined : (rules[0] ?? "");
+};
+
+/** Categories the capsule and subject already speak for. */
+const CAPSULE_REPRESENTED_CATEGORIES = new Set<VisualToken["category"]>([
+  "style",
+  "palette",
+  "gameplay-color",
+  "lighting",
+  "atmosphere",
+  "shape",
+  "prohibited-style",
+  "camera",
+  "readability",
+  "project-world",
+]);
+
+/** A focused direction change the capsule has no clause for — a material or
+ *  a surface note — is still the user's explicit, approved ask, so it rides
+ *  along instead of vanishing with the material list it used to sit in. */
+const focusedRevisionClause = (tokens: VisualToken[]): string => {
+  const token = tokens.find(
+    ({ role, category }) =>
+      role === "focused revision" &&
+      !CAPSULE_REPRESENTED_CATEGORIES.has(category),
+  );
+  return token ? clause(`Approved ${token.category}`, token.value) : "";
+};
+
+/**
+ * The one Color & Mood formatter for M1. Every concept prompt carries exactly
+ * this much of the approved direction: the style claim, the colors that
+ * matter, the light, the air, the forms, and what to stay away from.
+ */
+export const buildConceptStyleCapsule = (tokens: VisualToken[]): string => {
+  const carriers = valuesOf(tokens, "palette").slice(0, CAPSULE_PALETTE_LIMIT);
+  const focus = firstValue(tokens, "gameplay-color");
+  const palette = [
+    carriers.map(collapse).join(", "),
+    focus ? `gameplay focus ${collapse(focus)}` : "",
+  ]
+    .filter(Boolean)
+    .join("; ");
+  return fitParts(
+    [
+      clause("Style", firstValue(tokens, "style")),
+      focusedRevisionClause(tokens),
+      palette ? `Palette: ${palette}.` : "",
+      clause("Light", firstValue(tokens, "lighting")),
+      clause("Air", firstValue(tokens, "atmosphere")),
+      clause("Forms", firstValue(tokens, "shape")),
+      clause("Avoid", firstValue(tokens, "prohibited-style")),
+    ],
+    CONCEPT_STYLE_CAPSULE_MAX_CHARS,
+  ).join(" ");
+};
+
+/** What this image must show: the slot's job, the world it belongs to, the
+ *  interaction it has to read as, how it is framed, and the one or two
+ *  things that must survive. No art direction — that is the capsule's job. */
+const conceptSubject = (
+  slot: ConceptPlan["slots"][number],
+  spec: GameDesignSpec,
+  tokens: VisualToken[],
+): string =>
+  fitParts(
+    [
+      `Concept image — ${collapse(slot.name)}: ${firstSentence(slot.purpose)}.`,
+      clause("World", firstValue(tokens, "project-world")),
+      clause("Core interaction", spec.objective),
+      clause("Camera", firstValue(tokens, "camera")),
+      clause("Must hold", mustHoldRules(tokens)),
+    ],
+    CONCEPT_SUBJECT_MAX_CHARS,
+  ).join(" ");
 
 const conceptPrompt = (
   slot: ConceptPlan["slots"][number],
   spec: GameDesignSpec,
   tokens: VisualToken[],
   regenerationNote?: string,
-): string =>
-  fitConceptPrompt(
-    [
-      `Production concept for ${slot.name}.`,
-      `Purpose: ${slot.purpose}.`,
-      `Gameplay context: ${spec.objective}`,
-      ...tokens
-        .filter((token) => token.role !== "superseded")
-        .map(
-          (token) =>
-            `${token.category}${token.role ? ` (${token.role})` : ""}: ${token.value}.`,
-        ),
-    ],
-    /* The alternate request is the user's explicit ask — it rides in the
-       always-kept tail so overflow can only ever cost token detail. */
-    regenerationNote
-      ? `${focusedAlternateRequest(regenerationNote)} ${PROMPT_GUARD}`
-      : PROMPT_GUARD,
-  );
+): string => {
+  const approved = tokens.filter((token) => token.role !== "superseded");
+  const prompt = `${conceptSubject(slot, spec, approved)} ${PROMPT_GUARD}\n\n${buildConceptStyleCapsule(approved)}`;
+  /* The alternate request is the user's explicit ask, so it lands last —
+     the same place the confirmed-prompt path appends it. */
+  return regenerationNote
+    ? `${prompt} ${focusedAlternateRequest(regenerationNote)}`
+    : prompt;
+};
 
 const conceptBasePrompt = (
   slot: ConceptPlan["slots"][number],
@@ -1421,7 +1884,14 @@ export class M1CreativeDevelopment {
       brief: string;
       interrogation: RevisionRef;
       roundId: string;
-      answers: Array<{ questionId: string; value: string }>;
+      answers: Array<{
+        questionId: string;
+        value: string;
+        /** Images pasted into this answer's box, already resolved to refs
+         *  this project owns. Recorded on the answer either way; whether a
+         *  model ever looks at them is decided by the route. */
+        attachments?: ArtifactRef[];
+      }>;
     },
   ): Promise<RevisionRef> {
     const state = InterrogationStateSchema.parse(
@@ -1454,6 +1924,9 @@ export class M1CreativeDevelopment {
       questionId: answer.questionId,
       value: answer.value,
       origin: { source: "user" as const, reference: context.roundId },
+      ...(answer.attachments && answer.attachments.length > 0
+        ? { attachments: answer.attachments }
+        : {}),
     }));
     const completedRound = { ...round, answers, completedAt: now() };
     const priorRounds = state.rounds.slice(0, -1);
@@ -1474,13 +1947,12 @@ export class M1CreativeDevelopment {
     );
   }
 
-  async confirmSharedUnderstanding(
-    context: M1CreativeContext & {
-      brief: string;
-      interrogation: RevisionRef;
-      confirmedBy: string;
-    },
-  ): Promise<SharedUnderstandingArtifacts> {
+  /** The interview state, or a refusal. Every step that reads the interview
+   *  as finished — proposing names, writing the spec — goes through here, so
+   *  the naming conversation cannot start on an unresolved frontier either. */
+  private signedOffInterrogation(
+    context: M1CreativeContext & { brief: string; interrogation: RevisionRef },
+  ): InterrogationState {
     const state = InterrogationStateSchema.parse(
       this.repository.resolveRevision<InterrogationState>(
         context.interrogation,
@@ -1501,6 +1973,147 @@ export class M1CreativeDevelopment {
       throw new Error(
         "Shared understanding cannot be confirmed while the decision tree has an eligible unresolved branch.",
       );
+    return state;
+  }
+
+  /** One batch of candidate titles, drafted from the signed-off interview.
+   *  Steering is a reply, not a reroll: `previous` carries the batches the
+   *  user has already turned down so a fresh batch avoids them. */
+  async proposeGameNames(
+    context: M1CreativeContext & {
+      brief: string;
+      interrogation: RevisionRef;
+      previous?: RevisionRef;
+      feedback?: string;
+      /** Images pasted into the steer box, already resolved to refs this
+       *  project owns. */
+      attachments?: ArtifactRef[];
+    },
+  ): Promise<RevisionRef> {
+    const state = this.signedOffInterrogation(context);
+    const previousSet = context.previous
+      ? GameNameCandidateSetSchema.parse(
+          this.repository.resolveRevision<GameNameCandidateSet>(
+            context.previous,
+          ),
+        )
+      : undefined;
+    const round = (previousSet?.round ?? 0) + 1;
+    const taken = this.proposedGameNames(context.previous);
+    const write = (
+      candidates: Array<{ name: string; rationale: string }>,
+      provider: string,
+    ): RevisionRef =>
+      writeRevision(
+        this.repository,
+        context,
+        "game-name-candidates",
+        "game-name-candidate-set",
+        GameNameCandidateSetSchema.parse({
+          /* Deliberately free of the project id: two replay runs of the same
+             brief must produce byte-identical artifacts, and the batch is
+             already scoped by the entity it is written under. */
+          candidateSetId: stableId(
+            "names",
+            `${round}:${candidates.map((candidate) => candidate.name).join("|")}`,
+          ),
+          round,
+          ...(context.feedback ? { feedback: context.feedback } : {}),
+          candidates: candidates.map((candidate) => ({
+            candidateId: stableId("name", `${round}:${candidate.name}`),
+            name: candidate.name,
+            rationale: candidate.rationale,
+          })),
+          sourceInterrogationRevisionId: context.interrogation.revisionId,
+          ...(context.previous
+            ? { previousCandidateSetRevisionId: context.previous.revisionId }
+            : {}),
+          provider,
+        }),
+      );
+    if (!this.isLive(context))
+      return write(
+        draftGameNames({
+          brief: context.brief,
+          state,
+          round,
+          ...(context.feedback ? { feedback: context.feedback } : {}),
+          taken,
+        }),
+        "replay",
+      );
+    const steer = context.attachments ?? [];
+    const inputHash = hashText(
+      `${interrogationTranscriptKey(context.brief, state.rounds)}:names:${round}:${context.feedback ?? ""}:${steer
+        .map(({ sha256 }) => sha256)
+        .join(",")}`,
+    );
+    const deliverSteerImages =
+      steer.length > 0 && readsImageAttachments(this.textProvider(context));
+    const frames = attachmentFrames(
+      this.repository,
+      steer.map((artifact, index) => ({
+        label: gameNameAttachmentLabel(index),
+        artifact,
+      })),
+    );
+    const result = await ensureDurableStructured({
+      repository: this.repository,
+      execution: this.execution,
+      projectId: context.projectId,
+      runId: context.runId,
+      operation: M1_TEXT_OPERATIONS.gameNames,
+      mode: this.textMode(context),
+      provider: this.textProvider(context),
+      idempotencyKey: this.textKey(
+        context,
+        M1_TEXT_OPERATIONS.gameNames,
+        inputHash,
+      ),
+      schema: LiveGameNamesOutputSchema,
+      systemPrompt: gameNamesSystemPrompt,
+      prompt: gameNamesPrompt({
+        brief: context.brief,
+        rounds: state.rounds,
+        ...(context.feedback ? { feedback: context.feedback } : {}),
+        rejected: taken,
+        ...(deliverSteerImages ? { steerImages: steer.length } : {}),
+      }),
+      ...(frames.length > 0 ? { frames } : {}),
+      persist: (value) => ({
+        revision: write(value.candidates, this.textProvider(context)),
+        payload: { round },
+      }),
+    });
+    return result.revision;
+  }
+
+  /** Every title already offered, walking back through the steered batches. */
+  private proposedGameNames(latest?: RevisionRef): string[] {
+    const names: string[] = [];
+    let cursor = latest;
+    for (let depth = 0; cursor && depth < 12; depth += 1) {
+      const set = GameNameCandidateSetSchema.parse(
+        this.repository.resolveRevision<GameNameCandidateSet>(cursor),
+      );
+      names.push(...set.candidates.map((candidate) => candidate.name));
+      cursor = set.previousCandidateSetRevisionId
+        ? this.repository.getRevision(set.previousCandidateSetRevisionId)
+        : undefined;
+    }
+    return names;
+  }
+
+  async confirmSharedUnderstanding(
+    context: M1CreativeContext & {
+      brief: string;
+      interrogation: RevisionRef;
+      confirmedBy: string;
+      /** The title the user decided on, when the naming step ran. */
+      gameName?: string;
+    },
+  ): Promise<SharedUnderstandingArtifacts> {
+    const state = this.signedOffInterrogation(context);
     if (this.isLive(context))
       return await this.confirmLiveSharedUnderstanding(context, state);
     const confirmed = InterrogationStateSchema.parse({
@@ -1514,7 +2127,7 @@ export class M1CreativeDevelopment {
     return this.persistSharedUnderstanding(
       context,
       confirmed,
-      buildGameDesignSpec(context.brief, confirmed),
+      buildGameDesignSpec(context.brief, confirmed, context.gameName),
     );
   }
 
@@ -2359,6 +2972,26 @@ export class M1CreativeDevelopment {
     const inputHash = hashText(
       `${interrogationTranscriptKey(context.brief, rounds)}:${roundIndex}`,
     );
+    /* Only the round just answered ships its images. Earlier rounds already
+       had their turn in front of a model, and resending every picture every
+       round would grow the call without adding information. */
+    const answeredRound = rounds.at(-1);
+    const attached = new Set(
+      (answeredRound?.answers ?? [])
+        .filter((answer) => (answer.attachments?.length ?? 0) > 0)
+        .map((answer) => answer.questionId),
+    );
+    /* Frames are handed over whatever the route is, so the submission ledger
+       records that images existed even when nothing could read them. Only the
+       transcript wording depends on the provider, because that is the part
+       that would otherwise tell a text-only model to look at a picture. */
+    const frames = attachmentFrames(
+      this.repository,
+      interrogationAttachmentFrameRefs(rounds, attached),
+    );
+    const delivered = readsImageAttachments(this.textProvider(context))
+      ? attached
+      : new Set<string>();
     const result = await ensureDurableStructured({
       repository: this.repository,
       execution: this.execution,
@@ -2374,7 +3007,13 @@ export class M1CreativeDevelopment {
       ),
       schema: LiveInterrogationNextRoundSchema,
       systemPrompt: interrogationNextRoundSystemPrompt,
-      prompt: interrogationNextRoundPrompt(context.brief, rounds, roundIndex),
+      prompt: interrogationNextRoundPrompt(
+        context.brief,
+        rounds,
+        roundIndex,
+        delivered,
+      ),
+      ...(frames.length > 0 ? { frames } : {}),
       persist: (value) => {
         const frontier = materializeLiveQuestions(
           context.brief,
@@ -2403,11 +3042,12 @@ export class M1CreativeDevelopment {
       brief: string;
       interrogation: RevisionRef;
       confirmedBy: string;
+      gameName?: string;
     },
     state: InterrogationState,
   ): Promise<SharedUnderstandingArtifacts> {
     const inputHash = hashText(
-      `${interrogationTranscriptKey(context.brief, state.rounds)}:confirm`,
+      `${interrogationTranscriptKey(context.brief, state.rounds)}:confirm:${context.gameName ?? ""}`,
     );
     const result = await ensureDurableStructured({
       repository: this.repository,
@@ -2424,9 +3064,18 @@ export class M1CreativeDevelopment {
       ),
       schema: LiveGameDesignSpecOutputSchema,
       systemPrompt: gameDesignSystemPrompt,
-      prompt: gameDesignSpecPrompt(context.brief, state.rounds),
+      prompt: gameDesignSpecPrompt(
+        context.brief,
+        state.rounds,
+        context.gameName,
+      ),
       persist: (value) => {
-        const spec = GameDesignSpecSchema.parse(value);
+        /* The name is the user's decision, not the model's. The prompt asks
+           for it, and this makes sure a model that paraphrased it still ends
+           up titled with exactly what the user chose. */
+        const spec = GameDesignSpecSchema.parse(
+          context.gameName ? { ...value, title: context.gameName } : value,
+        );
         const confirmed = InterrogationStateSchema.parse({
           ...state,
           sharedUnderstanding: {

@@ -10,6 +10,7 @@ import {
 } from "./asset-generation.js";
 import {
   buildMeshyRequest,
+  buildMeshyRetextureRequest,
   MeshyAssetAdapter,
   meshyMultiviewCapability,
 } from "./meshy-adapter.js";
@@ -179,19 +180,17 @@ describe("asset request fingerprint", () => {
 
 describe("Meshy adapter contract", () => {
   it("meshy_capability_supports_known_multiview_models_with_max_four", () => {
-    for (const model of ["meshy-6", "meshy-7"]) {
-      expect(meshyMultiviewCapability(model)).toEqual(
-        expect.objectContaining({
-          supported: true,
-          maxViews: 4,
-          primaryRole: "front",
-          payloadShape: "ordered-images",
-        }),
-      );
-    }
-    expect(meshyMultiviewCapability("meshy-5")).toEqual({
+    expect(meshyMultiviewCapability("meshy-6")).toEqual(
+      expect.objectContaining({
+        supported: true,
+        maxViews: 4,
+        primaryRole: "front",
+        payloadShape: "ordered-images",
+      }),
+    );
+    expect(meshyMultiviewCapability("meshy-7")).toEqual({
       supported: false,
-      reason: "Meshy model meshy-5 has no declared multiview profile.",
+      reason: "Meshy model meshy-7 has no declared multiview profile.",
     });
   });
 
@@ -207,6 +206,71 @@ describe("Meshy adapter contract", () => {
     expect(
       Buffer.from(String(imageUrls[0]).split(",")[1]!, "base64").toString(),
     ).toBe("front");
+  });
+
+  it("meshy_m2_geometry_payload_preserves_geometry_and_requests_qa_views", () => {
+    const job = {
+      ...multiviewJob(),
+      stage: "geometry" as const,
+      poseMode: "a-pose" as const,
+      qualityTarget: { maxTriangles: 250_000 },
+    };
+    const request = buildMeshyRequest(job, "meshy-6", (image) =>
+      new TextEncoder().encode(image.artifactId),
+    );
+
+    expect(request.body).toMatchObject({
+      ai_model: "meshy-6",
+      should_texture: false,
+      should_remesh: false,
+      image_enhancement: true,
+      auto_size: true,
+      origin_at: "bottom",
+      alpha_thumbnail: true,
+      multi_view_thumbnails: true,
+      pose_mode: "a-pose",
+    });
+    expect(request.body).not.toHaveProperty("texture_resolution");
+    expect(request.body).not.toHaveProperty("target_polycount");
+    expect(
+      new MeshyAssetAdapter(
+        {} as ProjectRepository,
+        "meshy-6",
+      ).requestFingerprint(job),
+    ).not.toBe(
+      new MeshyAssetAdapter(
+        {} as ProjectRepository,
+        "meshy-6",
+      ).requestFingerprint({ ...multiviewJob(), stage: "complete" }),
+    );
+  });
+
+  it("meshy_6_retexture_uses_the_front_reference_and_4k_pbr", () => {
+    const source = artifact("geometry", "d".repeat(64));
+    const style = artifact("front-style", "e".repeat(64));
+    const request = buildMeshyRetextureRequest(
+      {
+        projectId: "project-1",
+        assetId: "hero",
+        sourceModel: { ...source, mediaType: "model/gltf-binary" },
+        styleImage: style,
+      },
+      (input) => new TextEncoder().encode(input.artifactId),
+    );
+
+    expect(request).toMatchObject({
+      ai_model: "meshy-6",
+      enable_original_uv: true,
+      enable_pbr: true,
+      texture_resolution: "4k",
+      remove_lighting: true,
+      target_formats: ["glb"],
+      alpha_thumbnail: true,
+    });
+    expect(request.model_url).toMatch(
+      /^data:application\/octet-stream;base64,/,
+    );
+    expect(request.image_style_url).toMatch(/^data:image\/png;base64,/);
   });
 
   it("meshy_single_payload_retains_current_m0_body", () => {
@@ -246,7 +310,7 @@ describe("Meshy adapter contract", () => {
 
   it("inspect_uses_stored_meshy_multi_endpoint", async () => {
     process.env.MESHY_API_KEY = "test-key";
-    process.env.FULCRUM_MESHY_MODEL = "meshy-7";
+    process.env.FULCRUM_MESHY_MODEL = "meshy-6";
     const fetchMock = vi.fn(async (_request: string | URL | Request) =>
       Response.json({ status: "IN_PROGRESS", progress: 50 }),
     );

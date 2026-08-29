@@ -83,6 +83,11 @@ export type AssetImageInput =
 export type AssetGenerationJob = {
   projectId: string;
   assetId: string;
+  stage?: "complete" | "geometry";
+  poseMode?: "a-pose" | "t-pose";
+  qualityTarget?: {
+    maxTriangles: number;
+  };
   imageInput: AssetImageInput;
   regeneration?: {
     attemptNumber: number;
@@ -163,7 +168,8 @@ export const m2AssetIdempotencyKey = (input: {
 
 export type AdapterJobRef = {
   taskId: string;
-  jobKind: "single-image" | "multi-image";
+  jobKind: "single-image" | "multi-image" | "retexture";
+  stage?: "complete" | "geometry" | "texture";
 };
 
 export const adapterJobRefFromSubmissionPayload = (
@@ -171,12 +177,26 @@ export const adapterJobRefFromSubmissionPayload = (
   payload: Record<string, unknown>,
 ): AdapterJobRef => ({
   taskId,
-  jobKind: payload.jobKind === "multi-image" ? "multi-image" : "single-image",
+  jobKind:
+    payload.jobKind === "multi-image"
+      ? "multi-image"
+      : payload.jobKind === "retexture"
+        ? "retexture"
+        : "single-image",
+  ...(payload.pipelineStage === "geometry" ||
+  payload.pipelineStage === "texture" ||
+  payload.pipelineStage === "complete"
+    ? { stage: payload.pipelineStage }
+    : {}),
 });
 
 export type ExternalJobState =
   | { status: "pending"; resumeAfter: string }
-  | { status: "failed"; error: string }
+  | {
+      status: "failed";
+      error: string;
+      providerMetadata?: Record<string, unknown>;
+    }
   | {
       status: "ready";
       asset: {
@@ -185,6 +205,22 @@ export type ExternalJobState =
         model: string;
         externalJobId: string;
         costUsd: number;
+        costCredits?: number;
+        generationClaims?: {
+          textured: boolean;
+          textureChannels: Array<
+            | "base-color"
+            | "metallic-roughness"
+            | "normal"
+            | "occlusion"
+            | "emissive"
+          >;
+        };
+        supportingArtifacts?: Array<{
+          role: string;
+          mediaType: string;
+          bytes: Uint8Array;
+        }>;
         providerMetadata?: Record<string, unknown>;
       };
     };

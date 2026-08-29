@@ -45,6 +45,7 @@ class ReplayAssetAdapter implements AssetGenerationAdapter {
       taskId,
       jobKind:
         job.imageInput.kind === "multiview" ? "multi-image" : "single-image",
+      stage: job.stage ?? "complete",
     };
   }
 
@@ -66,6 +67,7 @@ class ReplayAssetAdapter implements AssetGenerationAdapter {
           : "parametric-reliquary-v1",
         externalJobId: job.taskId,
         costUsd: 0,
+        generationClaims: { textured: false, textureChannels: [] },
       },
     };
   }

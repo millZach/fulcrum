@@ -6,6 +6,8 @@ import {
   EvaluationFindingSchema,
   NormalizedCropSchema,
   TurntableManifestSchema,
+  type ArtifactRef,
+  type AssetClassification,
   type EvaluationFinding,
 } from "@fulcrum/domain";
 import type { StructuredVisionExecution } from "@fulcrum/execution";
@@ -14,7 +16,7 @@ import { z } from "zod";
 import replayCatalogJson from "./replay-vision-catalog.json" with { type: "json" };
 
 export const VisionRubricSchema = z.object({
-  rubricVersion: z.literal("asset-turntable-v1"),
+  rubricVersion: z.enum(["asset-turntable-v1", "asset-geometry-turntable-v1"]),
   criteria: z
     .array(
       z.object({
@@ -29,7 +31,8 @@ export const VisionRubricSchema = z.object({
         failureSeverity: z.enum(["minor", "major", "critical"]),
       }),
     )
-    .length(5),
+    .min(4)
+    .max(5),
 });
 export type VisionRubric = z.infer<typeof VisionRubricSchema>;
 
@@ -68,6 +71,14 @@ export const ASSET_VISION_RUBRIC_V1: VisionRubric = VisionRubricSchema.parse({
     },
   ],
 });
+
+export const ASSET_GEOMETRY_VISION_RUBRIC_V1: VisionRubric =
+  VisionRubricSchema.parse({
+    rubricVersion: "asset-geometry-turntable-v1",
+    criteria: ASSET_VISION_RUBRIC_V1.criteria.filter(
+      ({ criterionId }) => criterionId !== "material-separation",
+    ),
+  });
 
 export const VisionRequestDescriptorSchema = z.object({
   assetRevisionId: z.string().min(1),
@@ -443,6 +454,205 @@ export class LiveVisionEvaluationPort implements VisionEvaluationPort {
     );
     return {
       findings,
+      provider: result.provider,
+      model: result.model,
+      costUsd: 0,
+    };
+  }
+}
+
+/* --------------------------- biped classification -------------------------- */
+
+export const BipedDetectionVerdictSchema = z.object({
+  biped: z.boolean(),
+  confidence: z.number().min(0).max(1),
+  rationale: z.string().trim().min(1).max(600),
+});
+export type BipedDetectionVerdict = z.infer<typeof BipedDetectionVerdictSchema>;
+
+export type BipedDetectionInput = {
+  assetId: string;
+  name: string;
+  description: string;
+  classification: AssetClassification;
+  frontImage: ArtifactRef;
+  frontImageBytes: Uint8Array;
+};
+
+export interface BipedDetectionPort {
+  detect(
+    input: BipedDetectionInput,
+    idempotencyKey: string,
+  ): Promise<{
+    verdict: BipedDetectionVerdict;
+    provider: string;
+    model: string;
+    costUsd: number;
+  }>;
+}
+
+const assertBipedImageIntegrity = (input: BipedDetectionInput): void => {
+  const image = ArtifactRefSchema.parse(input.frontImage);
+  if (image.mediaType !== "image/png")
+    throw new VisionEvaluationError(
+      "biped-front-image-format",
+      "Biped detection requires the approved front view as a PNG.",
+    );
+  if (sha256(input.frontImageBytes) !== image.sha256)
+    throw new VisionEvaluationError(
+      "biped-front-image-integrity",
+      "The approved front view failed content-hash verification.",
+    );
+};
+
+const BIPED_TERMS = [
+  "biped",
+  "bipedal",
+  "boss",
+  "character",
+  "guard",
+  "guardian",
+  "humanoid",
+  "hunter",
+  "knight",
+  "person",
+  "smith",
+  "soldier",
+  "warrior",
+  "warden",
+] as const;
+
+const NON_BIPED_TERMS = [
+  "building",
+  "chest",
+  "dragon",
+  "lantern",
+  "quadruped",
+  "reliquary",
+  "serpent",
+  "ship",
+  "spider",
+  "terrain",
+  "vehicle",
+  "weapon",
+] as const;
+
+const matchingTerms = (text: string, terms: readonly string[]): string[] =>
+  terms.filter((term) => new RegExp(`\\b${term}\\b`, "i").test(text));
+
+/**
+ * Replay uses the same metadata and front-image integrity checks as live, but
+ * makes the verdict locally. The digest only supplies a stable confidence
+ * nudge, so repeated runs cannot drift while fixture wording stays unchanged.
+ */
+export const detectBipedDeterministically = (
+  input: BipedDetectionInput,
+): BipedDetectionVerdict => {
+  assertBipedImageIntegrity(input);
+  const text = `${input.name} ${input.description}`.toLowerCase();
+  const positive = matchingTerms(text, BIPED_TERMS);
+  const negative = matchingTerms(text, NON_BIPED_TERMS);
+  const biped =
+    input.classification === "hero" &&
+    positive.length > 0 &&
+    positive.length >= negative.length;
+  const seededNudge =
+    Number.parseInt(
+      sha256(
+        JSON.stringify([
+          input.assetId,
+          input.name,
+          input.description,
+          input.classification,
+          input.frontImage.sha256,
+        ]),
+      ).slice(0, 4),
+      16,
+    ) /
+    0xffff /
+    20;
+  const confidence = Math.min(
+    0.98,
+    (biped ? 0.82 : positive.length === 0 ? 0.74 : 0.68) + seededNudge,
+  );
+  return BipedDetectionVerdictSchema.parse({
+    biped,
+    confidence,
+    rationale: biped
+      ? `Replay metadata identifies a humanoid character (${positive.join(", ")}).`
+      : negative.length > 0
+        ? `Replay metadata points to a non-biped asset (${negative.join(", ")}).`
+        : "Replay metadata contains no biped or humanoid character terms.",
+  });
+};
+
+export class ReplayBipedDetectionPort implements BipedDetectionPort {
+  async detect(
+    input: BipedDetectionInput,
+    idempotencyKey: string,
+  ): Promise<{
+    verdict: BipedDetectionVerdict;
+    provider: string;
+    model: string;
+    costUsd: number;
+  }> {
+    void idempotencyKey;
+    return {
+      verdict: detectBipedDeterministically(input),
+      provider: "fulcrum-replay",
+      model: "replay-biped-heuristic-v1",
+      costUsd: 0,
+    };
+  }
+}
+
+export class LiveBipedDetectionPort implements BipedDetectionPort {
+  constructor(
+    private readonly execution: StructuredVisionExecution,
+    private readonly provider: "openai" | "openai-api",
+    private readonly cwd: string,
+    private readonly model?: string,
+  ) {}
+
+  async detect(
+    input: BipedDetectionInput,
+    idempotencyKey: string,
+  ): Promise<{
+    verdict: BipedDetectionVerdict;
+    provider: string;
+    model: string;
+    costUsd: number;
+  }> {
+    assertBipedImageIntegrity(input);
+    const result = await this.execution.generateStructuredVision({
+      provider: this.provider,
+      ...(this.model ? { model: this.model } : {}),
+      cwd: this.cwd,
+      systemPrompt: [
+        "You classify whether a game asset can use a humanoid biped auto-rigger.",
+        "A biped has one torso, one head, two primary legs and a humanoid limb layout; armor, robots and stylized proportions still count.",
+        "Quadrupeds, serpents, spiders, props and ambiguous silhouettes do not count.",
+        "Use the front image as primary evidence and the asset metadata only as supporting context.",
+        "Return a concise rationale grounded in visible anatomy.",
+      ].join(" "),
+      prompt: JSON.stringify({
+        assetId: input.assetId,
+        name: input.name,
+        description: input.description,
+        classification: input.classification,
+      }),
+      frames: [
+        {
+          label: "approved front reference",
+          mediaType: "image/png",
+          bytes: input.frontImageBytes,
+        },
+      ],
+      schema: BipedDetectionVerdictSchema,
+      idempotencyKey,
+    });
+    return {
+      verdict: BipedDetectionVerdictSchema.parse(result.value),
       provider: result.provider,
       model: result.model,
       costUsd: 0,

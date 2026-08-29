@@ -200,6 +200,32 @@ describe("inspectParsedAsset", () => {
     expect(result.measurements.topology.nonManifoldEdges).toBe(1);
     expect(result.measurements.topology.inconsistentWindingEdges).toBe(1);
     expect(result.measurements.topology.boundaryEdges).toBeGreaterThan(0);
+    expect(result.gates).toContainEqual(
+      expect.objectContaining({
+        id: "topology-non-manifold-edges",
+        passed: true,
+        threshold: "<= 250",
+      }),
+    );
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        findingCode: "topology.non-manifold-edge",
+        severity: "minor",
+      }),
+    );
+
+    const functional = inspectParsedAsset(
+      document,
+      asset({ classification: "functional" }),
+      DEFAULT_ASSET_POLICIES.functional,
+    );
+    expect(functional.gates).toContainEqual(
+      expect.objectContaining({
+        id: "topology-non-manifold-edges",
+        passed: false,
+        threshold: "<= 0",
+      }),
+    );
   });
 
   it("counts_unreferenced_vertices_and_normal_mismatches", () => {

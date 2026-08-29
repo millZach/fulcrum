@@ -56,6 +56,40 @@ const openProject = (
   return { state, runId };
 };
 
+const openMeshyCreditProject = (repository: ProjectRepository) => {
+  const projectId = "meshy-credit-project";
+  const runId = "meshy-credit-run";
+  const createdAt = "2026-01-01T00:00:00.000Z";
+  repository.reserveProject(projectId, createdAt);
+  const brief = repository.writeRevision({
+    projectId,
+    entityId: `${projectId}:brief`,
+    kind: "game-brief",
+    value: { text: "A live Meshy credit-ledger fixture." },
+    runId,
+  });
+  repository.createProject({
+    schemaVersion: 1,
+    milestone: "m2",
+    projectId,
+    name: "Meshy credit fixture",
+    mode: "live",
+    assetProvider: "meshy",
+    status: "active",
+    stage: "interrogation",
+    runId,
+    budgetUsd: 0,
+    spentUsd: 0,
+    meshyCreditBudget: 30,
+    meshyCreditsReserved: 0,
+    meshyCreditsConsumed: 0,
+    brief,
+    createdAt,
+    updatedAt: createdAt,
+  });
+  return { projectId, runId };
+};
+
 const openAssetPlanApprovalProject = (repository: ProjectRepository) => {
   const projectId = "asset-plan-project";
   const runId = "asset-plan-run";
@@ -250,6 +284,82 @@ describe("ProjectRepository asset-plan revisions and approvals", () => {
   });
 });
 
+describe("ProjectRepository Meshy credit accounting", () => {
+  it("reserves_and_reconciles_each_paid_submission_exactly_once", () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const { projectId } = openMeshyCreditProject(repository);
+    const submission = repository.recordSubmissionIntent({
+      projectId,
+      operation: "m2-meshy-geometry",
+      provider: "meshy",
+      idempotencyKey: "meshy-geometry-1",
+      payload: { pipelineStage: "geometry" },
+    });
+
+    repository.reserveMeshySubmissionCredits(
+      submission.requestId,
+      20,
+      "Meshy 6 geometry",
+    );
+    repository.reserveMeshySubmissionCredits(
+      submission.requestId,
+      20,
+      "Meshy 6 geometry",
+    );
+    expect(repository.getProject(projectId)).toMatchObject({
+      meshyCreditBudget: 30,
+      meshyCreditsReserved: 20,
+      meshyCreditsConsumed: 0,
+    });
+
+    repository.reconcileMeshySubmissionCredits(
+      submission.requestId,
+      18,
+      "Meshy 6 geometry",
+    );
+    repository.reconcileMeshySubmissionCredits(
+      submission.requestId,
+      18,
+      "Meshy 6 geometry",
+    );
+    expect(repository.getProject(projectId)).toMatchObject({
+      meshyCreditBudget: 30,
+      meshyCreditsReserved: 0,
+      meshyCreditsConsumed: 18,
+    });
+    expect(
+      repository
+        .listEvents(projectId)
+        .filter(({ type }) => type === "meshy-credits.reserved"),
+    ).toHaveLength(1);
+    expect(
+      repository
+        .listEvents(projectId)
+        .filter(({ type }) => type === "meshy-credits.reconciled"),
+    ).toHaveLength(1);
+
+    const overBudget = repository.recordSubmissionIntent({
+      projectId,
+      operation: "m2-meshy-retexture",
+      provider: "meshy",
+      idempotencyKey: "meshy-texture-1",
+      payload: { pipelineStage: "texture" },
+    });
+    expect(() =>
+      repository.reserveMeshySubmissionCredits(
+        overBudget.requestId,
+        13,
+        "Meshy 6 4K Retexture",
+      ),
+    ).toThrow("12 remain");
+    expect(repository.getProject(projectId)).toMatchObject({
+      meshyCreditsReserved: 0,
+      meshyCreditsConsumed: 18,
+    });
+    repository.close();
+  });
+});
+
 describe("ProjectRepository.ensureRevision", () => {
   it("returns_the_same_revision_for_the_same_operation_key", () => {
     const repository = new ProjectRepository(temporaryRoot());
@@ -434,5 +544,64 @@ describe("ProjectRepository workflow checkpoints", () => {
     ).toEqual([1, 2, 3]);
     repository.close();
     vi.useRealTimers();
+  });
+});
+
+describe("blocked reason normalization", () => {
+  it("reads a rejection block persisted with recoverable false as recoverable", () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const { state } = openProject(repository);
+    repository.saveProject({
+      ...state,
+      status: "blocked",
+      stage: "blocked",
+      blockedReason: {
+        code: "visual-direction-not-approved",
+        message: "The visual direction was not approved.",
+        recoverable: false,
+      },
+    });
+
+    expect(repository.getProject(state.projectId).blockedReason).toEqual({
+      code: "visual-direction-not-approved",
+      message: "The visual direction was not approved.",
+      recoverable: true,
+      failureKind: "user-action-required",
+      resumeStage: "visual-direction-approval",
+      reviewGate: "visual-direction",
+    });
+    expect(
+      repository
+        .listProjects()
+        .find(({ projectId }) => projectId === state.projectId)?.blockedReason
+        ?.recoverable,
+    ).toBe(true);
+    repository.close();
+  });
+
+  it("leaves a genuine failure block unrecoverable", () => {
+    const repository = new ProjectRepository(temporaryRoot());
+    const { state } = openProject(repository);
+    repository.saveProject({
+      ...state,
+      status: "blocked",
+      stage: "blocked",
+      blockedReason: {
+        code: "workflow-phase-failed",
+        message: "The provider returned an unusable response.",
+        recoverable: false,
+        failureKind: "terminal",
+      },
+    });
+
+    expect(repository.getProject(state.projectId).blockedReason).toMatchObject({
+      code: "workflow-phase-failed",
+      recoverable: false,
+      failureKind: "terminal",
+    });
+    expect(
+      repository.getProject(state.projectId).blockedReason?.reviewGate,
+    ).toBeUndefined();
+    repository.close();
   });
 });

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { ConceptProduction, CreativeDevelopment } from "@fulcrum/creative";
 import {
+  approvalGateBlock,
   ApprovalInputSchema,
   AssetProviderSchema,
   ConfigurationStatusSchema,
@@ -289,7 +290,9 @@ export class M0Coordinator {
         state.stage,
       ) &&
         state.status === "active") ||
-      (state.status === "blocked" && state.blockedReason?.recoverable === true)
+      (state.status === "blocked" &&
+        state.blockedReason?.recoverable === true &&
+        !approvalGateBlock(state))
     ) {
       await this.macro.advance(projectId, "explicit-advance");
     }
@@ -350,6 +353,17 @@ export class M0Coordinator {
       await this.advance(projectId);
       return this.snapshot(projectId);
     }
+    if (decision.decision === "rejected") {
+      // A rejection reopens the gate on the same concept; it never ends the run.
+      this.repository.saveProject({
+        ...state,
+        directionApproval: decision,
+        status: "awaiting-approval",
+        stage: "visual-direction-approval",
+        blockedReason: undefined,
+      });
+      return this.snapshot(projectId);
+    }
     if (decision.decision !== "approved") {
       this.repository.saveProject({
         ...state,
@@ -361,6 +375,8 @@ export class M0Coordinator {
           message:
             "The visual direction was not approved. Concept replacement is the next bounded recovery slice.",
           recoverable: true,
+          reviewGate: "visual-direction",
+          resumeStage: "visual-direction-approval",
         },
       });
       return this.snapshot(projectId);

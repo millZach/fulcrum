@@ -29,7 +29,9 @@ import {
   type StructuredModelExecution,
   assetPlanIdempotencyKey,
   createAssetPlannerForTest,
+  deriveReplayAssetPlanAmendmentDraft,
   deriveReplayAssetPlanDraft,
+  materializeAssetPlanAmendment,
   materializeAssetPlan,
   validateAssetPlanAgainstApprovedInputs,
 } from "./asset-planner.js";
@@ -45,6 +47,7 @@ describe("asset-plan live JSON Schema", () => {
       "rationale",
       "sourceConceptSlotIds",
       "dependsOnAssetKeys",
+      "poseMode",
       "procedure",
       "acceptanceCriteria",
     ];
@@ -92,6 +95,7 @@ const proceduralWireDraft = (
       rationale: "Repeated columns are generated from one approved profile.",
       sourceConceptSlotIds: ["gameplay-anchor"],
       dependsOnAssetKeys: [],
+      poseMode: null,
       procedure: {
         generatorId: "radial-columns-v1",
         parameters,
@@ -593,6 +597,148 @@ describe("replay asset-plan derivation and materialization", () => {
       previousPlan.revisionId,
     );
   });
+
+  it("replay_section_amendment_is_deterministic_for_the_same_seed_and_request", () => {
+    const { plan } = initialReplayPlan();
+    const input = {
+      projectId: "project-1",
+      currentPlan: plan,
+      section: "hero" as const,
+      request: "I'd like two more character slots",
+      seed: "parked-world-seed",
+    };
+
+    const first = deriveReplayAssetPlanAmendmentDraft(input);
+    const second = deriveReplayAssetPlanAmendmentDraft(input);
+
+    expect(second).toEqual(first);
+    expect(first.assets).toHaveLength(plan.assets.length + 2);
+  });
+
+  it("section_amendment_adds_assets_and_keeps_every_existing_asset_id", () => {
+    const initial = initialReplayPlan();
+    const previousPlan = revision(
+      initial.plan.provenance.revisionId,
+      "7".repeat(64),
+      "asset-plan",
+    );
+    const draft = deriveReplayAssetPlanAmendmentDraft({
+      projectId: "project-1",
+      currentPlan: initial.plan,
+      section: "hero",
+      request: "two more character slots",
+      seed: "stable-amendment",
+    });
+    const amended = materializeAssetPlanAmendment(draft, {
+      ...initial.inputs,
+      previousPlan,
+      previousPlanDocument: initial.plan,
+      expectedRevisionId: "amended-plan-2",
+      expectedOperation: "asset-plan.amend",
+      revisionId: "amended-plan-2",
+      createdAt: timestamp,
+      operation: "asset-plan.amend",
+      section: "hero",
+      frozenAssetIds: new Set(),
+    });
+
+    expect(amended.diff.addedAssetIds).toHaveLength(2);
+    expect(amended.diff.changedAssetIds).toEqual([]);
+    expect(amended.diff.removedAssetIds).toEqual([]);
+    expect(
+      amended.plan.assets
+        .filter(({ assetId }) =>
+          initial.plan.assets.some((asset) => asset.assetId === assetId),
+        )
+        .map(({ assetId }) => assetId)
+        .sort(),
+    ).toEqual(initial.plan.assets.map(({ assetId }) => assetId).sort());
+    expect(amended.plan.provenance).toMatchObject({
+      operation: "asset-plan.amend",
+      parentRevisionIds: expect.arrayContaining([previousPlan.revisionId]),
+    });
+  });
+
+  it("restores_a_provider_rename_of_a_frozen_asset_but_keeps_safe_additions", () => {
+    const initial = initialReplayPlan();
+    const previousPlan = revision(
+      initial.plan.provenance.revisionId,
+      "7".repeat(64),
+      "asset-plan",
+    );
+    const draft = deriveReplayAssetPlanAmendmentDraft({
+      projectId: "project-1",
+      currentPlan: initial.plan,
+      section: "hero",
+      request: "two more character slots",
+      seed: "frozen-amendment",
+    });
+    const frozen = initial.plan.assets.find(
+      ({ classification }) => classification === "hero",
+    )!;
+    const frozenKey = frozen.assetId.split(":").at(-1)!;
+    draft.assets.find(({ assetKey }) => assetKey === frozenKey)!.name =
+      "Renamed spent boss";
+
+    const amended = materializeAssetPlanAmendment(draft, {
+      ...initial.inputs,
+      previousPlan,
+      previousPlanDocument: initial.plan,
+      expectedRevisionId: "amended-plan-2",
+      expectedOperation: "asset-plan.amend",
+      revisionId: "amended-plan-2",
+      createdAt: timestamp,
+      operation: "asset-plan.amend",
+      section: "hero",
+      frozenAssetIds: new Set([frozen.assetId]),
+    });
+
+    expect(
+      amended.plan.assets.find(({ assetId }) => assetId === frozen.assetId),
+    ).toEqual(frozen);
+    expect(amended.diff.addedAssetIds).toHaveLength(2);
+    expect(amended.diff.changedAssetIds).not.toContain(frozen.assetId);
+  });
+
+  it("rejects_an_amendment_when_the_frozen_guard_removes_every_change", () => {
+    const initial = initialReplayPlan();
+    const previousPlan = revision(
+      initial.plan.provenance.revisionId,
+      "7".repeat(64),
+      "asset-plan",
+    );
+    const draft = deriveReplayAssetPlanAmendmentDraft({
+      projectId: "project-1",
+      currentPlan: initial.plan,
+      section: "hero",
+      request: "two more character slots",
+      seed: "unsafe-only",
+    });
+    const frozen = initial.plan.assets.find(
+      ({ classification }) => classification === "hero",
+    )!;
+    const frozenKey = frozen.assetId.split(":").at(-1)!;
+    draft.assets = draft.assets.filter(
+      ({ assetKey }) => !assetKey.includes("-amendment-"),
+    );
+    draft.assets.find(({ assetKey }) => assetKey === frozenKey)!.name =
+      "Unsafe rename";
+
+    expect(() =>
+      materializeAssetPlanAmendment(draft, {
+        ...initial.inputs,
+        previousPlan,
+        previousPlanDocument: initial.plan,
+        expectedRevisionId: "amended-plan-2",
+        expectedOperation: "asset-plan.amend",
+        revisionId: "amended-plan-2",
+        createdAt: timestamp,
+        operation: "asset-plan.amend",
+        section: "hero",
+        frozenAssetIds: new Set([frozen.assetId]),
+      }),
+    ).toThrow("did not return a safe change");
+  });
 });
 
 const plannerFixture = (
@@ -758,6 +904,7 @@ const wireDraftFromDomain = (draft: AssetPlanDraft): AssetPlanDraftWire => ({
       return {
         ...asset,
         classification: asset.classification,
+        poseMode: asset.poseMode ?? null,
         procedure: null,
       };
     }
@@ -767,6 +914,7 @@ const wireDraftFromDomain = (draft: AssetPlanDraft): AssetPlanDraftWire => ({
     return {
       ...asset,
       classification: asset.classification,
+      poseMode: null,
       procedure: {
         generatorId: asset.procedure.generatorId,
         parameters: Object.entries(asset.procedure.parameters).map(
@@ -969,6 +1117,14 @@ describe("AssetPlanner.plan", () => {
     expect(firstPrompt).toContain(
       "Asset keys must be unique; dependsOnAssetKeys may only reference assetKeys present in this draft and must stay acyclic; sourceConceptSlotIds may only use the supplied slot IDs.",
     );
+    /* A live run left every hero — including "Scavenger Player Character" —
+       without a poseMode, which makes `assetRigEligibility` refuse to rig
+       anything. The instruction now asks for a pose by default. */
+    expect(firstPrompt).toContain(
+      "Set poseMode on every clearly humanoid character the game animates",
+    );
+    expect(firstPrompt).toContain("preferring a-pose");
+    expect(firstPrompt).toContain("Omit poseMode for props, kits, vehicles");
     expect(correctionPrompt).toContain(firstPrompt);
     for (const asset of cyclicDraft.assets.slice(0, 2)) {
       expect(correctionPrompt).toContain(

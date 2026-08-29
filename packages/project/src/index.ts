@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   ApprovalDecisionSchema,
   ArtifactRefSchema,
+  normalizeBlockedReason,
   ProjectStateSchema,
   ProviderPreflightError,
   type ApprovalDecision,
@@ -251,7 +252,9 @@ export class ProjectRepository {
     if (!row) {
       throw new Error(`Project ${projectId} does not exist.`);
     }
-    return ProjectStateSchema.parse(JSON.parse(row.state_json));
+    return normalizeBlockedReason(
+      ProjectStateSchema.parse(JSON.parse(row.state_json)),
+    );
   }
 
   listProjects(): ProjectState[] {
@@ -260,7 +263,7 @@ export class ProjectRepository {
       .all() as unknown as ProjectRow[];
     return rows.flatMap((row) => {
       const parsed = ProjectStateSchema.safeParse(JSON.parse(row.state_json));
-      return parsed.success ? [parsed.data] : [];
+      return parsed.success ? [normalizeBlockedReason(parsed.data)] : [];
     });
   }
 
@@ -311,6 +314,29 @@ export class ProjectRepository {
       byteLength: data.byteLength,
       uri: `/api/artifacts/${artifactId}`,
     });
+  }
+
+  /**
+   * An artifact this project owns, or a miss.
+   *
+   * `getArtifactRecord` deliberately answers for any artifact id in the
+   * workspace, which is right for the public read route but wrong when the
+   * id arrives in a request body: a browser must not be able to name another
+   * project's bytes and have them attached here. Reads that trust an
+   * untrusted id go through this instead.
+   */
+  getProjectArtifact(projectId: string, artifactId: string): ArtifactRef {
+    const row = this.database
+      .prepare(
+        "SELECT artifact_id, project_id, sha256, media_type, byte_length, relative_path FROM artifacts WHERE artifact_id = ? AND project_id = ?",
+      )
+      .get(artifactId, projectId) as ArtifactRow | undefined;
+    if (!row) {
+      throw new Error(
+        `Artifact ${artifactId} does not exist on project ${projectId}.`,
+      );
+    }
+    return this.artifactRef(row);
   }
 
   getArtifactRecord(artifactId: string): {
@@ -828,6 +854,187 @@ export class ProjectRepository {
       payload: { label, amountUsd, totalReservedUsd: saved.spentUsd },
     });
     return saved;
+  }
+
+  reserveMeshyCredits(
+    projectId: string,
+    credits: number,
+    label: string,
+  ): ProjectState {
+    if (!Number.isInteger(credits) || credits < 0) {
+      throw new ProviderPreflightError(
+        "payload-invalid",
+        "Meshy credit reservation must be a non-negative integer.",
+      );
+    }
+    const project = this.getProject(projectId);
+    const budget = project.meshyCreditBudget ?? 0;
+    const reserved = project.meshyCreditsReserved ?? 0;
+    const consumed = project.meshyCreditsConsumed ?? 0;
+    const remaining = budget - reserved - consumed;
+    if (credits > remaining) {
+      this.appendEvent({
+        projectId,
+        runId: project.runId,
+        type: "meshy-credits.refused",
+        payload: {
+          label,
+          credits,
+          remainingCredits: remaining,
+          budgetCredits: budget,
+          reservedCredits: reserved,
+          consumedCredits: consumed,
+        },
+      });
+      throw new ProviderPreflightError(
+        "budget-refused",
+        `Meshy credit budget exhausted: ${label} requires ${credits} credits, but ${remaining} remain.`,
+      );
+    }
+    const saved = this.saveProject({
+      ...project,
+      meshyCreditBudget: budget,
+      meshyCreditsReserved: reserved + credits,
+      meshyCreditsConsumed: consumed,
+    });
+    this.appendEvent({
+      projectId,
+      runId: project.runId,
+      type: "meshy-credits.reserved",
+      payload: {
+        label,
+        credits,
+        totalReservedCredits: saved.meshyCreditsReserved ?? 0,
+        consumedCredits: saved.meshyCreditsConsumed ?? 0,
+      },
+    });
+    return saved;
+  }
+
+  reconcileMeshyCredits(
+    projectId: string,
+    reservedCredits: number,
+    consumedCredits: number,
+    label: string,
+  ): ProjectState {
+    if (
+      !Number.isInteger(reservedCredits) ||
+      reservedCredits < 0 ||
+      !Number.isInteger(consumedCredits) ||
+      consumedCredits < 0
+    ) {
+      throw new ProviderPreflightError(
+        "payload-invalid",
+        "Meshy credit reconciliation values must be non-negative integers.",
+      );
+    }
+    const project = this.getProject(projectId);
+    const currentReserved = project.meshyCreditsReserved ?? 0;
+    if (reservedCredits > currentReserved) {
+      throw new ProviderPreflightError(
+        "payload-invalid",
+        `Cannot reconcile ${reservedCredits} Meshy credits when only ${currentReserved} are reserved.`,
+      );
+    }
+    const saved = this.saveProject({
+      ...project,
+      meshyCreditBudget: project.meshyCreditBudget ?? 0,
+      meshyCreditsReserved: currentReserved - reservedCredits,
+      meshyCreditsConsumed:
+        (project.meshyCreditsConsumed ?? 0) + consumedCredits,
+    });
+    this.appendEvent({
+      projectId,
+      runId: project.runId,
+      type: "meshy-credits.reconciled",
+      payload: {
+        label,
+        reservedCredits,
+        consumedCredits,
+        totalReservedCredits: saved.meshyCreditsReserved ?? 0,
+        totalConsumedCredits: saved.meshyCreditsConsumed ?? 0,
+        budgetCredits: saved.meshyCreditBudget ?? 0,
+      },
+    });
+    return saved;
+  }
+
+  reserveMeshySubmissionCredits(
+    requestId: string,
+    credits: number,
+    label: string,
+  ): SubmissionRecord {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.database
+        .prepare("SELECT * FROM submissions WHERE request_id = ?")
+        .get(requestId) as SubmissionRow | undefined;
+      if (!row) throw new Error(`Submission ${requestId} does not exist.`);
+      const submission = this.submissionRecord(row);
+      if (typeof submission.payload.meshyCreditsReserved === "number") {
+        this.database.exec("COMMIT");
+        return submission;
+      }
+      this.reserveMeshyCredits(submission.projectId, credits, label);
+      const updated = this.updateSubmission(requestId, {
+        status: submission.status,
+        payload: {
+          ...submission.payload,
+          meshyCreditsReserved: credits,
+          meshyCreditsReconciled: false,
+        },
+      });
+      this.database.exec("COMMIT");
+      return updated;
+    } catch (error) {
+      if (this.database.isTransaction) this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  reconcileMeshySubmissionCredits(
+    requestId: string,
+    consumedCredits: number,
+    label: string,
+  ): SubmissionRecord {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.database
+        .prepare("SELECT * FROM submissions WHERE request_id = ?")
+        .get(requestId) as SubmissionRow | undefined;
+      if (!row) throw new Error(`Submission ${requestId} does not exist.`);
+      const submission = this.submissionRecord(row);
+      if (submission.payload.meshyCreditsReconciled === true) {
+        this.database.exec("COMMIT");
+        return submission;
+      }
+      const reservedCredits = submission.payload.meshyCreditsReserved;
+      if (typeof reservedCredits !== "number") {
+        throw new ProviderPreflightError(
+          "payload-invalid",
+          `Submission ${requestId} has no Meshy credit reservation.`,
+        );
+      }
+      this.reconcileMeshyCredits(
+        submission.projectId,
+        reservedCredits,
+        consumedCredits,
+        label,
+      );
+      const updated = this.updateSubmission(requestId, {
+        status: submission.status,
+        payload: {
+          ...submission.payload,
+          meshyCreditsReconciled: true,
+          meshyCreditsConsumed: consumedCredits,
+        },
+      });
+      this.database.exec("COMMIT");
+      return updated;
+    } catch (error) {
+      if (this.database.isTransaction) this.database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   private artifactRef(row: ArtifactRow): ArtifactRef {

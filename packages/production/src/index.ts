@@ -9,6 +9,7 @@ import {
   ConceptSetSchema,
   ConceptViewDocumentSchema,
   DeterministicAssetReportSchema,
+  FinalizedAssetPlanBindingSchema,
   M1ConceptDocumentSchema,
   MultiviewConceptRequestSchema,
   MultiviewConceptSetSchema,
@@ -54,19 +55,30 @@ import { ProjectRepository } from "@fulcrum/project";
 import { Document, getBounds, NodeIO, Primitive } from "@gltf-transform/core";
 import { z } from "zod";
 
-import { inspectParsedAsset } from "./deterministic-quality.js";
+import {
+  DEFAULT_ASSET_POLICIES,
+  inspectParsedAsset,
+} from "./deterministic-quality.js";
 import {
   adapterJobRefFromSubmissionPayload,
   CARDINAL_VIEW_ROLES,
   decideMultiviewStrategy,
   m2AssetIdempotencyKey,
+  type AdapterJobRef,
   type AssetGenerationJob,
+  type ExternalJobState,
 } from "./asset-generation.js";
 import {
   createAssetGenerationAdapter,
   resolveAssetGenerationProfile,
 } from "./asset-generation-profile.js";
-import { meshyConfiguration } from "./meshy-adapter.js";
+import {
+  MESHY_GEOMETRY_CREDITS,
+  MESHY_TEXTURE_CREDITS,
+  MeshyRetextureAdapter,
+  meshyConfiguration,
+  type MeshyRetextureJob,
+} from "./meshy-adapter.js";
 import { createReplayReliquary } from "./replay-reliquary.js";
 import {
   bestRegenerationAttempt,
@@ -76,6 +88,7 @@ import {
 import { renderTurntable } from "./turntable.js";
 import { AssetPreparationError, tripoConfiguration } from "./tripo-adapter.js";
 import {
+  ASSET_GEOMETRY_VISION_RUBRIC_V1,
   ASSET_VISION_RUBRIC_V1,
   LiveVisionEvaluationPort,
   materializeVisionReport,
@@ -90,11 +103,66 @@ import {
   type VisionRequestDescriptor,
 } from "./vision-evaluation.js";
 
-export { AssetPlanner } from "./asset-planner.js";
-export type { AssetPlanning } from "./asset-planner.js";
+export {
+  AssetPlanAmender,
+  AssetPlanAmendmentError,
+  AssetPlanner,
+} from "./asset-planner.js";
+export type {
+  AssetPlanAmending,
+  AssetPlanAmendmentRequest,
+  AssetPlanAmendmentResult,
+  AssetPlanning,
+} from "./asset-planner.js";
 export { DEFAULT_ASSET_POLICIES } from "./deterministic-quality.js";
 export { ASSET_VISION_RUBRIC_V1 } from "./vision-evaluation.js";
+export { ASSET_GEOMETRY_VISION_RUBRIC_V1 } from "./vision-evaluation.js";
+export {
+  BipedDetectionVerdictSchema,
+  detectBipedDeterministically,
+  LiveBipedDetectionPort,
+  ReplayBipedDetectionPort,
+} from "./vision-evaluation.js";
+export type {
+  BipedDetectionInput,
+  BipedDetectionPort,
+  BipedDetectionVerdict,
+} from "./vision-evaluation.js";
 export { createReplayReliquary } from "./replay-reliquary.js";
+export {
+  assetStageView,
+  assetStageViews,
+  resolveMeshyConfig,
+  StagedAssetLifecycle,
+} from "./staged-asset-lifecycle.js";
+export type {
+  StagedAssetLifecycleOptions,
+  StagedAssetOutcome,
+} from "./staged-asset-lifecycle.js";
+export {
+  createStagedAssetAdapter,
+  LiveMeshyStagedAdapter,
+  SimulatedStagedAdapter,
+} from "./staged-meshy.js";
+export type {
+  SimulatedStagedOptions,
+  StagedAssetAdapter,
+  StagedInspectInput,
+  StagedSubmitInput,
+  StagedTaskState,
+} from "./staged-meshy.js";
+export { createStagedPlaceholderGlb, stagedShapeSeed } from "./staged-glb.js";
+export {
+  buildMeshyStagedAnimationRequest,
+  buildMeshyStagedGeometryRequest,
+  buildMeshyStagedRigRequest,
+  buildMeshyStagedTextureRequest,
+  meshyTaskStatus,
+  MESHY_ANIMATION_CREDITS,
+  MESHY_RIG_CREDITS,
+  MESHY_RIG_MAX_FACES,
+  MESHY_STAGE_ENDPOINTS,
+} from "./meshy-adapter.js";
 
 export type AssetQualityOptions = {
   visionExecution?: StructuredVisionExecution;
@@ -150,6 +218,13 @@ export type AssetRegenerationInput = {
   additionalConceptViews?: RevisionRef[];
 };
 
+export type FinishAssetRequest = {
+  projectId: string;
+  assetPlan: RevisionRef;
+  assetId: string;
+  geometryAsset: RevisionRef;
+};
+
 export class AssetQualityFailure extends Error {
   readonly failureKind = "strategy-changing" as const;
 
@@ -189,6 +264,13 @@ type GeneratedAsset = {
   model: string;
   externalJobId: string;
   costUsd: number;
+  costCredits?: number;
+  generationClaims?: AssetDocument["generationClaims"];
+  supportingArtifacts?: Array<{
+    role: string;
+    mediaType: string;
+    bytes: Uint8Array;
+  }>;
   providerMetadata?: Record<string, unknown>;
 };
 
@@ -279,19 +361,373 @@ export class AssetProduction {
       : this.ensureM2(parsed);
   }
 
+  async finish(
+    input: FinishAssetRequest,
+  ): Promise<ProductionOutcome<RevisionRef>> {
+    const fallbackRequestId = `m2-texture-${createHash("sha256")
+      .update(
+        JSON.stringify([
+          input.projectId,
+          input.assetId,
+          input.geometryAsset.artifact.sha256,
+        ]),
+      )
+      .digest("hex")}`;
+    try {
+      const context = this.resolveM2Context(input);
+      const source = AssetDocumentSchema.parse(
+        this.repository.resolveRevision<AssetDocument>(input.geometryAsset),
+      );
+      if (source.assetId !== input.assetId) {
+        throw new Error(
+          `Geometry asset ${input.geometryAsset.revisionId} belongs to ${source.assetId}, not ${input.assetId}.`,
+        );
+      }
+      if (source.generationClaims?.textured) {
+        return {
+          status: "ready",
+          requestId: `already-textured-${input.geometryAsset.revisionId}`,
+          value: input.geometryAsset,
+        };
+      }
+      if (
+        context.state.mode !== "live" ||
+        context.state.assetProvider !== "meshy" ||
+        source.provider !== "meshy"
+      ) {
+        return {
+          status: "ready",
+          requestId: `finishing-not-required-${input.geometryAsset.revisionId}`,
+          value: input.geometryAsset,
+        };
+      }
+
+      const job: MeshyRetextureJob = {
+        projectId: input.projectId,
+        assetId: input.assetId,
+        sourceModel: source.glb,
+        styleImage: context.anchorDocument.image,
+      };
+      const adapter = new MeshyRetextureAdapter(this.repository);
+      const requestFingerprint = adapter.requestFingerprint(job);
+      const idempotencyKey = `asset-texture:v1:${input.projectId}:meshy:${requestFingerprint}`;
+      const prior = this.repository.getSubmissionByKey(idempotencyKey);
+      const decision = decideDurableSubmission(prior, context.state.mode);
+      if (decision.kind === "ready") {
+        if (!decision.submission.resultRevisionId) {
+          return {
+            status: "failed",
+            requestId: decision.submission.requestId,
+            error: {
+              code: "asset-texture-result-missing",
+              message: "The completed Meshy texture job has no asset revision.",
+              recoverable: true,
+              failureKind: "user-action-required",
+            },
+          };
+        }
+        return {
+          status: "ready",
+          requestId: decision.submission.requestId,
+          value: this.repository.getRevision(
+            decision.submission.resultRevisionId,
+          ),
+        };
+      }
+      if (decision.kind === "terminal-failed") {
+        return {
+          status: "failed",
+          requestId: decision.submission.requestId,
+          error: {
+            code:
+              decision.submission.status === "submission-unknown"
+                ? "submission-unknown"
+                : "asset-texture-failed",
+            message:
+              decision.submission.status === "submission-unknown"
+                ? "Meshy may have accepted the texture request; Fulcrum will not submit it twice."
+                : "The previous Meshy texture job failed.",
+            recoverable: true,
+            failureKind:
+              decision.submission.status === "submission-unknown"
+                ? "user-action-required"
+                : "strategy-changing",
+          },
+        };
+      }
+      if (decision.kind === "unknown-interruption") {
+        this.repository.updateSubmission(decision.submission.requestId, {
+          status: "submission-unknown",
+        });
+        return {
+          status: "failed",
+          requestId: decision.submission.requestId,
+          error: {
+            code: "submission-unknown",
+            message:
+              "Meshy may have accepted the texture request; Fulcrum will not submit it twice.",
+            recoverable: true,
+            failureKind: "user-action-required",
+          },
+        };
+      }
+
+      const submission =
+        "submission" in decision && decision.submission
+          ? decision.submission
+          : this.repository.recordSubmissionIntent({
+              projectId: input.projectId,
+              operation: "m2-meshy-retexture",
+              provider: "meshy",
+              idempotencyKey,
+              payload: {
+                assetId: input.assetId,
+                geometryAssetRevisionId: input.geometryAsset.revisionId,
+                geometryArtifactHash: source.glb.sha256,
+                styleImageArtifactHash: context.anchorDocument.image.sha256,
+                modelVersion: "meshy-6",
+                endpointKind: "retexture",
+                jobKind: "retexture",
+                pipelineStage: "texture",
+                requestFingerprint,
+              },
+            });
+
+      let generated: GeneratedAsset;
+      if (decision.kind === "inspect") {
+        let inspected: ExternalJobState;
+        try {
+          inspected = await adapter.inspect(
+            adapterJobRefFromSubmissionPayload(
+              decision.submission.externalJobId!,
+              decision.submission.payload,
+            ),
+          );
+        } catch (error) {
+          this.repository.updateSubmission(submission.requestId, {
+            status: "pending",
+            payload: {
+              ...submission.payload,
+              lastPollError:
+                error instanceof Error ? error.message : String(error),
+            },
+          });
+          return {
+            status: "pending",
+            requestId: submission.requestId,
+            resumeAfter: new Date(Date.now() + 5_000).toISOString(),
+          };
+        }
+        if (inspected.status === "pending") {
+          return {
+            status: "pending",
+            requestId: submission.requestId,
+            resumeAfter: inspected.resumeAfter,
+          };
+        }
+        if (inspected.status === "failed") {
+          const consumedCredits = inspected.providerMetadata?.consumedCredits;
+          const reconciledCredits =
+            typeof consumedCredits === "number" &&
+            Number.isInteger(consumedCredits) &&
+            consumedCredits >= 0
+              ? consumedCredits
+              : 0;
+          const failurePayload =
+            this.repository.reconcileMeshySubmissionCredits(
+              submission.requestId,
+              reconciledCredits,
+              "Meshy 6 4K Retexture",
+            ).payload;
+          this.repository.updateSubmission(submission.requestId, {
+            status: "failed",
+            payload: {
+              ...failurePayload,
+              ...(inspected.providerMetadata ?? {}),
+              creditReconciliationSource:
+                reconciledCredits === consumedCredits
+                  ? "provider-reported"
+                  : "documented-terminal-refund",
+              providerError: inspected.error,
+            },
+          });
+          return {
+            status: "failed",
+            requestId: submission.requestId,
+            error: {
+              code: "meshy-retexture-failed",
+              message: inspected.error,
+              recoverable: true,
+              failureKind: "strategy-changing",
+            },
+          };
+        }
+        generated = inspected.asset;
+      } else {
+        try {
+          meshyConfiguration();
+          this.repository.reserveMeshySubmissionCredits(
+            submission.requestId,
+            MESHY_TEXTURE_CREDITS,
+            "Meshy 6 4K Retexture",
+          );
+        } catch (error) {
+          if (isProviderPreflightError(error)) {
+            return this.refuseBeforeProviderCall(submission, error);
+          }
+          throw error;
+        }
+        const reserved =
+          this.repository.getSubmissionByKey(idempotencyKey) ?? submission;
+        this.repository.updateSubmission(submission.requestId, {
+          status: "pending",
+          payload: {
+            ...reserved.payload,
+            providerCallStartedAt: new Date().toISOString(),
+          },
+        });
+        let adapterJob: AdapterJobRef;
+        try {
+          adapterJob = await adapter.submit(job);
+        } catch (error) {
+          const current =
+            this.repository.getSubmissionByKey(idempotencyKey) ?? submission;
+          const message =
+            error instanceof Error ? error.message : String(error);
+          this.repository.updateSubmission(submission.requestId, {
+            status: "submission-unknown",
+            payload: { ...current.payload, error: message },
+          });
+          return {
+            status: "failed",
+            requestId: submission.requestId,
+            error: {
+              code: "submission-unknown",
+              message,
+              recoverable: true,
+              failureKind: "user-action-required",
+            },
+          };
+        }
+        const current =
+          this.repository.getSubmissionByKey(idempotencyKey) ?? submission;
+        this.repository.updateSubmission(submission.requestId, {
+          status: "pending",
+          externalJobId: adapterJob.taskId,
+          payload: {
+            ...current.payload,
+            submittedAt: new Date().toISOString(),
+          },
+        });
+        return {
+          status: "pending",
+          requestId: submission.requestId,
+          resumeAfter: new Date(Date.now() + 5_000).toISOString(),
+        };
+      }
+
+      this.repository.reconcileMeshySubmissionCredits(
+        submission.requestId,
+        generated.costCredits ?? MESHY_TEXTURE_CREDITS,
+        "Meshy 6 4K Retexture",
+      );
+      const glb = this.repository.putArtifact(
+        input.projectId,
+        generated.bytes,
+        "model/gltf-binary",
+      );
+      const providerEvidence = (generated.supportingArtifacts ?? []).map(
+        ({ role, mediaType, bytes }) => ({
+          role,
+          artifact: this.repository.putArtifact(
+            input.projectId,
+            bytes,
+            mediaType,
+          ),
+        }),
+      );
+      const finished = AssetDocumentSchema.parse({
+        ...source,
+        glb,
+        provider: generated.provider,
+        model: generated.model,
+        parentAssetRevisionId: input.geometryAsset.revisionId,
+        generationClaims: generated.generationClaims ?? {
+          textured: true,
+          textureChannels: ["base-color", "metallic-roughness", "normal"],
+        },
+        providerEvidence: [
+          ...(source.providerEvidence ?? []),
+          ...providerEvidence,
+        ],
+        externalJobId: generated.externalJobId,
+        costUsd: source.costUsd + generated.costUsd,
+        costCredits:
+          (source.costCredits ?? MESHY_GEOMETRY_CREDITS) +
+          (generated.costCredits ?? MESHY_TEXTURE_CREDITS),
+      });
+      const revision = this.repository.writeRevision({
+        projectId: input.projectId,
+        entityId: finished.assetId,
+        kind: "asset-document",
+        value: finished,
+        runId: context.state.runId,
+      });
+      const current =
+        this.repository.getSubmissionByKey(idempotencyKey) ?? submission;
+      this.repository.updateSubmission(submission.requestId, {
+        status: "ready",
+        resultRevisionId: revision.revisionId,
+        payload: { ...current.payload, ...(generated.providerMetadata ?? {}) },
+      });
+      this.repository.appendEvent({
+        projectId: input.projectId,
+        runId: context.state.runId,
+        type: "asset.textured",
+        payload: {
+          geometryAssetRevisionId: input.geometryAsset.revisionId,
+          texturedAssetRevisionId: revision.revisionId,
+          glbArtifactId: glb.artifactId,
+          textureCredits: generated.costCredits ?? MESHY_TEXTURE_CREDITS,
+          textureResolution: "4k",
+        },
+      });
+      return {
+        status: "ready",
+        requestId: submission.requestId,
+        value: revision,
+      };
+    } catch (error) {
+      return {
+        status: "failed",
+        requestId: fallbackRequestId,
+        error: {
+          code: isProviderPreflightError(error)
+            ? error.code
+            : "asset-texture-failed",
+          message: error instanceof Error ? error.message : String(error),
+          recoverable: true,
+          failureKind: isProviderPreflightError(error)
+            ? "retryable"
+            : "policy-blocked",
+        },
+      };
+    }
+  }
+
   private resolveM2Context(input: M2AssetProductionRequest) {
     const state = this.repository.getProject(input.projectId);
     if (
       !state.assetPlan ||
       state.assetPlan.revisionId !== input.assetPlan.revisionId ||
       state.assetPlan.artifact.sha256 !== input.assetPlan.artifact.sha256 ||
-      state.assetPlanApproval?.decision !== "approved" ||
-      state.assetPlanApproval.targetRevisionId !== input.assetPlan.revisionId ||
-      state.assetPlanApproval.targetSha256 !== input.assetPlan.artifact.sha256
+      !FinalizedAssetPlanBindingSchema.safeParse({
+        projectId: input.projectId,
+        plan: input.assetPlan,
+        finalization: state.assetPlanApproval,
+      }).success
     ) {
-      throw new Error(
-        "Asset production requires the current hash-approved plan.",
-      );
+      throw new Error("Asset production requires the current finalized plan.");
     }
     const plan = AssetPlanSchema.parse(
       this.repository.resolveRevision(input.assetPlan),
@@ -444,6 +880,16 @@ export class AssetProduction {
         ? {
             projectId: input.projectId,
             assetId: input.assetId,
+            stage:
+              context.state.assetProvider === "meshy" ? "geometry" : "complete",
+            ...(context.asset.poseMode
+              ? { poseMode: context.asset.poseMode }
+              : {}),
+            qualityTarget: {
+              maxTriangles:
+                DEFAULT_ASSET_POLICIES[context.asset.classification].mesh
+                  .maxTriangles,
+            },
             ...(input.regeneration
               ? {
                   regeneration: {
@@ -467,6 +913,16 @@ export class AssetProduction {
         : {
             projectId: input.projectId,
             assetId: input.assetId,
+            stage:
+              context.state.assetProvider === "meshy" ? "geometry" : "complete",
+            ...(context.asset.poseMode
+              ? { poseMode: context.asset.poseMode }
+              : {}),
+            qualityTarget: {
+              maxTriangles:
+                DEFAULT_ASSET_POLICIES[context.asset.classification].mesh
+                  .maxTriangles,
+            },
             ...(input.regeneration
               ? {
                   regeneration: {
@@ -592,6 +1048,7 @@ export class AssetProduction {
                   job.imageInput.kind === "multiview"
                     ? "multi-image"
                     : "single-image",
+                pipelineStage: job.stage ?? "complete",
                 roleOrder: imageEntries.map(({ role }) => role),
                 imageArtifactIds: imageEntries.map(
                   ({ image }) => image.artifactId,
@@ -647,10 +1104,36 @@ export class AssetProduction {
             };
           }
           if (inspected.status === "failed") {
+            const consumedCredits = inspected.providerMetadata?.consumedCredits;
+            let failurePayload = submission.payload;
+            if (
+              context.state.mode === "live" &&
+              context.state.assetProvider === "meshy"
+            ) {
+              const reconciledCredits =
+                typeof consumedCredits === "number" &&
+                Number.isInteger(consumedCredits) &&
+                consumedCredits >= 0
+                  ? consumedCredits
+                  : 0;
+              failurePayload = this.repository.reconcileMeshySubmissionCredits(
+                submission.requestId,
+                reconciledCredits,
+                `Meshy 6 ${endpointKind} geometry`,
+              ).payload;
+              failurePayload = {
+                ...failurePayload,
+                creditReconciliationSource:
+                  reconciledCredits === consumedCredits
+                    ? "provider-reported"
+                    : "documented-terminal-refund",
+              };
+            }
             this.repository.updateSubmission(submission.requestId, {
               status: "failed",
               payload: {
-                ...submission.payload,
+                ...failurePayload,
+                ...(inspected.providerMetadata ?? {}),
                 providerError: inspected.error,
               },
             });
@@ -685,16 +1168,20 @@ export class AssetProduction {
         if (context.state.mode === "live") {
           const current =
             this.repository.getSubmissionByKey(idempotencyKey) ?? submission;
-          if (typeof current.payload.budgetReservedUsd !== "number") {
-            try {
-              const configuration =
-                context.state.assetProvider === "meshy"
-                  ? meshyConfiguration()
-                  : tripoConfiguration();
+          try {
+            if (context.state.assetProvider === "meshy") {
+              meshyConfiguration();
+              this.repository.reserveMeshySubmissionCredits(
+                submission.requestId,
+                MESHY_GEOMETRY_CREDITS,
+                `Meshy 6 ${endpointKind} geometry`,
+              );
+            } else if (typeof current.payload.budgetReservedUsd !== "number") {
+              const configuration = tripoConfiguration();
               this.repository.reserveBudget(
                 input.projectId,
                 configuration.reservedCost,
-                `${context.state.assetProvider} ${endpointKind}`,
+                `tripo ${endpointKind}`,
               );
               this.repository.updateSubmission(submission.requestId, {
                 status: "intent-recorded",
@@ -703,12 +1190,12 @@ export class AssetProduction {
                   budgetReservedUsd: configuration.reservedCost,
                 },
               });
-            } catch (error) {
-              if (isProviderPreflightError(error)) {
-                return this.refuseBeforeProviderCall(submission, error);
-              }
-              throw error;
             }
+          } catch (error) {
+            if (isProviderPreflightError(error)) {
+              return this.refuseBeforeProviderCall(submission, error);
+            }
+            throw error;
           }
           if (context.state.assetProvider === "meshy") {
             const currentSubmission =
@@ -792,10 +1279,30 @@ export class AssetProduction {
         generated = inspected.asset;
       }
 
+      if (
+        context.state.mode === "live" &&
+        context.state.assetProvider === "meshy"
+      ) {
+        this.repository.reconcileMeshySubmissionCredits(
+          submission.requestId,
+          generated.costCredits ?? MESHY_GEOMETRY_CREDITS,
+          `Meshy 6 ${endpointKind} geometry`,
+        );
+      }
       const glb = this.repository.putArtifact(
         input.projectId,
         generated.bytes,
         "model/gltf-binary",
+      );
+      const providerEvidence = (generated.supportingArtifacts ?? []).map(
+        ({ role, mediaType, bytes }) => ({
+          role,
+          artifact: this.repository.putArtifact(
+            input.projectId,
+            bytes,
+            mediaType,
+          ),
+        }),
       );
       const inputImageHashes = imageEntries.map(({ image }) => image.sha256);
       const asset = AssetDocumentSchema.parse({
@@ -823,14 +1330,19 @@ export class AssetProduction {
             }
           : {}),
         generationClaims:
-          generated.provider === "fulcrum-replay"
+          generated.generationClaims ??
+          (generated.provider === "fulcrum-replay"
             ? { textured: false, textureChannels: [] }
             : {
                 textured: true,
                 textureChannels: ["base-color", "metallic-roughness"],
-              },
+              }),
+        ...(providerEvidence.length > 0 ? { providerEvidence } : {}),
         externalJobId: generated.externalJobId,
         costUsd: generated.costUsd,
+        ...(generated.costCredits !== undefined
+          ? { costCredits: generated.costCredits }
+          : {}),
       });
       const revision = this.repository.writeRevision({
         projectId: input.projectId,
@@ -1426,7 +1938,7 @@ export class AssetQuality {
 
     let rendered;
     try {
-      rendered = renderTurntable(document, policy.turntable);
+      rendered = await renderTurntable(document, policy.turntable);
     } catch (error) {
       throw new AssetQualityFailure(
         "asset-turntable-render-failed",
@@ -1456,7 +1968,7 @@ export class AssetQuality {
       assetId: asset.assetId,
       assetRevisionId: input.asset.revisionId,
       sourceArtifactHashes: [asset.glb.sha256],
-      rendererVersion: "software-rasterizer-v1",
+      rendererVersion: "software-rasterizer-v3",
       config: policy.turntable,
       frames: frameArtifacts.map(
         ({ frameIndex, yawDegrees, artifact: frameArtifact }) => ({
@@ -1468,7 +1980,7 @@ export class AssetQuality {
     });
     const turntable = this.repository.ensureRevision({
       projectId: input.projectId,
-      operationKey: `m2.asset-turntable:${input.asset.revisionId}:${input.policy.revision.revisionId}`,
+      operationKey: `m2.asset-turntable:${input.asset.revisionId}:${input.policy.revision.revisionId}:software-rasterizer-v3`,
       entityId: `${asset.assetId}:turntable`,
       kind: "turntable-manifest",
       runId: input.runId,
@@ -1529,6 +2041,10 @@ export class AssetQuality {
           failureKind: "strategy-changing",
         },
       };
+    const rubric =
+      asset.provider === "meshy" && asset.generationClaims?.textured === false
+        ? ASSET_GEOMETRY_VISION_RUBRIC_V1
+        : ASSET_VISION_RUBRIC_V1;
     const descriptor: VisionRequestDescriptor =
       VisionRequestDescriptorSchema.parse({
         assetRevisionId: input.asset.revisionId,
@@ -1540,7 +2056,7 @@ export class AssetQuality {
         prohibitedFeatures: input.context.prohibitedFeatures,
         referenceArtifacts: input.context.referenceArtifacts,
         frames: manifest.frames,
-        rubric: ASSET_VISION_RUBRIC_V1,
+        rubric,
       });
     const requestDigest = visionRequestDigest(descriptor);
     const scopeHash = visionRequestScopeHash(descriptor);
@@ -1763,7 +2279,7 @@ export class AssetQuality {
         assetId: asset.assetId,
         assetRevisionId: input.asset.revisionId,
         turntableRevisionId: input.turntable.revisionId,
-        rubricVersion: ASSET_VISION_RUBRIC_V1.rubricVersion,
+        rubricVersion: rubric.rubricVersion,
         requestDigest,
         provider: evaluated.provider,
         model: evaluated.model,

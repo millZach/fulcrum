@@ -16,14 +16,24 @@ import {
   MultiviewConceptSetSchema,
   NormalizedCropSchema,
   PlannedAssetSchema,
+  AnswerFrontierRoundInputSchema,
+  InterrogationAnswerSchema,
   ProjectSnapshotSchema,
   ProjectStateSchema,
+  StoreImageAttachmentInputSchema,
+  SuggestGameNamesInputSchema,
+  attachmentsReachOrchestrator,
+  readsImageAttachments,
+  type ProjectState,
   RegenerationStrategySchema,
   WorkflowFailureSchema,
+  approvalGateBlock,
   assetPlanGraphIssues,
   handlingForPlannedAsset,
   hasMeteredRoutes,
+  normalizeBlockedReason,
   projectNeedsBudget,
+  projectNeedsMeshyCredits,
 } from "./index.js";
 
 const brief =
@@ -347,6 +357,18 @@ describe("asset plan schema", () => {
         .success,
     ).toBe(true);
   });
+
+  it("character_pose_is_explicit_and_limited_to_hero_assets", () => {
+    expect(parsedPlannedAsset({ poseMode: "a-pose" }).poseMode).toBe("a-pose");
+    expect(
+      PlannedAssetSchema.safeParse(
+        plannedAsset({
+          classification: "kit",
+          poseMode: "t-pose",
+        }),
+      ).success,
+    ).toBe(false);
+  });
 });
 
 describe("asset plan graph", () => {
@@ -449,7 +471,7 @@ describe("M2 domain boundaries", () => {
     expect(parsed.maxConcurrentExternalJobs).toBe(2);
   });
 
-  it("requires_positive_budget_for_live_m2", () => {
+  it("requires_positive_meshy_credit_budget_for_live_m2", () => {
     const input = {
       milestone: "m2" as const,
       brief,
@@ -461,7 +483,10 @@ describe("M2 domain boundaries", () => {
 
     expect(CreateProjectInputSchema.safeParse(input).success).toBe(false);
     expect(
-      CreateProjectInputSchema.safeParse({ ...input, budgetUsd: 1 }).success,
+      CreateProjectInputSchema.safeParse({
+        ...input,
+        meshyCreditBudget: 300,
+      }).success,
     ).toBe(true);
   });
 
@@ -822,6 +847,13 @@ describe("metered project routing", () => {
         milestone: "m2",
         mode: "live",
       }),
+    ).toBe(false);
+    expect(
+      projectNeedsMeshyCredits({
+        milestone: "m2",
+        mode: "live",
+        assetProvider: "meshy",
+      }),
     ).toBe(true);
     expect(
       projectNeedsBudget({
@@ -976,5 +1008,170 @@ describe("metered project routing", () => {
     });
 
     expect(parsed.budgetUsd).toBe(0);
+  });
+});
+
+describe("approval gate blocks", () => {
+  const blockedState = (
+    milestone: "m0" | "m1" | "m2",
+    blockedReason: { code: string; message: string; recoverable: boolean },
+  ) => ({ milestone, status: "blocked" as const, blockedReason });
+
+  it("maps a rejection code to the gate that owns the review", () => {
+    expect(
+      approvalGateBlock(
+        blockedState("m1", {
+          code: "concept-set-not-approved",
+          message: "The concept set was not approved.",
+          recoverable: false,
+        }),
+      ),
+    ).toEqual({ gate: "concept-set", reviewStage: "concept-set-approval" });
+    expect(
+      approvalGateBlock(
+        blockedState("m2", {
+          code: "asset-plan-not-approved",
+          message: "The asset plan was rejected.",
+          recoverable: false,
+        }),
+      ),
+    ).toEqual({ gate: "asset-plan", reviewStage: "asset-plan-approval" });
+  });
+
+  it("ignores failures and gates the milestone cannot reach", () => {
+    expect(
+      approvalGateBlock(
+        blockedState("m2", {
+          code: "asset-quality-failed",
+          message: "The provider returned an unusable mesh.",
+          recoverable: false,
+        }),
+      ),
+    ).toBeUndefined();
+    expect(
+      approvalGateBlock(
+        blockedState("m2", {
+          code: "sound-set-not-approved",
+          message: "The sound set was not approved.",
+          recoverable: false,
+        }),
+      ),
+    ).toBeUndefined();
+    expect(approvalGateBlock({ milestone: "m1" })).toBeUndefined();
+  });
+
+  it("normalizes an old rejection block and leaves other state untouched", () => {
+    const state = {
+      milestone: "m1",
+      blockedReason: {
+        code: "game-design-not-approved",
+        message: "The Game Design Spec was not approved.",
+        recoverable: false,
+      },
+    } as unknown as ProjectState;
+
+    expect(normalizeBlockedReason(state).blockedReason).toEqual({
+      code: "game-design-not-approved",
+      message: "The Game Design Spec was not approved.",
+      recoverable: true,
+      failureKind: "user-action-required",
+      resumeStage: "game-design-approval",
+      reviewGate: "game-design",
+    });
+
+    const failure = {
+      milestone: "m1",
+      blockedReason: {
+        code: "workflow-phase-failed",
+        message: "The provider returned an unusable response.",
+        recoverable: false,
+      },
+    } as unknown as ProjectState;
+    expect(normalizeBlockedReason(failure)).toBe(failure);
+  });
+});
+
+describe("pasted image attachments", () => {
+  it("only claims vision on the two routes that have it", () => {
+    expect(readsImageAttachments("openai")).toBe(true);
+    expect(readsImageAttachments("openai-api")).toBe(true);
+    for (const provider of ["claude", "grok", "opencode"] as const)
+      expect(readsImageAttachments(provider)).toBe(false);
+  });
+
+  it("never claims a replay world reads an image", () => {
+    expect(
+      attachmentsReachOrchestrator({
+        mode: "replay",
+        orchestratorProvider: "openai",
+      }),
+    ).toBe(false);
+    expect(
+      attachmentsReachOrchestrator({
+        mode: "live",
+        orchestratorProvider: "openai",
+      }),
+    ).toBe(true);
+    expect(
+      attachmentsReachOrchestrator({
+        mode: "live",
+        orchestratorProvider: "claude",
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps an image-free answer exactly as it was", () => {
+    const parsed = InterrogationAnswerSchema.parse({
+      questionId: "q1",
+      value: "Explore, charge, defend",
+      origin: { source: "user", reference: "round-1" },
+    });
+    expect(parsed).not.toHaveProperty("attachments");
+  });
+
+  it("carries at most four attachment ids on a submitted answer", () => {
+    const answer = (count: number) => ({
+      interrogationRevisionId: "revision-1",
+      roundId: "round-1",
+      answers: [
+        {
+          questionId: "q1",
+          value: "It looks like this",
+          attachmentArtifactIds: Array.from(
+            { length: count },
+            (_, index) => `artifact-${index}`,
+          ),
+        },
+      ],
+    });
+    expect(
+      AnswerFrontierRoundInputSchema.parse(answer(4)).answers[0]
+        ?.attachmentArtifactIds,
+    ).toHaveLength(4);
+    expect(() => AnswerFrontierRoundInputSchema.parse(answer(5))).toThrow();
+    expect(
+      SuggestGameNamesInputSchema.parse({
+        gameNameCandidatesRevisionId: "revision-1",
+        feedback: "Shorter, darker",
+        attachmentArtifactIds: ["artifact-0"],
+      }).attachmentArtifactIds,
+    ).toEqual(["artifact-0"]);
+  });
+
+  it("accepts only the three clipboard image formats as an upload", () => {
+    for (const mediaType of ["png", "jpeg", "webp"])
+      expect(() =>
+        StoreImageAttachmentInputSchema.parse({
+          dataUrl: `data:image/${mediaType};base64,AAAA`,
+        }),
+      ).not.toThrow();
+    for (const dataUrl of [
+      "data:image/gif;base64,AAAA",
+      "data:text/html;base64,AAAA",
+      "https://example.invalid/steal.png",
+    ])
+      expect(() =>
+        StoreImageAttachmentInputSchema.parse({ dataUrl }),
+      ).toThrow();
   });
 });

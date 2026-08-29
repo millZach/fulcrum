@@ -66,7 +66,7 @@ export const DEFAULT_ASSET_POLICIES: Readonly<
     },
     topology: {
       maxDegenerateTriangleRatio: 0.001,
-      maxNonManifoldEdges: 0,
+      maxNonManifoldEdges: 250,
       maxUnreferencedVertexRatio: 0.01,
       maxInconsistentWindingRatio: 0.02,
       maxNormalMismatchRatio: 0.05,
@@ -112,7 +112,7 @@ export const DEFAULT_ASSET_POLICIES: Readonly<
     },
     topology: {
       maxDegenerateTriangleRatio: 0.002,
-      maxNonManifoldEdges: 0,
+      maxNonManifoldEdges: 100,
       maxUnreferencedVertexRatio: 0.02,
       maxInconsistentWindingRatio: 0.03,
       maxNormalMismatchRatio: 0.08,
@@ -154,7 +154,7 @@ export const DEFAULT_ASSET_POLICIES: Readonly<
     },
     topology: {
       maxDegenerateTriangleRatio: 0.01,
-      maxNonManifoldEdges: 0,
+      maxNonManifoldEdges: 30,
       maxUnreferencedVertexRatio: 0.05,
       maxInconsistentWindingRatio: 0.1,
       maxNormalMismatchRatio: 0.15,
@@ -1336,6 +1336,12 @@ export const inspectParsedAsset = (
       "topology.boundary-edge-ratio",
       "geometry",
       `Boundary edges account for ${ratio(topology.boundaryEdges, edgeCount).toFixed(6)} of welded edges.`,
+    );
+  if (topology.nonManifoldEdges > 0)
+    finding(
+      "topology.non-manifold-edge",
+      "geometry",
+      `${topology.nonManifoldEdges} non-manifold welded ${topology.nonManifoldEdges === 1 ? "edge was" : "edges were"} found; the ${policy.classification} cap is ${policy.topology.maxNonManifoldEdges}.`,
     );
   const duplicateTriangles = sumTopology("duplicateTriangles");
   if (duplicateTriangles > 0)

@@ -1,5 +1,6 @@
 import type { AssetPolicy } from "@fulcrum/domain";
-import { type Document, Primitive } from "@gltf-transform/core";
+import { type Document, Primitive, type Texture } from "@gltf-transform/core";
+import sharp from "sharp";
 
 import { encodePngRgba } from "./png.js";
 
@@ -7,12 +8,23 @@ const MAX_TURNTABLE_TRIANGLES = 250_000;
 const BACKGROUND: [number, number, number, number] = [22, 27, 36, 255];
 
 type Vec3 = [number, number, number];
+type Vec2 = [number, number];
+
+type DecodedTexture = {
+  width: number;
+  height: number;
+  rgba: Uint8Array;
+};
 
 type WorldTriangle = {
   ordinal: number;
   points: [Vec3, Vec3, Vec3];
   normal: Vec3;
   baseColor: [number, number, number, number];
+  texture?: {
+    image: DecodedTexture;
+    coordinates: [Vec2, Vec2, Vec2];
+  };
 };
 
 type ScreenVertex = { x: number; y: number; depth: number };
@@ -84,6 +96,98 @@ const toByte = (linearValue: number): number => {
   return Math.round(srgb * 255);
 };
 
+const fromSrgbByte = (value: number): number => {
+  const srgb = value / 255;
+  return srgb <= 0.04045 ? srgb / 12.92 : ((srgb + 0.055) / 1.055) ** 2.4;
+};
+
+const repeat = (value: number): number => value - Math.floor(value);
+
+const sampleTexture = (
+  texture: DecodedTexture,
+  coordinates: Vec2,
+): [number, number, number, number] => {
+  const x = repeat(coordinates[0]) * texture.width - 0.5;
+  const y = repeat(coordinates[1]) * texture.height - 0.5;
+  const x0 = Math.floor(x);
+  const y0 = Math.floor(y);
+  const xWeight = x - x0;
+  const yWeight = y - y0;
+  const pixel = (pixelX: number, pixelY: number, channel: number): number => {
+    const wrappedX = ((pixelX % texture.width) + texture.width) % texture.width;
+    const wrappedY =
+      ((pixelY % texture.height) + texture.height) % texture.height;
+    return texture.rgba[(wrappedY * texture.width + wrappedX) * 4 + channel]!;
+  };
+  const interpolate = (channel: number): number => {
+    const top =
+      pixel(x0, y0, channel) * (1 - xWeight) +
+      pixel(x0 + 1, y0, channel) * xWeight;
+    const bottom =
+      pixel(x0, y0 + 1, channel) * (1 - xWeight) +
+      pixel(x0 + 1, y0 + 1, channel) * xWeight;
+    return top * (1 - yWeight) + bottom * yWeight;
+  };
+  return [
+    fromSrgbByte(interpolate(0)),
+    fromSrgbByte(interpolate(1)),
+    fromSrgbByte(interpolate(2)),
+    interpolate(3) / 255,
+  ];
+};
+
+const decodeBaseColorTextures = async (
+  document: Document,
+  maximumDimension: number,
+): Promise<Map<Texture, DecodedTexture>> => {
+  const textures = new Set(
+    document
+      .getRoot()
+      .listMaterials()
+      .flatMap((material) =>
+        material.getBaseColorTexture() ? [material.getBaseColorTexture()!] : [],
+      ),
+  );
+  const decoded = new Map<Texture, DecodedTexture>();
+  await Promise.all(
+    [...textures].map(async (texture) => {
+      const image = texture.getImage();
+      if (!image)
+        throw new Error("Turntable base-color texture has no embedded image.");
+      let result;
+      try {
+        result = await sharp(image)
+          .resize({
+            width: maximumDimension,
+            height: maximumDimension,
+            fit: "inside",
+            withoutEnlargement: true,
+            kernel: "lanczos3",
+          })
+          .ensureAlpha()
+          .raw()
+          .toBuffer({ resolveWithObject: true });
+      } catch (error) {
+        throw new Error(
+          `Turntable could not decode a base-color texture: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      if (
+        result.info.width <= 0 ||
+        result.info.height <= 0 ||
+        result.info.channels !== 4
+      )
+        throw new Error("Turntable decoded an invalid base-color texture.");
+      decoded.set(texture, {
+        width: result.info.width,
+        height: result.info.height,
+        rgba: new Uint8Array(result.data),
+      });
+    }),
+  );
+  return decoded;
+};
+
 const renderFrame = (
   triangles: readonly WorldTriangle[],
   center: Vec3,
@@ -114,7 +218,11 @@ const renderFrame = (
   depth.fill(Number.POSITIVE_INFINITY);
   const ordinal = new Int32Array(config.width * config.height);
   ordinal.fill(2_147_483_647);
-  const light = normalize([0.4, 0.8, -0.6]);
+  const light = normalize([
+    right[0] * 0.4 + up[0] * 0.8 + centerToCamera[0] * 0.6,
+    right[1] * 0.4 + up[1] * 0.8 + centerToCamera[1] * 0.6,
+    right[2] * 0.4 + up[2] * 0.8 + centerToCamera[2] * 0.6,
+  ]);
 
   for (const triangle of triangles) {
     let projected = triangle.points.map((point): ScreenVertex => {
@@ -127,10 +235,17 @@ const renderFrame = (
         depth: dot(relative, forward),
       };
     }) as [ScreenVertex, ScreenVertex, ScreenVertex];
+    let textureCoordinates = triangle.texture?.coordinates;
     let area = edge(projected[0], projected[1], projected[2].x, projected[2].y);
     if (!Number.isFinite(area) || area === 0) continue;
     if (area < 0) {
       projected = [projected[0], projected[2], projected[1]];
+      if (textureCoordinates)
+        textureCoordinates = [
+          textureCoordinates[0],
+          textureCoordinates[2],
+          textureCoordinates[1],
+        ];
       area = -area;
     }
     const minimumX = Math.max(
@@ -152,13 +267,15 @@ const renderFrame = (
     const edge0TopLeft = isTopLeft(projected[1], projected[2]);
     const edge1TopLeft = isTopLeft(projected[2], projected[0]);
     const edge2TopLeft = isTopLeft(projected[0], projected[1]);
-    const lighting = 0.35 + 0.65 * Math.max(0, dot(triangle.normal, light));
-    const color = [
-      toByte(triangle.baseColor[0] * lighting),
-      toByte(triangle.baseColor[1] * lighting),
-      toByte(triangle.baseColor[2] * lighting),
-      255,
-    ];
+    const lighting = 0.45 + 0.55 * Math.max(0, dot(triangle.normal, light));
+    const untexturedColor = textureCoordinates
+      ? undefined
+      : [
+          toByte(triangle.baseColor[0] * lighting),
+          toByte(triangle.baseColor[1] * lighting),
+          toByte(triangle.baseColor[2] * lighting),
+          255,
+        ];
 
     for (let y = minimumY; y <= maximumY; y += 1)
       for (let x = minimumX; x <= maximumX; x += 1) {
@@ -186,16 +303,35 @@ const renderFrame = (
           continue;
         depth[pixel] = sampleDepth;
         ordinal[pixel] = triangle.ordinal;
+        const textureColor =
+          triangle.texture && textureCoordinates
+            ? sampleTexture(triangle.texture.image, [
+                (weight0 * textureCoordinates[0][0] +
+                  weight1 * textureCoordinates[1][0] +
+                  weight2 * textureCoordinates[2][0]) /
+                  area,
+                (weight0 * textureCoordinates[0][1] +
+                  weight1 * textureCoordinates[1][1] +
+                  weight2 * textureCoordinates[2][1]) /
+                  area,
+              ])
+            : undefined;
+        const color = untexturedColor ?? [
+          toByte(triangle.baseColor[0] * textureColor![0] * lighting),
+          toByte(triangle.baseColor[1] * textureColor![1] * lighting),
+          toByte(triangle.baseColor[2] * textureColor![2] * lighting),
+          255,
+        ];
         rgba.set(color, pixel * 4);
       }
   }
   return encodePngRgba(config.width, config.height, rgba);
 };
 
-export const renderTurntable = (
+export const renderTurntable = async (
   document: Document,
   config: AssetPolicy["turntable"],
-): RenderedTurntableFrame[] => {
+): Promise<RenderedTurntableFrame[]> => {
   let definitionTriangleCount = 0;
   for (const mesh of document.getRoot().listMeshes())
     for (const primitive of mesh.listPrimitives()) {
@@ -212,6 +348,10 @@ export const renderTurntable = (
     }
   if (definitionTriangleCount > MAX_TURNTABLE_TRIANGLES)
     throw new Error("Turntable refuses assets above 250,000 triangles.");
+  const decodedTextures = await decodeBaseColorTextures(
+    document,
+    Math.max(config.width, config.height) * 2,
+  );
 
   const scene = document.getRoot().listScenes()[0];
   if (!scene) throw new Error("Turntable requires a default scene.");
@@ -272,11 +412,46 @@ export const renderTurntable = (
         }
         const material = primitive.getMaterial();
         const baseColor = material?.getBaseColorFactor() ?? [0.5, 0.5, 0.5, 1];
+        const baseColorTexture = material?.getBaseColorTexture();
+        const decodedTexture = baseColorTexture
+          ? decodedTextures.get(baseColorTexture)
+          : undefined;
+        const textureCoordinateSet =
+          material?.getBaseColorTextureInfo()?.getTexCoord() ?? 0;
+        const textureCoordinates = decodedTexture
+          ? primitive.getAttribute(`TEXCOORD_${textureCoordinateSet}`)
+          : undefined;
+        if (decodedTexture && !textureCoordinates)
+          throw new Error(
+            `Turntable base-color texture requires TEXCOORD_${textureCoordinateSet}.`,
+          );
+        const triangleTextureCoordinates = textureCoordinates
+          ? vertexIndices.map((index) => {
+              const value = textureCoordinates.getElement(index, []);
+              const coordinates: Vec2 = [
+                value[0] ?? Number.NaN,
+                value[1] ?? Number.NaN,
+              ];
+              if (!coordinates.every(Number.isFinite))
+                throw new Error(
+                  "Turntable encountered non-finite texture coordinates.",
+                );
+              return coordinates;
+            })
+          : undefined;
         triangles.push({
           ordinal: triangleOrdinal,
           points,
           normal: normalize(face),
           baseColor: [baseColor[0], baseColor[1], baseColor[2], baseColor[3]],
+          ...(decodedTexture && triangleTextureCoordinates
+            ? {
+                texture: {
+                  image: decodedTexture,
+                  coordinates: triangleTextureCoordinates as [Vec2, Vec2, Vec2],
+                },
+              }
+            : {}),
         });
         triangleOrdinal += 1;
       }

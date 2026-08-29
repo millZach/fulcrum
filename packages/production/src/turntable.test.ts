@@ -43,13 +43,51 @@ const triangleDocument = (frontZ: number): Document => {
   return document;
 };
 
+const texturedTriangleDocument = (jpegBase64: string): Document => {
+  const document = new Document();
+  const scene = document.createScene("textured");
+  const buffer = document.createBuffer("buffer");
+  const positions = document
+    .createAccessor("positions", buffer)
+    .setType("VEC3")
+    .setArray(new Float32Array([-0.8, -0.8, 0, 0.8, -0.8, 0, 0, 0.8, 0]));
+  const textureCoordinates = document
+    .createAccessor("texture-coordinates", buffer)
+    .setType("VEC2")
+    .setArray(new Float32Array([0, 0, 1, 0, 0.5, 1]));
+  const texture = document
+    .createTexture("base-color")
+    .setImage(Uint8Array.from(Buffer.from(jpegBase64, "base64")))
+    .setMimeType("image/jpeg");
+  const material = document
+    .createMaterial("textured")
+    .setBaseColorFactor([1, 1, 1, 1])
+    .setBaseColorTexture(texture);
+  const mesh = document
+    .createMesh("textured")
+    .addPrimitive(
+      document
+        .createPrimitive()
+        .setAttribute("POSITION", positions)
+        .setAttribute("TEXCOORD_0", textureCoordinates)
+        .setMaterial(material),
+    );
+  scene.addChild(document.createNode("textured").setMesh(mesh));
+  return document;
+};
+
+const RED_JPEG =
+  "/9j/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/2wBDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAn/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAACQr/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCL4Ap1/D//2Q==";
+const BLUE_JPEG =
+  "/9j/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/2wBDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAr/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAACAr/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCOcBfwK7//2Q==";
+
 describe("renderTurntable", () => {
   it("renders_exact_policy_frame_count_at_fixed_yaws", async () => {
     const document = await new NodeIO().readBinary(
       await createReplayReliquary(),
     );
 
-    const frames = renderTurntable(
+    const frames = await renderTurntable(
       document,
       DEFAULT_ASSET_POLICIES.hero.turntable,
     );
@@ -70,21 +108,21 @@ describe("renderTurntable", () => {
     );
 
     const actual = hashes(
-      renderTurntable(document, DEFAULT_ASSET_POLICIES.hero.turntable),
+      await renderTurntable(document, DEFAULT_ASSET_POLICIES.hero.turntable),
     );
     expect(actual).toEqual([
-      "bd3c1a66a60180ca63e06c33c159cbbfc6d1c63c643a2ff8d189e757e3d0377a",
-      "bc0dc33d65259272112d79151eb44b150f825f3d4a8c6157d7bd16dadcb8f137",
-      "47469cc96a2368f3670b022e02635e3d180e98a667a782fb8bdc06b660953a07",
-      "56f491db26b3267c02ed6d0c8382f5f9d73d9437aed36e7f508560821f029313",
-      "54222a394e3f25d089edc49068346ec8722b427f66eb5a40084df6fa22e9c8fb",
-      "60d7c24b20f90224fc8b5b186f6d58535ffd2533a444df569a97cd8ce94c32a0",
-      "a2c50a2c0030dbef71bcb113e8c9316036480d181a18ae9605d03d576d07d15f",
-      "ac34c9e76e8a2aa0eec8e702d17e7ad3b1652d36eae9754334595175dcfe9d94",
+      "e6a1112ee0cd91e842c8002601838c5bd55fcf6c43ef047afcbfaab9a915be83",
+      "7b0e0c1d4c8eda95bf479fc5d256025f1ee9483a16468f2f1dfc2951f3869d47",
+      "bc7548add51c02afa2908ed5fd5fdf78b292a5890d8f84cf61ebe359255cc502",
+      "490252288407ae998c62a6482919f5cb6fa0651f1b284d59be6b7d3af322c879",
+      "07c5b0058dff1d1e674603c599c8bd89ea5d721939afa1abcedd41a448950e84",
+      "cfe4e1854d84038a51cf432eb2088f1b1768282bc4f96a8feec40abd321ea945",
+      "e47b4aba10f6dc700b3a4689d8ef822f90c8c6c1736853f9d42dc592ca4d672a",
+      "69b1632ad52018e994adf6634ad9840c4595981e3703658d1e3b2573b6a30671",
     ]);
   });
 
-  it("world_transform_changes_occlusion_and_frame_hash", () => {
+  it("world_transform_changes_occlusion_and_frame_hash", async () => {
     const config = {
       ...DEFAULT_ASSET_POLICIES.hero.turntable,
       frameCount: 4,
@@ -93,10 +131,29 @@ describe("renderTurntable", () => {
       elevationDegrees: 0,
     };
 
-    const front = hashes(renderTurntable(triangleDocument(-0.2), config));
-    const behind = hashes(renderTurntable(triangleDocument(0.4), config));
+    const front = hashes(await renderTurntable(triangleDocument(-0.2), config));
+    const behind = hashes(await renderTurntable(triangleDocument(0.4), config));
 
     expect(front[0]).not.toBe(behind[0]);
+  });
+
+  it("base_color_textures_change_turntable_pixels", async () => {
+    const config = {
+      ...DEFAULT_ASSET_POLICIES.hero.turntable,
+      frameCount: 4,
+      width: 128,
+      height: 128,
+      elevationDegrees: 0,
+    };
+
+    const red = hashes(
+      await renderTurntable(texturedTriangleDocument(RED_JPEG), config),
+    );
+    const blue = hashes(
+      await renderTurntable(texturedTriangleDocument(BLUE_JPEG), config),
+    );
+
+    expect(red).not.toEqual(blue);
   });
 
   it("same_input_produces_identical_png_bytes", async () => {
@@ -104,11 +161,11 @@ describe("renderTurntable", () => {
       await createReplayReliquary(),
     );
 
-    const first = renderTurntable(
+    const first = await renderTurntable(
       document,
       DEFAULT_ASSET_POLICIES.hero.turntable,
     );
-    const second = renderTurntable(
+    const second = await renderTurntable(
       document,
       DEFAULT_ASSET_POLICIES.hero.turntable,
     );
@@ -118,7 +175,7 @@ describe("renderTurntable", () => {
     );
   });
 
-  it("rejects_zero_bounds_and_over_budget_geometry_before_rendering", () => {
+  it("rejects_zero_bounds_and_over_budget_geometry_before_rendering", async () => {
     const zero = new Document();
     const zeroScene = zero.createScene("zero");
     const zeroBuffer = zero.createBuffer("buffer");
@@ -153,11 +210,11 @@ describe("renderTurntable", () => {
       overBudget.createNode("large").setMesh(overBudgetMesh),
     );
 
-    expect(() =>
+    await expect(
       renderTurntable(zero, DEFAULT_ASSET_POLICIES.hero.turntable),
-    ).toThrow(/non-zero bounds/i);
-    expect(() =>
+    ).rejects.toThrow(/non-zero bounds/i);
+    await expect(
       renderTurntable(overBudget, DEFAULT_ASSET_POLICIES.hero.turntable),
-    ).toThrow(/250,000 triangles/i);
+    ).rejects.toThrow(/250,000 triangles/i);
   });
 });

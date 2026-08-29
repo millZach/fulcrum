@@ -159,6 +159,9 @@ importers:
       fflate:
         specifier: ^0.8.3
         version: 0.8.3
+      sharp:
+        specifier: latest
+        version: 0.35.3(@types/node@26.2.0)
       three:
         specifier: latest
         version: 0.185.1

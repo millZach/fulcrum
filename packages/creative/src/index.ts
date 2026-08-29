@@ -49,6 +49,12 @@ export {
   type SoundGenerationRunner,
 } from "./durable-sound.js";
 export { deriveSoundPlan, SoundPalette } from "./sound-palette.js";
+export {
+  attachmentFrames,
+  resolveImageAttachments,
+  storeImageAttachment,
+  MAX_IMAGE_ATTACHMENT_PIXELS,
+} from "./image-attachment.js";
 
 const replayCreativeOutput: CreativeOutput = CreativeOutputSchema.parse({
   gameDesign: {

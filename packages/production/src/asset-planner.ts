@@ -3,25 +3,31 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   ASSET_CLASS_HANDLING_POLICIES_V1,
   ASSET_PLAN_MAX_ASSETS,
+  AmendAssetPlanInputSchema,
   AssetClassificationSchema,
   AssetPlanSchema,
   AssetPlanFailureSchema,
   AssetPlanningInputSchema,
   ConceptSetSchema,
+  CharacterPoseModeSchema,
+  FinalizedAssetPlanBindingSchema,
   GameDesignSpecSchema,
   M1ConceptDocumentSchema,
   PlannedAssetProcedureSchema,
+  assetPlanSectionFor,
   assetPlanGraphIssues,
   isProviderPreflightError,
   type ApprovalDecision,
   type AssetPlan,
   type AssetPlanIssue,
   type AssetPlanFailure,
+  type AssetPlanSection,
   type AssetPlanningInput,
   type AssetPlanningOutcome,
   type ConceptSet,
   type GameDesignSpec,
   type M1ConceptDocument,
+  type PlannedAsset,
   type RevisionAncestor,
   type RevisionRef,
 } from "@fulcrum/domain";
@@ -42,7 +48,8 @@ export type AssetPlanValidationInputs = {
   conceptSetDocument: ConceptSet;
   conceptDocuments: Record<string, M1ConceptDocument>;
   expectedRevisionId: string;
-  expectedOperation: "asset-plan.initial" | "asset-plan.replan";
+  expectedOperation:
+    "asset-plan.initial" | "asset-plan.replan" | "asset-plan.amend";
   previousPlan?: RevisionRef;
 };
 
@@ -54,6 +61,7 @@ export const AssetPlanDraftAssetSchema = z
     rationale: z.string().trim().min(1).max(600),
     sourceConceptSlotIds: z.array(z.string().min(1)).max(3),
     dependsOnAssetKeys: z.array(z.string().min(1)).max(11),
+    poseMode: CharacterPoseModeSchema.optional(),
     procedure: PlannedAssetProcedureSchema.optional(),
     acceptanceCriteria: z
       .array(z.string().trim().min(1).max(300))
@@ -67,6 +75,13 @@ export const AssetPlanDraftAssetSchema = z
         path: ["procedure"],
         message:
           "Procedural assets require parameters; other classes must omit them.",
+      });
+    }
+    if (asset.poseMode && asset.classification !== "hero") {
+      context.addIssue({
+        code: "custom",
+        path: ["poseMode"],
+        message: "Only riggable hero assets may request a character pose.",
       });
     }
   });
@@ -171,11 +186,13 @@ export const AssetPlanDraftAssetWireSchema = z.union([
   z.object({
     ...AssetPlanDraftAssetSchema.shape,
     classification: z.enum(["hero", "kit", "functional"]),
+    poseMode: CharacterPoseModeSchema.nullable(),
     procedure: z.null(),
   }),
   z.object({
     ...AssetPlanDraftAssetSchema.shape,
     classification: z.literal("procedural"),
+    poseMode: CharacterPoseModeSchema.nullable(),
     procedure: AssetPlanDraftProcedureWireSchema,
   }),
 ]);
@@ -192,8 +209,12 @@ export const mapAssetPlanDraftWire = (
   draft: AssetPlanDraftWire,
 ): AssetPlanDraft => ({
   assets: draft.assets.map((asset, assetIndex) => {
-    const { procedure, ...assetFields } = asset;
-    if (procedure === null) return assetFields;
+    const { poseMode, procedure, ...assetFields } = asset;
+    const domainFields = {
+      ...assetFields,
+      ...(poseMode ? { poseMode } : {}),
+    };
+    if (procedure === null) return domainFields;
 
     const names = new Set<string>();
     for (const [parameterIndex, parameter] of procedure.parameters.entries()) {
@@ -218,7 +239,7 @@ export const mapAssetPlanDraftWire = (
     }
 
     return {
-      ...assetFields,
+      ...domainFields,
       procedure: {
         generatorId: procedure.generatorId,
         parameters: Object.fromEntries(
@@ -238,7 +259,7 @@ export type AssetPlanDerivationInputs = AssetPlanValidationInputs & {
 export type AssetPlanMaterializationContext = AssetPlanDerivationInputs & {
   revisionId: string;
   createdAt: string;
-  operation: "asset-plan.initial" | "asset-plan.replan";
+  operation: "asset-plan.initial" | "asset-plan.replan" | "asset-plan.amend";
   provider?: string;
   model?: string;
 };
@@ -306,6 +327,7 @@ const draftFromPreviousPlan = (
           : slug(dependencyId),
       )
       .sort(),
+    ...(asset.poseMode ? { poseMode: asset.poseMode } : {}),
     ...(asset.procedure ? { procedure: structuredClone(asset.procedure) } : {}),
     acceptanceCriteria: [...asset.acceptanceCriteria],
   }));
@@ -434,6 +456,148 @@ export const deriveReplayAssetPlanDraft = (
   return AssetPlanDraftSchema.parse({ assets });
 };
 
+const amendmentCount = (request: string): number => {
+  const digit = /\b(\d{1,2})\b/.exec(request)?.[1];
+  if (digit) return Math.max(1, Number(digit));
+  const words: Readonly<Record<string, number>> = {
+    one: 1,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10,
+  };
+  const word = new RegExp(`\\b(${Object.keys(words).join("|")})\\b`).exec(
+    request.toLowerCase(),
+  )?.[1];
+  return word ? words[word]! : 1;
+};
+
+const replayAmendmentAsset = (
+  section: AssetPlanSection,
+  assetKey: string,
+  ordinal: number,
+  sourceConceptSlotIds: string[],
+  request: string,
+  seed: string,
+): AssetPlanDraftAsset => {
+  const requested = request.trim().slice(0, 240);
+  const shared = {
+    assetKey,
+    sourceConceptSlotIds,
+    dependsOnAssetKeys: [] as string[],
+    acceptanceCriteria: [
+      `The new slot satisfies this section amendment: ${requested}`.slice(
+        0,
+        300,
+      ),
+    ],
+  };
+  if (section === "modular-kit")
+    return {
+      ...shared,
+      name: `Modular Kit Slot ${ordinal}`,
+      classification: "kit",
+      rationale:
+        "This added modular kit slot carries the approved visual language into reusable pieces.",
+    };
+  if (section === "procedural-reference")
+    return {
+      ...shared,
+      name: `Procedural Reference Slot ${ordinal}`,
+      classification: "procedural",
+      rationale:
+        "This added procedural slot gives the coding agent one auditable implementation target.",
+      procedure: {
+        generatorId: "fulcrum.section-amendment.v1",
+        parameters: { seed, request: requested },
+      },
+    };
+  if (section === "environment")
+    return {
+      ...shared,
+      name: `Environment Slot ${ordinal}`,
+      classification: "hero",
+      rationale:
+        "This added environment slot defines another playable-area visual input.",
+    };
+  if (section === "prop")
+    return {
+      ...shared,
+      name: `Prop Slot ${ordinal}`,
+      classification: "hero",
+      rationale:
+        "This added prop slot defines another distinct gameplay object.",
+    };
+  return {
+    ...shared,
+    name: `Character Slot ${ordinal}`,
+    classification: "hero",
+    rationale:
+      "This added character slot defines another identity-readable actor.",
+  };
+};
+
+export const deriveReplayAssetPlanAmendmentDraft = (input: {
+  projectId: string;
+  currentPlan: AssetPlan;
+  section: AssetPlanSection;
+  request: string;
+  seed: string;
+}): AssetPlanDraft => {
+  const draft = draftFromPreviousPlan(input.projectId, input.currentPlan);
+  const remaining = ASSET_PLAN_MAX_ASSETS - draft.assets.length;
+  if (remaining <= 0)
+    throw new Error(
+      `The asset plan already contains the maximum of ${ASSET_PLAN_MAX_ASSETS} assets.`,
+    );
+  const count = Math.min(amendmentCount(input.request), remaining);
+  const digest = hashText(
+    JSON.stringify([
+      input.seed,
+      input.currentPlan.provenance.revisionId,
+      input.section,
+      input.request.trim(),
+    ]),
+  );
+  const source =
+    draft.assets.find((asset, index) => {
+      const current = input.currentPlan.assets[index];
+      return (
+        current !== undefined &&
+        assetPlanSectionFor(current) === input.section &&
+        asset.sourceConceptSlotIds.length > 0
+      );
+    }) ?? draft.assets.find((asset) => asset.sourceConceptSlotIds.length > 0);
+  const sourceConceptSlotIds = [...(source?.sourceConceptSlotIds ?? [])];
+  const existingKeys = new Set(draft.assets.map(({ assetKey }) => assetKey));
+  const sectionPrefix = input.section.replace(/[^a-z0-9]+/g, "-");
+  for (let index = 0; index < count; index += 1) {
+    let suffix = index;
+    let assetKey = `${sectionPrefix}-amendment-${digest.slice(0, 8)}-${suffix + 1}`;
+    while (existingKeys.has(assetKey)) {
+      suffix += 1;
+      assetKey = `${sectionPrefix}-amendment-${digest.slice(0, 8)}-${suffix + 1}`;
+    }
+    existingKeys.add(assetKey);
+    draft.assets.push(
+      replayAmendmentAsset(
+        input.section,
+        assetKey,
+        index + 1,
+        sourceConceptSlotIds,
+        input.request,
+        digest.slice(index * 4, index * 4 + 12),
+      ),
+    );
+  }
+  return AssetPlanDraftSchema.parse(draft);
+};
+
 const classificationOrder = {
   hero: 0,
   kit: 1,
@@ -519,6 +683,7 @@ export const materializeAssetPlan = (
     dependsOnAssetIds: [...new Set(asset.dependsOnAssetKeys)]
       .map(assetId)
       .sort(),
+    ...(asset.poseMode ? { poseMode: asset.poseMode } : {}),
     ...(asset.procedure ? { procedure: structuredClone(asset.procedure) } : {}),
     acceptanceCriteria: [...asset.acceptanceCriteria],
   }));
@@ -561,6 +726,136 @@ export const materializeAssetPlan = (
       createdAt: context.createdAt,
     },
   });
+};
+
+export class AssetPlanAmendmentError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AssetPlanAmendmentError";
+  }
+}
+
+export type AssetPlanAmendmentDiff = {
+  addedAssetIds: string[];
+  changedAssetIds: string[];
+  removedAssetIds: string[];
+};
+
+export type AssetPlanAmendmentMaterializationContext =
+  AssetPlanMaterializationContext & {
+    operation: "asset-plan.amend";
+    expectedOperation: "asset-plan.amend";
+    previousPlan: RevisionRef;
+    previousPlanDocument: AssetPlan;
+    section: AssetPlanSection;
+    frozenAssetIds: ReadonlySet<string>;
+  };
+
+const samePlannedAsset = (left: PlannedAsset, right: PlannedAsset): boolean =>
+  JSON.stringify(left) === JSON.stringify(right);
+
+export const assetPlanAmendmentDiff = (
+  currentPlan: AssetPlan,
+  amendedPlan: AssetPlan,
+): AssetPlanAmendmentDiff => {
+  const current = new Map(
+    currentPlan.assets.map((asset) => [asset.assetId, asset]),
+  );
+  const amended = new Map(
+    amendedPlan.assets.map((asset) => [asset.assetId, asset]),
+  );
+  return {
+    addedAssetIds: amendedPlan.assets
+      .filter((asset) => !current.has(asset.assetId))
+      .map((asset) => asset.assetId),
+    changedAssetIds: amendedPlan.assets
+      .filter((asset) => {
+        const previous = current.get(asset.assetId);
+        return previous !== undefined && !samePlannedAsset(previous, asset);
+      })
+      .map((asset) => asset.assetId),
+    removedAssetIds: currentPlan.assets
+      .filter((asset) => !amended.has(asset.assetId))
+      .map((asset) => asset.assetId),
+  };
+};
+
+/** Materializes the provider's complete draft, then applies the gate section
+ * boundary and frozen-asset rule to the provider result. The model never gets
+ * the last word on an asset that owns spend or approved references. */
+export const materializeAssetPlanAmendment = (
+  rawDraft: AssetPlanDraft,
+  context: AssetPlanAmendmentMaterializationContext,
+): { plan: AssetPlan; diff: AssetPlanAmendmentDiff } => {
+  const candidate = materializeAssetPlan(rawDraft, context);
+  const currentById = new Map(
+    context.previousPlanDocument.assets.map((asset) => [asset.assetId, asset]),
+  );
+  const protectedIds = new Set(
+    context.previousPlanDocument.assets.flatMap((asset) =>
+      context.frozenAssetIds.has(asset.assetId) ||
+      assetPlanSectionFor(asset) !== context.section
+        ? [asset.assetId]
+        : [],
+    ),
+  );
+  const keptIds = new Set<string>();
+  const safeAssets: PlannedAsset[] = [];
+
+  for (const proposed of candidate.assets) {
+    const current = currentById.get(proposed.assetId);
+    if (!current) {
+      if (assetPlanSectionFor(proposed) !== context.section) continue;
+      safeAssets.push(proposed);
+      keptIds.add(proposed.assetId);
+      continue;
+    }
+    if (
+      protectedIds.has(proposed.assetId) ||
+      assetPlanSectionFor(proposed) !== context.section
+    ) {
+      safeAssets.push(current);
+    } else {
+      safeAssets.push(proposed);
+    }
+    keptIds.add(proposed.assetId);
+  }
+
+  for (const current of context.previousPlanDocument.assets) {
+    if (!protectedIds.has(current.assetId) || keptIds.has(current.assetId))
+      continue;
+    safeAssets.push(current);
+    keptIds.add(current.assetId);
+  }
+
+  let plan: AssetPlan;
+  try {
+    plan = AssetPlanSchema.parse({ ...candidate, assets: safeAssets });
+  } catch (caught) {
+    throw new AssetPlanAmendmentError(
+      `The amendment could not preserve the current asset dependencies: ${caught instanceof Error ? caught.message : String(caught)}`,
+    );
+  }
+
+  for (const assetId of context.frozenAssetIds) {
+    const before = currentById.get(assetId);
+    const after = plan.assets.find((asset) => asset.assetId === assetId);
+    if (before && (!after || !samePlannedAsset(before, after)))
+      throw new AssetPlanAmendmentError(
+        `The amendment tried to change frozen asset ${assetId}.`,
+      );
+  }
+
+  const diff = assetPlanAmendmentDiff(context.previousPlanDocument, plan);
+  if (
+    diff.addedAssetIds.length === 0 &&
+    diff.changedAssetIds.length === 0 &&
+    diff.removedAssetIds.length === 0
+  )
+    throw new AssetPlanAmendmentError(
+      "The planner did not return a safe change for this section. The current plan was left untouched.",
+    );
+  return { plan, diff };
 };
 
 const approvalIssue = (
@@ -1276,7 +1571,7 @@ class AssetPlannerImplementation implements AssetPlanning {
         },
       );
       const systemPrompt =
-        "Create a compact asset-plan draft. Return no lineage, policy, provenance, or final IDs. Asset keys must be unique; dependsOnAssetKeys may only reference assetKeys present in this draft and must stay acyclic; sourceConceptSlotIds may only use the supplied slot IDs.";
+        "Create a compact asset-plan draft. Return no lineage, policy, provenance, or final IDs. Asset keys must be unique; dependsOnAssetKeys may only reference assetKeys present in this draft and must stay acyclic; sourceConceptSlotIds may only use the supplied slot IDs. Set poseMode on every clearly humanoid character the game animates — playable characters, humanoid NPCs, and humanoid enemies — preferring a-pose, because that is what a rigger expects. Omit poseMode for props, kits, vehicles, creatures that are not bipedal, and anything that never moves.";
       const prompt = JSON.stringify({
         gameDesignSpec: documents.gameDesignSpecDocument,
         selectedConcepts: selectedSummaries,
@@ -1393,3 +1688,488 @@ export const createAssetPlannerForTest = (
   repository: ProjectRepository,
   dependencies: AssetPlannerDependencies,
 ): AssetPlanning => new AssetPlannerImplementation(repository, dependencies);
+
+const AssetPlanAmendmentRequestSchema = AmendAssetPlanInputSchema.extend({
+  projectId: z.string().min(1),
+});
+
+export type AssetPlanAmendmentRequest = z.infer<
+  typeof AssetPlanAmendmentRequestSchema
+>;
+
+export type AssetPlanAmendmentResult = AssetPlanAmendmentDiff & {
+  fromRevision: RevisionRef;
+  toRevision: RevisionRef;
+  plan: AssetPlan;
+};
+
+export interface AssetPlanAmending {
+  amend(input: AssetPlanAmendmentRequest): Promise<AssetPlanAmendmentResult>;
+}
+
+type ResolvedAssetPlanAmendment = {
+  input: AssetPlanAmendmentRequest;
+  planningInput: AssetPlanningInput;
+  currentPlanRevision: RevisionRef;
+  currentPlan: AssetPlan;
+  gameDesignSpecDocument: GameDesignSpec;
+  conceptSetDocument: ConceptSet;
+  conceptDocuments: Record<string, M1ConceptDocument>;
+  frozenAssetIds: Set<string>;
+};
+
+export const assetPlanAmendmentIdempotencyKey = (input: {
+  projectId: string;
+  currentPlan: RevisionRef;
+  section: AssetPlanSection;
+  request: string;
+  mode: AssetPlanningInput["mode"];
+  orchestratorProvider: AssetPlanningInput["orchestratorProvider"];
+}): string =>
+  [
+    "asset-plan-amend",
+    input.projectId,
+    input.currentPlan.artifact.sha256,
+    input.section,
+    hashText(input.request.trim()),
+    input.mode,
+    input.orchestratorProvider,
+  ].join(":");
+
+const amendmentFailureMessage = (payload: Record<string, unknown>): string =>
+  typeof payload.error === "string"
+    ? payload.error
+    : "The prior asset-plan amendment failed. The current plan was left untouched.";
+
+class AssetPlanAmenderImplementation implements AssetPlanAmending {
+  constructor(
+    private readonly repository: ProjectRepository,
+    private readonly dependencies: AssetPlannerDependencies,
+  ) {}
+
+  async amend(
+    rawInput: AssetPlanAmendmentRequest,
+  ): Promise<AssetPlanAmendmentResult> {
+    const input = AssetPlanAmendmentRequestSchema.parse(rawInput);
+    const resolved = this.resolve(input);
+    const idempotencyKey = assetPlanAmendmentIdempotencyKey({
+      projectId: input.projectId,
+      currentPlan: resolved.currentPlanRevision,
+      section: input.section,
+      request: input.request,
+      mode: resolved.planningInput.mode,
+      orchestratorProvider: resolved.planningInput.orchestratorProvider,
+    });
+    const existing = this.repository.getSubmissionByKey(idempotencyKey);
+    if (existing?.status === "ready" && existing.resultRevisionId) {
+      const toRevision = this.repository.getRevision(existing.resultRevisionId);
+      const plan = AssetPlanSchema.parse(
+        this.repository.resolveRevision(toRevision),
+      );
+      return {
+        fromRevision: resolved.currentPlanRevision,
+        toRevision,
+        plan,
+        ...assetPlanAmendmentDiff(resolved.currentPlan, plan),
+      };
+    }
+    if (existing?.status === "failed")
+      throw new AssetPlanAmendmentError(
+        amendmentFailureMessage(existing.payload),
+      );
+    if (
+      existing?.status === "submission-unknown" ||
+      (existing &&
+        resolved.planningInput.mode === "live" &&
+        typeof existing.payload.providerCallStartedAt === "string")
+    )
+      throw new AssetPlanAmendmentError(
+        "The live amendment may have reached the planner provider. Fulcrum left the asset plan unchanged and will not submit it again automatically.",
+      );
+
+    const submission =
+      existing ??
+      this.repository.recordSubmissionIntent({
+        projectId: input.projectId,
+        operation: "asset-plan.amend",
+        provider:
+          resolved.planningInput.mode === "replay"
+            ? "fulcrum-replay"
+            : resolved.planningInput.orchestratorProvider,
+        idempotencyKey,
+        payload: {
+          revisionId: this.dependencies.revisionId(),
+          createdAt: this.dependencies.now(),
+          section: input.section,
+          request: input.request,
+          fromRevisionId: resolved.currentPlanRevision.revisionId,
+          mode: resolved.planningInput.mode,
+        },
+      });
+    const revisionId =
+      typeof submission.payload.revisionId === "string"
+        ? submission.payload.revisionId
+        : this.dependencies.revisionId();
+    const createdAt =
+      typeof submission.payload.createdAt === "string"
+        ? submission.payload.createdAt
+        : this.dependencies.now();
+
+    let draft: AssetPlanDraft;
+    let model: string | undefined;
+    if (resolved.planningInput.mode === "replay") {
+      try {
+        draft = deriveReplayAssetPlanAmendmentDraft({
+          projectId: input.projectId,
+          currentPlan: resolved.currentPlan,
+          section: input.section,
+          request: input.request,
+          seed: resolved.currentPlanRevision.artifact.sha256,
+        });
+      } catch (caught) {
+        return this.fail(
+          submission.requestId,
+          submission.payload,
+          caught instanceof Error ? caught.message : String(caught),
+        );
+      }
+    } else {
+      const generated = await this.generateLiveDraft(resolved, submission);
+      draft = generated.draft;
+      model = generated.model;
+    }
+
+    let materialized: { plan: AssetPlan; diff: AssetPlanAmendmentDiff };
+    try {
+      materialized = materializeAssetPlanAmendment(draft, {
+        ...resolved.planningInput,
+        gameDesignSpecDocument: resolved.gameDesignSpecDocument,
+        conceptSetDocument: resolved.conceptSetDocument,
+        conceptDocuments: resolved.conceptDocuments,
+        expectedRevisionId: revisionId,
+        expectedOperation: "asset-plan.amend",
+        previousPlan: resolved.currentPlanRevision,
+        previousPlanDocument: resolved.currentPlan,
+        revisionId,
+        createdAt,
+        operation: "asset-plan.amend",
+        section: input.section,
+        frozenAssetIds: resolved.frozenAssetIds,
+        ...(resolved.planningInput.mode === "live"
+          ? {
+              provider: resolved.planningInput.orchestratorProvider,
+              ...(model ? { model } : {}),
+            }
+          : {}),
+      });
+    } catch (caught) {
+      return this.fail(
+        submission.requestId,
+        submission.payload,
+        caught instanceof Error ? caught.message : String(caught),
+      );
+    }
+
+    const validationIssues = validateAssetPlanAgainstApprovedInputs(
+      materialized.plan,
+      {
+        ...resolved.planningInput,
+        conceptSetDocument: resolved.conceptSetDocument,
+        conceptDocuments: resolved.conceptDocuments,
+        expectedRevisionId: revisionId,
+        expectedOperation: "asset-plan.amend",
+        previousPlan: resolved.currentPlanRevision,
+      },
+    );
+    if (validationIssues.length > 0)
+      return this.fail(
+        submission.requestId,
+        submission.payload,
+        `The amended plan failed approved-input validation: ${validationIssues
+          .map(({ message }) => message)
+          .join(" ")}`,
+      );
+
+    const latest = this.repository.getProject(input.projectId);
+    if (
+      latest.assetPlan?.revisionId !==
+        resolved.currentPlanRevision.revisionId ||
+      latest.assetPlan?.artifact.sha256 !==
+        resolved.currentPlanRevision.artifact.sha256
+    )
+      return this.fail(
+        submission.requestId,
+        submission.payload,
+        "The asset plan changed while this amendment was running. No amendment was applied.",
+      );
+
+    const toRevision = this.repository.writeRevision({
+      projectId: input.projectId,
+      entityId: `${input.projectId}:asset-plan`,
+      kind: "asset-plan",
+      value: materialized.plan,
+      runId: resolved.planningInput.runId,
+      revisionId,
+      createdAt,
+    });
+    this.repository.updateSubmission(submission.requestId, {
+      status: "ready",
+      resultRevisionId: toRevision.revisionId,
+      payload: {
+        ...submission.payload,
+        revisionId,
+        createdAt,
+        ...(model ? { model } : {}),
+      },
+    });
+    return {
+      fromRevision: resolved.currentPlanRevision,
+      toRevision,
+      plan: materialized.plan,
+      ...materialized.diff,
+    };
+  }
+
+  private resolve(
+    input: AssetPlanAmendmentRequest,
+  ): ResolvedAssetPlanAmendment {
+    const state = this.repository.getProject(input.projectId);
+    if (state.milestone !== "m2" || state.stage !== "asset-batch")
+      throw new AssetPlanAmendmentError(
+        "Asset-plan sections can only be amended from the staged asset gate.",
+      );
+    if (!state.assetPlan)
+      throw new AssetPlanAmendmentError(
+        "This project has no asset plan to amend.",
+      );
+    const finalized = FinalizedAssetPlanBindingSchema.safeParse({
+      projectId: input.projectId,
+      plan: state.assetPlan,
+      finalization: state.assetPlanApproval,
+    });
+    if (!finalized.success)
+      throw new AssetPlanAmendmentError(
+        "The current asset plan is not hash-bound to an approved finalization.",
+      );
+    const planningInput = AssetPlanningInputSchema.parse({
+      projectId: input.projectId,
+      runId: state.runId,
+      mode: state.mode,
+      orchestratorProvider: state.orchestratorProvider,
+      gameDesignSpec:
+        state.gameDesignSpec && state.gameDesignApproval
+          ? {
+              revision: state.gameDesignSpec,
+              approval: state.gameDesignApproval,
+            }
+          : undefined,
+      conceptSet:
+        state.conceptSet && state.conceptSetApproval
+          ? { revision: state.conceptSet, approval: state.conceptSetApproval }
+          : undefined,
+    });
+    const gameDesignSpecDocument = GameDesignSpecSchema.parse(
+      this.repository.resolveRevision(planningInput.gameDesignSpec.revision),
+    );
+    const conceptSetDocument = ConceptSetSchema.parse(
+      this.repository.resolveRevision(planningInput.conceptSet.revision),
+    );
+    const conceptDocuments: Record<string, M1ConceptDocument> = {};
+    for (const slot of conceptSetDocument.slots) {
+      const kept = slot.revisions.find(
+        ({ revision }) => revision.revisionId === slot.selectedRevisionId,
+      );
+      if (!kept || kept.staleReason)
+        throw new AssetPlanAmendmentError(
+          `Concept slot ${slot.slotId} has no selected, non-stale revision.`,
+        );
+      const stored = this.repository.getRevision(kept.revision.revisionId);
+      if (stored.artifact.sha256 !== kept.revision.artifact.sha256)
+        throw new AssetPlanAmendmentError(
+          `Concept slot ${slot.slotId} does not bind to its stored revision hash.`,
+        );
+      conceptDocuments[stored.revisionId] = M1ConceptDocumentSchema.parse(
+        this.repository.resolveRevision(stored),
+      );
+    }
+    const currentPlan = AssetPlanSchema.parse(
+      this.repository.resolveRevision(state.assetPlan),
+    );
+    const currentAssetIds = new Set(
+      currentPlan.assets.map(({ assetId }) => assetId),
+    );
+    const frozenAssetIds = new Set([
+      ...Object.entries(state.assetStages ?? {}).flatMap(([assetId, stage]) =>
+        stage.runs.length > 0 && currentAssetIds.has(assetId) ? [assetId] : [],
+      ),
+      ...Object.keys(state.assetReferenceSets ?? {}).filter((assetId) =>
+        currentAssetIds.has(assetId),
+      ),
+    ]);
+    return {
+      input,
+      planningInput,
+      currentPlanRevision: state.assetPlan,
+      currentPlan,
+      gameDesignSpecDocument,
+      conceptSetDocument,
+      conceptDocuments,
+      frozenAssetIds,
+    };
+  }
+
+  private async generateLiveDraft(
+    resolved: ResolvedAssetPlanAmendment,
+    submission: ReturnType<ProjectRepository["recordSubmissionIntent"]>,
+  ): Promise<{ draft: AssetPlanDraft; model: string }> {
+    const { input, planningInput, currentPlan, frozenAssetIds } = resolved;
+    const {
+      error: _priorError,
+      providerCallStartedAt: _priorProviderCallStartedAt,
+      ...cleanPayload
+    } = submission.payload;
+    this.repository.updateSubmission(submission.requestId, {
+      status: "pending",
+      payload: cleanPayload,
+    });
+    if (
+      planningInput.orchestratorProvider === "openai-api" &&
+      submission.payload.budgetReserved !== true
+    ) {
+      try {
+        this.repository.reserveBudget(
+          input.projectId,
+          textReserveUsd(),
+          "Asset-plan section amendment",
+        );
+      } catch (caught) {
+        if (!isProviderPreflightError(caught)) throw caught;
+        this.repository.updateSubmission(submission.requestId, {
+          status: "intent-recorded",
+          payload: { ...cleanPayload, error: caught.message },
+        });
+        throw caught;
+      }
+    }
+    const pending = this.repository.updateSubmission(submission.requestId, {
+      status: "pending",
+      payload: {
+        ...cleanPayload,
+        ...(planningInput.orchestratorProvider === "openai-api"
+          ? { budgetReserved: true }
+          : {}),
+        providerCallStartedAt: this.dependencies.now(),
+      },
+    });
+    const selectedConcepts = resolved.conceptSetDocument.slots.flatMap(
+      (slot) => {
+        const kept = slot.revisions.find(
+          ({ revision }) => revision.revisionId === slot.selectedRevisionId,
+        );
+        const document = kept
+          ? resolved.conceptDocuments[kept.revision.revisionId]
+          : undefined;
+        return document
+          ? [
+              {
+                slotId: slot.slotId,
+                name: slot.name,
+                purpose: slot.purpose,
+                conceptName: document.name,
+                promptSummary: document.prompt.slice(0, 500),
+              },
+            ]
+          : [];
+      },
+    );
+    const systemPrompt = [
+      "Return one complete amended asset-plan draft using the same wire schema as initial planning.",
+      `The request is scoped only to the ${input.section} gate section. Preserve every asset outside that section exactly and do not add assets to another section.`,
+      "Reuse every existing assetKey for an existing asset. An unchanged asset must keep the same assetKey so its final asset ID stays stable.",
+      "Frozen assets have a recorded staged run or an approved reference set. Keep every frozen asset present and byte-for-byte unchanged: do not rename, remove, reclassify, alter its rationale, sources, dependencies, pose, procedure, or acceptance criteria.",
+      "New assets are unresolved plan slots only. Do not request, schedule or claim any Meshy task, image generation, reference approval or other spend.",
+      "Asset keys must be unique; dependsOnAssetKeys may only reference assetKeys present in this draft and must stay acyclic; sourceConceptSlotIds may only use the supplied slot IDs.",
+      "Set poseMode on every clearly humanoid character the game animates, preferring a-pose. Omit poseMode for props, kits, environments, vehicles, non-biped creatures and anything that never moves.",
+    ].join(" ");
+    const prompt = JSON.stringify({
+      section: input.section,
+      request: input.request,
+      currentPlan,
+      currentDraft: draftFromPreviousPlan(input.projectId, currentPlan),
+      frozenAssetIds: [...frozenAssetIds],
+      frozenAssets: currentPlan.assets.filter(({ assetId }) =>
+        frozenAssetIds.has(assetId),
+      ),
+      selectedConcepts,
+    });
+    let validationIssues: AssetPlanIssue[] = [];
+    try {
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        const generated = await this.dependencies.execution.generateStructured({
+          provider: planningInput.orchestratorProvider,
+          cwd: process.env.FULCRUM_REPOSITORY_ROOT ?? process.cwd(),
+          systemPrompt:
+            attempt === 1
+              ? systemPrompt
+              : `${systemPrompt}\n\nCorrection required. The prior draft failed schema validation with these issues: ${JSON.stringify(validationIssues)}. Return a corrected complete draft.`,
+          prompt,
+          schema: AssetPlanDraftWireSchema,
+        });
+        const validated = validateAssetPlanDraftWire(generated.value);
+        if (validated.success)
+          return {
+            draft: validated.draft,
+            model: generated.model,
+          };
+        validationIssues = validated.issues;
+      }
+      return this.fail(
+        submission.requestId,
+        pending.payload,
+        `The planner returned an invalid amendment: ${validationIssues
+          .map(({ message }) => message)
+          .join(" ")}`,
+      );
+    } catch (caught) {
+      if (caught instanceof AssetPlanAmendmentError) throw caught;
+      const message = caught instanceof Error ? caught.message : String(caught);
+      this.repository.updateSubmission(submission.requestId, {
+        status: "submission-unknown",
+        payload: { ...pending.payload, error: message },
+      });
+      throw new AssetPlanAmendmentError(
+        `The live planner request was interrupted. Fulcrum left the asset plan unchanged. ${message}`,
+      );
+    }
+  }
+
+  private fail(
+    requestId: string,
+    payload: Record<string, unknown>,
+    message: string,
+  ): never {
+    this.repository.updateSubmission(requestId, {
+      status: "failed",
+      payload: { ...payload, error: message },
+    });
+    throw new AssetPlanAmendmentError(message);
+  }
+}
+
+export class AssetPlanAmender extends AssetPlanAmenderImplementation {
+  constructor(
+    repository: ProjectRepository,
+    execution: StructuredModelExecution = new ModelExecution(),
+  ) {
+    super(repository, {
+      ...defaultDependencies(),
+      execution,
+    });
+  }
+}
+
+export const createAssetPlanAmenderForTest = (
+  repository: ProjectRepository,
+  dependencies: AssetPlannerDependencies,
+): AssetPlanAmending =>
+  new AssetPlanAmenderImplementation(repository, dependencies);
