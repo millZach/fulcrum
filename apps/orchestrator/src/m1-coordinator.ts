@@ -5,25 +5,48 @@ import {
   isM1LiveAuthorized,
   m1LiveAuthorizationMessage,
   M1CreativeDevelopment,
+  resolveImageAttachments,
+  storeImageAttachment,
   type SoundGenerationRunner,
   type StructuredModelExecution,
 } from "@fulcrum/creative";
 import {
   runCodexSubscriptionImage,
+  type ExecutionProviderStatus,
+  type StructuredVisionExecution,
   type SubscriptionImageRunner,
 } from "@fulcrum/execution";
+import {
+  StagedAssetLifecycle,
+  type StagedAssetAdapter,
+} from "@fulcrum/production";
 import { z } from "zod";
 
 import {
   AnswerFrontierRoundInputSchema,
+  attachmentsReachOrchestrator,
+  AssetQualityEvidenceSchema,
+  DeterministicAssetReportSchema,
+  RegenerationDecisionReportSchema,
+  SemanticAssetReportSchema,
+  TurntableManifestSchema,
+  AssetPlanSchema,
   ChangeVisualDirectionInputSchema,
   ConceptSetSchema,
   ConceptPlanSchema,
   ConfirmConceptPlanInputSchema,
   ConfirmSharedUnderstandingInputSchema,
+  CommitGameNameInputSchema,
   ConfirmSoundPlanInputSchema,
+  ContinueIntoM2InputSchema,
   CreateProjectInputSchema,
   GameDesignSpecSchema,
+  GameNameCandidateSetSchema,
+  GameNameDecisionSchema,
+  M1_CONTINUATION_ISSUES,
+  m1ContinuationIssue,
+  projectNeedsBudget,
+  projectNeedsMeshyCredits,
   InterrogationStateSchema,
   M1ConceptDocumentSchema,
   M1ApprovalInputSchema,
@@ -33,16 +56,22 @@ import {
   SoundDocumentSchema,
   SoundPlanSchema,
   SoundSetSchema,
+  StoreImageAttachmentInputSchema,
   ReplaceVisualDirectionInputSchema,
   ReviseGameDesignSpecInputSchema,
   SelectConceptRevisionInputSchema,
+  SuggestGameNamesInputSchema,
   VisualDirectionSetSchema,
   type ApprovalDecision,
+  type ApprovalTargetType,
+  type AssetQualityEvidence,
+  type ContinuationProvenance,
   type M1InFlight,
   type M1InFlightAction,
   type ProjectSnapshot,
   type ProjectState,
   type RevisionRef,
+  type StoredImageAttachment,
 } from "@fulcrum/domain";
 import { ProjectRepository } from "@fulcrum/project";
 
@@ -61,14 +90,123 @@ const delay = async (milliseconds: number): Promise<void> => {
 
 const publicActor = "local-creative-director";
 
+export const qualityEvidenceFor = (
+  repository: ProjectRepository,
+  state: ProjectState,
+): Record<string, AssetQualityEvidence> | undefined => {
+  if (!state.assetBatch) return undefined;
+  const evidence = Object.fromEntries(
+    Object.keys(state.assetBatch).map((assetId) => [
+      assetId,
+      {
+        deterministicReports: [],
+        turntables: [],
+        semanticReports: [],
+        decisions: [],
+        events: [],
+      },
+    ]),
+  ) as Record<string, AssetQualityEvidence>;
+  const seen = new Map(
+    Object.keys(evidence).map((assetId) => [
+      assetId,
+      {
+        deterministic: new Set<string>(),
+        turntables: new Set<string>(),
+        semantic: new Set<string>(),
+        decisions: new Set<string>(),
+      },
+    ]),
+  );
+
+  const addRevision = (
+    assetId: string,
+    kind: "deterministic" | "turntables" | "semantic" | "decisions",
+    revisionId: string,
+  ) => {
+    const target = evidence[assetId];
+    const known = seen.get(assetId)?.[kind];
+    if (!target || !known || known.has(revisionId)) return;
+    const revision = repository.getRevision(revisionId);
+    const value = repository.resolveRevision(revision);
+    if (kind === "deterministic")
+      target.deterministicReports.push(
+        DeterministicAssetReportSchema.parse(value),
+      );
+    if (kind === "turntables")
+      target.turntables.push(TurntableManifestSchema.parse(value));
+    if (kind === "semantic")
+      target.semanticReports.push(SemanticAssetReportSchema.parse(value));
+    if (kind === "decisions")
+      target.decisions.push({
+        revisionId,
+        report: RegenerationDecisionReportSchema.parse(value),
+      });
+    known.add(revisionId);
+  };
+
+  for (const event of repository.listEvents(state.projectId)) {
+    const assetId = event.payload.assetId;
+    if (typeof assetId !== "string" || !evidence[assetId]) continue;
+    evidence[assetId].events.push(event);
+    if (
+      event.type === "asset.deterministic-quality-completed" &&
+      typeof event.payload.reportRevisionId === "string"
+    )
+      addRevision(assetId, "deterministic", event.payload.reportRevisionId);
+    if (
+      event.type === "asset.turntable-rendered" &&
+      typeof event.payload.turntableRevisionId === "string"
+    )
+      addRevision(assetId, "turntables", event.payload.turntableRevisionId);
+    if (
+      event.type === "asset.semantic-evaluation-completed" &&
+      typeof event.payload.semanticReportRevisionId === "string"
+    )
+      addRevision(assetId, "semantic", event.payload.semanticReportRevisionId);
+    if (
+      event.type === "asset.regeneration-strategy-selected" &&
+      typeof event.payload.decisionRevisionId === "string"
+    )
+      addRevision(assetId, "decisions", event.payload.decisionRevisionId);
+  }
+
+  for (const [assetId, entry] of Object.entries(state.assetBatch)) {
+    if (entry.deterministicReport)
+      addRevision(
+        assetId,
+        "deterministic",
+        entry.deterministicReport.revisionId,
+      );
+    if (entry.turntable)
+      addRevision(assetId, "turntables", entry.turntable.revisionId);
+    if (entry.semanticReport)
+      addRevision(assetId, "semantic", entry.semanticReport.revisionId);
+    if (entry.decision)
+      addRevision(assetId, "decisions", entry.decision.revisionId);
+  }
+
+  return Object.fromEntries(
+    Object.entries(evidence).map(([assetId, value]) => [
+      assetId,
+      AssetQualityEvidenceSchema.parse(value),
+    ]),
+  );
+};
+
 export type M1CoordinatorOptions = {
   imageRunner?: SubscriptionImageRunner;
   execution?: StructuredModelExecution;
   soundRunner?: SoundGenerationRunner;
+  /** Injected by tests to drive the staged gate without a real provider. */
+  stagedAssetAdapter?: StagedAssetAdapter;
+  stagedVisionExecution?: StructuredVisionExecution;
+  stagedVisionProviderStatuses?: ExecutionProviderStatus[];
 };
 
 export class M1Coordinator {
   private readonly creative: M1CreativeDevelopment;
+  readonly stagedAssets: StagedAssetLifecycle;
   private readonly inFlight = new Map<
     string,
     {
@@ -88,6 +226,95 @@ export class M1Coordinator {
       options.execution,
       options.soundRunner,
     );
+    this.stagedAssets = new StagedAssetLifecycle(repository, {
+      ...(options.stagedAssetAdapter
+        ? { adapter: options.stagedAssetAdapter }
+        : {}),
+      ...(options.stagedVisionExecution
+        ? { visionExecution: options.stagedVisionExecution }
+        : {}),
+      ...(options.stagedVisionProviderStatuses
+        ? { visionProviderStatuses: options.stagedVisionProviderStatuses }
+        : {}),
+    });
+  }
+
+  /**
+   * The staged asset gate's write surface. Each of these can spend credits, so
+   * each one is its own explicit call rather than a flag on `advance`.
+   */
+  async startAssetStage(
+    projectId: string,
+    input: unknown,
+  ): Promise<ProjectSnapshot> {
+    this.requireM2(projectId);
+    await this.stagedAssets.start(projectId, input);
+    return this.snapshot(projectId);
+  }
+
+  async pollAssetStage(
+    projectId: string,
+    assetId: string,
+  ): Promise<ProjectSnapshot> {
+    this.requireM2(projectId);
+    await this.stagedAssets.poll(projectId, assetId);
+    return this.snapshot(projectId);
+  }
+
+  async decideAssetStage(
+    projectId: string,
+    input: unknown,
+  ): Promise<ProjectSnapshot> {
+    this.requireM2(projectId);
+    await this.stagedAssets.decide(projectId, input);
+    return this.snapshot(projectId);
+  }
+
+  updateMeshyConfig(projectId: string, input: unknown): ProjectSnapshot {
+    this.requireM2(projectId);
+    this.stagedAssets.updateConfig(projectId, input);
+    return this.snapshot(projectId);
+  }
+
+  /**
+   * The Images stage's approved reference views. Free — it writes bytes and a
+   * revision, and spends nothing — but it decides what the next geometry task
+   * will be built from, so it is a real route rather than browser state.
+   */
+  async storeAssetReferences(
+    projectId: string,
+    input: unknown,
+  ): Promise<ProjectSnapshot> {
+    this.requireM2(projectId);
+    await this.stagedAssets.recordReferences(projectId, input);
+    return this.snapshot(projectId);
+  }
+
+  /** Free of Meshy work: classifies the already-approved front reference. */
+  async detectAssetBiped(
+    projectId: string,
+    assetId: string,
+  ): Promise<ProjectSnapshot> {
+    this.requireM2(projectId);
+    await this.stagedAssets.detectBiped(projectId, assetId);
+    return this.snapshot(projectId);
+  }
+
+  /** A post-plan human decision; it changes no plan revision or counter. */
+  overrideAssetRigEligibility(
+    projectId: string,
+    input: unknown,
+  ): ProjectSnapshot {
+    this.requireM2(projectId);
+    this.stagedAssets.overrideRigEligibility(projectId, input);
+    return this.snapshot(projectId);
+  }
+
+  private requireM2(projectId: string): ProjectState {
+    const state = this.repository.getProject(projectId);
+    if (state.milestone !== "m2")
+      throw new Error(`Project ${projectId} has no staged asset gate.`);
+    return state;
   }
 
   private creativeContext(state: {
@@ -139,8 +366,8 @@ export class M1Coordinator {
 
   async create(input: unknown): Promise<ProjectSnapshot> {
     const parsed = CreateProjectInputSchema.parse(input);
-    if (parsed.milestone !== "m1")
-      throw new Error("M1 project creation requires milestone m1.");
+    if (parsed.milestone !== "m1" && parsed.milestone !== "m2")
+      throw new Error("Creative project creation requires milestone m1 or m2.");
     if (parsed.mode === "live") {
       if (!isM1LiveAuthorized()) throw new Error(m1LiveAuthorizationMessage());
       if (parsed.imageProvider !== "openai-subscription")
@@ -170,20 +397,31 @@ export class M1Coordinator {
     });
     this.repository.createProject({
       schemaVersion: 1,
-      milestone: "m1",
+      milestone: parsed.milestone,
       projectId,
-      name: "M1 Creative Project",
+      name: `${parsed.milestone.toUpperCase()} Creative Project`,
       mode: parsed.mode,
       assetProvider: parsed.assetProvider,
       orchestratorProvider: parsed.orchestratorProvider,
       implementationProvider: parsed.implementationProvider,
       imageProvider: parsed.imageProvider,
-      soundProvider: parsed.mode === "replay" ? "none" : parsed.soundProvider,
+      soundProvider:
+        parsed.milestone === "m2" || parsed.mode === "replay"
+          ? "none"
+          : parsed.soundProvider,
       status: "awaiting-input",
       stage: "interrogation",
       runId,
+      maxConcurrentExternalJobs: parsed.maxConcurrentExternalJobs,
       budgetUsd: parsed.budgetUsd ?? 0,
       spentUsd: 0,
+      ...(parsed.meshyCreditBudget !== undefined
+        ? {
+            meshyCreditBudget: parsed.meshyCreditBudget,
+            meshyCreditsReserved: 0,
+            meshyCreditsConsumed: 0,
+          }
+        : {}),
       conceptReplacementCount: 0,
       directionReplacementCount: 0,
       focusedDirectionChangeCount: 0,
@@ -196,10 +434,13 @@ export class M1Coordinator {
       updatedAt: createdAt,
     });
     this.event(projectId, runId, "project.created", {
-      milestone: "m1",
+      milestone: parsed.milestone,
       mode: parsed.mode,
       ...(parsed.budgetUsd !== undefined
         ? { budgetUsd: parsed.budgetUsd }
+        : {}),
+      ...(parsed.meshyCreditBudget !== undefined
+        ? { meshyCreditBudget: parsed.meshyCreditBudget }
         : {}),
       rightsConfirmed: true,
     });
@@ -213,9 +454,214 @@ export class M1Coordinator {
     return this.snapshot(projectId);
   }
 
+  /**
+   * Seeds a new M2 world from a finished M1 one. M2 reuses M1's interrogation,
+   * Game Design Spec, visual direction, concept plan, concept generation, and
+   * concept-set approval, and skips M1 sound work — so a world that cleared the
+   * concept-set gate already holds everything asset planning reads.
+   *
+   * The approved package is *referenced*, never copied: revisions and artifacts
+   * are content-addressed and globally resolvable, and every concept document
+   * cites the exact approved Game Design Spec revision in its ancestors. Minting
+   * fresh revisions here would rewrite those IDs and break the lineage the
+   * planner validates. What is genuinely new is the approval record: an approval
+   * carries a project ID, and the planner requires the decision to belong to the
+   * project it is planning for. So the three creative approvals are re-issued
+   * against the same immutable revisions and hashes.
+   *
+   * The source world is never written to. Nothing is generated or submitted:
+   * the descendant lands at `asset-planning` and waits to be advanced.
+   */
+  continueIntoM2(projectId: string, input: unknown): ProjectSnapshot {
+    const parsed = ContinueIntoM2InputSchema.parse(input);
+    const source = this.repository.getProject(projectId);
+    const issue = m1ContinuationIssue(source);
+    if (issue) throw new Error(M1_CONTINUATION_ISSUES[issue]);
+    if (source.mode === "live" && !isM1LiveAuthorized())
+      throw new Error(m1LiveAuthorizationMessage());
+
+    const routing = {
+      milestone: "m2",
+      mode: source.mode,
+      orchestratorProvider: source.orchestratorProvider,
+      implementationProvider: source.implementationProvider,
+      imageProvider: source.imageProvider,
+      soundProvider: "none",
+    } as const;
+    const meshyCreditBudget =
+      parsed.meshyCreditBudget ?? source.meshyCreditBudget;
+    if (
+      projectNeedsMeshyCredits({
+        milestone: "m2",
+        mode: source.mode,
+        assetProvider: source.assetProvider,
+      }) &&
+      meshyCreditBudget === undefined
+    )
+      throw new Error(
+        "A live M2 world needs its own Meshy credit cap before it can plan a batch.",
+      );
+    const budgetUsd = parsed.budgetUsd ?? source.budgetUsd;
+    if (projectNeedsBudget(routing) && !(budgetUsd > 0))
+      throw new Error("A positive USD budget is required for metered routes.");
+
+    const gameDesignSpec = source.gameDesignSpec!;
+    const visualBible = source.visualBible!;
+    const conceptSet = source.conceptSet!;
+    const spec = GameDesignSpecSchema.parse(
+      this.repository.resolveRevision(gameDesignSpec),
+    );
+    const continuedProjectId = randomUUID();
+    const runId = randomUUID();
+    const createdAt = now();
+    const continuedFrom: ContinuationProvenance = {
+      projectId: source.projectId,
+      milestone: source.milestone,
+      runId: source.runId,
+      name: source.name,
+      gameDesignSpecRevisionId: gameDesignSpec.revisionId,
+      visualDirectionRevisionId: visualBible.revisionId,
+      conceptSetRevisionId: conceptSet.revisionId,
+      continuedAt: createdAt,
+    };
+
+    this.repository.reserveProject(continuedProjectId, createdAt);
+    const carryApproval = (
+      targetType: ApprovalTargetType,
+      revision: RevisionRef,
+    ): ApprovalDecision =>
+      this.repository.recordApproval({
+        approvalId: randomUUID(),
+        projectId: continuedProjectId,
+        targetType,
+        targetRevisionId: revision.revisionId,
+        targetSha256: revision.artifact.sha256,
+        decision: "approved",
+        notes: `Carried into M2 from ${source.name} (${source.projectId}).`,
+        decidedBy: publicActor,
+        decidedAt: createdAt,
+      });
+    const gameDesignApproval = carryApproval("game-design", gameDesignSpec);
+    const directionApproval = carryApproval("visual-direction", visualBible);
+    const conceptSetApproval = carryApproval("concept-set", conceptSet);
+
+    this.repository.createProject({
+      schemaVersion: 1,
+      milestone: "m2",
+      projectId: continuedProjectId,
+      name: spec.title,
+      mode: source.mode,
+      assetProvider: source.assetProvider,
+      orchestratorProvider: source.orchestratorProvider,
+      implementationProvider: source.implementationProvider,
+      imageProvider: source.imageProvider,
+      soundProvider: "none",
+      status: "active",
+      stage: "asset-planning",
+      runId,
+      maxConcurrentExternalJobs:
+        parsed.maxConcurrentExternalJobs ??
+        source.maxConcurrentExternalJobs ??
+        2,
+      budgetUsd,
+      spentUsd: 0,
+      ...(meshyCreditBudget !== undefined
+        ? {
+            meshyCreditBudget,
+            meshyCreditsReserved: 0,
+            meshyCreditsConsumed: 0,
+          }
+        : {}),
+      conceptReplacementCount: source.conceptReplacementCount,
+      directionReplacementCount: source.directionReplacementCount ?? 0,
+      focusedDirectionChangeCount: source.focusedDirectionChangeCount ?? 0,
+      conceptRegenerationCounts: source.conceptRegenerationCounts ?? {},
+      brief: source.brief,
+      ...(source.creativeCapabilities
+        ? { creativeCapabilities: source.creativeCapabilities }
+        : {}),
+      ...(source.interrogation ? { interrogation: source.interrogation } : {}),
+      ...(source.gameNameCandidates
+        ? { gameNameCandidates: source.gameNameCandidates }
+        : {}),
+      ...(source.gameName ? { gameName: source.gameName } : {}),
+      gameDesignSpec,
+      ...(source.projectGlossary
+        ? { projectGlossary: source.projectGlossary }
+        : {}),
+      decisionRecords: source.decisionRecords ?? [],
+      visualDirectionSet: source.visualDirectionSet!,
+      selectedVisualDirectionRevisionId:
+        source.selectedVisualDirectionRevisionId!,
+      ...(source.focusedDirectionChange
+        ? { focusedDirectionChange: source.focusedDirectionChange }
+        : {}),
+      visualBible,
+      ...(source.conceptPlan ? { conceptPlan: source.conceptPlan } : {}),
+      conceptSet,
+      gameDesignApproval,
+      directionApproval,
+      conceptSetApproval,
+      continuedFrom,
+      createdAt,
+      updatedAt: createdAt,
+    });
+
+    this.event(continuedProjectId, runId, "project.created", {
+      milestone: "m2",
+      mode: source.mode,
+      ...(budgetUsd > 0 ? { budgetUsd } : {}),
+      ...(meshyCreditBudget !== undefined ? { meshyCreditBudget } : {}),
+      rightsConfirmed: true,
+      continuedFromProjectId: source.projectId,
+    });
+    this.event(continuedProjectId, runId, "project.continued-into-m2", {
+      ...continuedFrom,
+      approvalIds: [
+        gameDesignApproval.approvalId,
+        directionApproval.approvalId,
+        conceptSetApproval.approvalId,
+      ],
+      stage: "asset-planning",
+    });
+    return this.snapshot(continuedProjectId);
+  }
+
   advance(projectId: string): ProjectSnapshot {
     this.requireM1(projectId);
     return this.snapshot(projectId);
+  }
+
+  /**
+   * Park a pasted image against a project.
+   *
+   * Deliberately not a `runModelAction`: uploading is not a model call, it
+   * changes no project state, and the user is mid-sentence in a text box —
+   * making a paste contend with the project mutex would make typing fail for
+   * reasons the box could not explain. The bytes land in the same
+   * content-addressed store as every generated artifact, so a duplicate paste
+   * is free and the ref is servable at once.
+   */
+  async storeAttachment(
+    projectId: string,
+    input: unknown,
+  ): Promise<StoredImageAttachment> {
+    const parsed = StoreImageAttachmentInputSchema.parse(input);
+    const state = this.requireM1(projectId);
+    const attachment = await storeImageAttachment({
+      repository: this.repository,
+      projectId,
+      dataUrl: parsed.dataUrl,
+    });
+    this.event(projectId, state.runId, "attachment.stored", {
+      artifactId: attachment.artifactId,
+      sha256: attachment.sha256,
+      byteLength: attachment.byteLength,
+    });
+    return {
+      attachment,
+      reachesModel: attachmentsReachOrchestrator(state),
+    };
   }
 
   async answerFrontier(
@@ -240,7 +686,15 @@ export class M1Coordinator {
         brief,
         interrogation,
         roundId: parsed.roundId,
-        answers: parsed.answers,
+        answers: parsed.answers.map((answer) => ({
+          questionId: answer.questionId,
+          value: answer.value,
+          attachments: resolveImageAttachments(
+            this.repository,
+            projectId,
+            answer.attachmentArtifactIds,
+          ),
+        })),
       });
       this.repository.saveProject({
         ...state,
@@ -272,15 +726,152 @@ export class M1Coordinator {
       parsed.interrogationRevisionId,
       "interrogation",
     );
+    /* Signing off the interview no longer writes the spec. The game's name is
+       part of its identity, so it is decided in conversation first, and the
+       spec is written against the decided name by `commitGameName`. */
     return this.runModelAction(projectId, "confirm", parsed, async () => {
-      const artifacts = await this.creative.confirmSharedUnderstanding({
+      const gameNameCandidates = await this.creative.proposeGameNames({
         ...this.creativeContext(state),
         brief: this.briefText(state),
         interrogation: current,
-        confirmedBy: publicActor,
       });
       this.repository.saveProject({
         ...state,
+        gameNameCandidates,
+        status: "awaiting-input",
+        stage: "interrogation",
+      });
+      this.event(projectId, state.runId, "game-name.candidates-proposed", {
+        gameNameCandidatesRevisionId: gameNameCandidates.revisionId,
+        round: 1,
+      });
+      return this.snapshot(projectId);
+    });
+  }
+
+  /** A steered batch. The conversation is repeatable: every round keeps the
+   *  earlier titles out of the running and records what was asked for. */
+  async suggestGameNames(
+    projectId: string,
+    input: unknown,
+  ): Promise<ProjectSnapshot> {
+    const parsed = SuggestGameNamesInputSchema.parse(input);
+    const state = this.requireStage(projectId, "interrogation");
+    const current = this.requireRef(
+      state.gameNameCandidates,
+      "This project has no proposed names to steer.",
+    );
+    if (state.gameName) throw new Error("This project already has a name.");
+    this.requireExpectedRevision(
+      current,
+      parsed.gameNameCandidatesRevisionId,
+      "name candidates",
+    );
+    const interrogation = this.requireRef(
+      state.interrogation,
+      "The project has no active interrogation.",
+    );
+    return this.runModelAction(projectId, "suggest-names", parsed, async () => {
+      const gameNameCandidates = await this.creative.proposeGameNames({
+        ...this.creativeContext(state),
+        brief: this.briefText(state),
+        interrogation,
+        previous: current,
+        feedback: parsed.feedback,
+        attachments: resolveImageAttachments(
+          this.repository,
+          projectId,
+          parsed.attachmentArtifactIds,
+        ),
+      });
+      const set = GameNameCandidateSetSchema.parse(
+        this.repository.resolveRevision(gameNameCandidates),
+      );
+      this.repository.saveProject({
+        ...state,
+        gameNameCandidates,
+        status: "awaiting-input",
+        stage: "interrogation",
+      });
+      this.event(projectId, state.runId, "game-name.candidates-proposed", {
+        gameNameCandidatesRevisionId: gameNameCandidates.revisionId,
+        previousCandidateSetRevisionId: current.revisionId,
+        round: set.round,
+        feedback: parsed.feedback,
+      });
+      return this.snapshot(projectId);
+    });
+  }
+
+  /** The name wins, and the spec is written under it. */
+  async commitGameName(
+    projectId: string,
+    input: unknown,
+  ): Promise<ProjectSnapshot> {
+    const parsed = CommitGameNameInputSchema.parse(input);
+    const state = this.requireStage(projectId, "interrogation");
+    const candidates = this.requireRef(
+      state.gameNameCandidates,
+      "This project has no proposed names to choose from.",
+    );
+    if (state.gameName) throw new Error("This project already has a name.");
+    this.requireExpectedRevision(
+      candidates,
+      parsed.gameNameCandidatesRevisionId,
+      "name candidates",
+    );
+    const interrogation = this.requireRef(
+      state.interrogation,
+      "The project has no active interrogation.",
+    );
+    const set = GameNameCandidateSetSchema.parse(
+      this.repository.resolveRevision(candidates),
+    );
+    const chosen = parsed.candidateId
+      ? set.candidates.find(
+          (candidate) => candidate.candidateId === parsed.candidateId,
+        )
+      : undefined;
+    if (parsed.candidateId && !chosen)
+      throw new Error("That name is not in the current batch.");
+    const name = chosen ? chosen.name : parsed.name!.trim();
+    const decision = GameNameDecisionSchema.parse({
+      name,
+      origin: chosen ? "candidate" : "custom",
+      ...(chosen ? { candidateId: chosen.candidateId } : {}),
+      sourceCandidateSetRevisionId: candidates.revisionId,
+      rounds: set.round,
+      decidedBy: publicActor,
+      decidedAt: now(),
+    });
+    return this.runModelAction(projectId, "name-game", parsed, async () => {
+      /* The spec is written first: a model failure here must leave the world
+         exactly where it was, with the batch still on screen and nothing
+         recorded about a name that never took. */
+      const artifacts = await this.creative.confirmSharedUnderstanding({
+        ...this.creativeContext(state),
+        brief: this.briefText(state),
+        interrogation,
+        confirmedBy: publicActor,
+        gameName: decision.name,
+      });
+      const gameName = this.repository.writeRevision({
+        projectId,
+        entityId: `${projectId}:game-name`,
+        kind: "game-name-decision",
+        value: decision,
+        runId: state.runId,
+      });
+      this.event(projectId, state.runId, "game-name.decided", {
+        gameNameRevisionId: gameName.revisionId,
+        name: decision.name,
+        origin: decision.origin,
+        rounds: decision.rounds,
+      });
+      this.repository.saveProject({
+        ...state,
+        name: decision.name,
+        gameName,
         interrogation: artifacts.interrogation,
         gameDesignSpec: artifacts.gameDesignSpec,
         projectGlossary: artifacts.glossary,
@@ -370,11 +961,10 @@ export class M1Coordinator {
       return this.snapshot(projectId);
     }
     if (decision.decision === "rejected")
-      return this.blockAfterDecision(
+      return this.reopenGate(
         state,
         { gameDesignApproval: decision },
-        "game-design-not-approved",
-        "The Game Design Spec must be approved before visual directions can be generated.",
+        "game-design-approval",
       );
 
     throw new Error("Unsupported Game Design Spec approval decision.");
@@ -642,11 +1232,10 @@ export class M1Coordinator {
       return this.snapshot(projectId);
     }
     if (decision.decision === "rejected")
-      return this.blockAfterDecision(
+      return this.reopenGate(
         state,
         { directionApproval: decision },
-        "visual-direction-not-approved",
-        "A visual direction must be approved before concepts can be generated.",
+        "visual-direction-approval",
       );
 
     const existingConceptSet = state.conceptSet
@@ -955,12 +1544,20 @@ export class M1Coordinator {
       return this.snapshot(projectId);
     }
     if (decision.decision === "rejected")
-      return this.blockAfterDecision(
+      return this.reopenGate(
         state,
         { conceptSetApproval: decision },
-        "concept-set-not-approved",
-        "The concept set was not approved.",
+        "concept-set-approval",
       );
+    if (state.milestone === "m2") {
+      this.repository.saveProject({
+        ...state,
+        conceptSetApproval: decision,
+        status: "active",
+        stage: "asset-planning",
+      });
+      return this.snapshot(projectId);
+    }
     const directionSet = this.requireRef(
       state.visualDirectionSet,
       "The project has no visual direction set.",
@@ -1207,11 +1804,10 @@ export class M1Coordinator {
       return this.snapshot(projectId);
     }
     if (decision.decision === "rejected")
-      return this.blockAfterDecision(
+      return this.reopenGate(
         state,
         { soundSetApproval: decision },
-        "sound-set-not-approved",
-        "The sound set was not approved.",
+        "sound-set-approval",
       );
     this.repository.saveProject({
       ...state,
@@ -1279,6 +1875,9 @@ export class M1Coordinator {
           ]),
         )
       : undefined;
+    const assetPlan = state.assetPlan
+      ? AssetPlanSchema.parse(this.repository.resolveRevision(state.assetPlan))
+      : undefined;
     return ProjectSnapshotSchema.parse({
       state,
       briefText,
@@ -1289,6 +1888,20 @@ export class M1Coordinator {
         ? {
             interrogation: InterrogationStateSchema.parse(
               this.repository.resolveRevision(state.interrogation),
+            ),
+          }
+        : {}),
+      ...(state.gameNameCandidates
+        ? {
+            gameNameCandidates: GameNameCandidateSetSchema.parse(
+              this.repository.resolveRevision(state.gameNameCandidates),
+            ),
+          }
+        : {}),
+      ...(state.gameName
+        ? {
+            gameName: GameNameDecisionSchema.parse(
+              this.repository.resolveRevision(state.gameName),
             ),
           }
         : {}),
@@ -1309,13 +1922,33 @@ export class M1Coordinator {
       ...(conceptSet ? { conceptSet, conceptDocuments } : {}),
       ...(soundPlan ? { soundPlan } : {}),
       ...(soundSet ? { soundSet, soundDocuments } : {}),
+      ...(assetPlan ? { assetPlan } : {}),
+      ...(state.milestone === "m2" && state.assetBatch
+        ? {
+            assetQualityEvidence: qualityEvidenceFor(this.repository, state),
+          }
+        : {}),
+      ...(state.milestone === "m2"
+        ? {
+            meshyConfig: this.stagedAssets.config(projectId),
+            ...(assetPlan
+              ? { assetStages: this.stagedAssets.views(projectId) }
+              : {}),
+            ...(state.assetReferenceSets
+              ? {
+                  assetReferenceSets:
+                    this.stagedAssets.referenceSets(projectId),
+                }
+              : {}),
+          }
+        : {}),
     });
   }
 
   private requireM1(projectId: string): ProjectState {
     const state = this.repository.getProject(projectId);
-    if (state.milestone !== "m1")
-      throw new Error(`Project ${projectId} is not an M1 project.`);
+    if (state.milestone !== "m1" && state.milestone !== "m2")
+      throw new Error(`Project ${projectId} has no creative front.`);
     return state;
   }
 
@@ -1399,7 +2032,12 @@ export class M1Coordinator {
     });
   }
 
-  private blockAfterDecision(
+  /**
+   * A rejection is a decision, not a failure: the gate stays open on the same
+   * revisions so the human can change a selection, approve, or reject again.
+   * Nothing is generated here.
+   */
+  private reopenGate(
     state: ProjectState,
     decision: Partial<
       Pick<
@@ -1410,15 +2048,14 @@ export class M1Coordinator {
         | "soundSetApproval"
       >
     >,
-    code: string,
-    message: string,
+    stage: ProjectState["stage"],
   ): ProjectSnapshot {
     this.repository.saveProject({
       ...state,
       ...decision,
-      status: "blocked",
-      stage: "blocked",
-      blockedReason: { code, message, recoverable: false },
+      status: "awaiting-approval",
+      stage,
+      blockedReason: undefined,
     });
     return this.snapshot(state.projectId);
   }
@@ -1432,3 +2069,5 @@ export class M1Coordinator {
     this.repository.appendEvent({ projectId, runId, type, payload });
   }
 }
+
+export { M1Coordinator as CreativeFrontCoordinator };

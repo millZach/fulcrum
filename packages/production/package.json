@@ -11,10 +11,15 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@fulcrum/creative": "workspace:*",
     "@fulcrum/domain": "workspace:*",
+    "@fulcrum/execution": "workspace:*",
     "@fulcrum/project": "workspace:*",
     "@gltf-transform/core": "latest",
-    "three": "latest"
+    "fflate": "^0.8.3",
+    "sharp": "latest",
+    "three": "latest",
+    "zod": "latest"
   },
   "devDependencies": {
     "@types/three": "latest"

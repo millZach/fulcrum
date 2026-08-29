@@ -1,5 +1,139 @@
 # Fulcrum
 
+## 2026-08-29 — A free reference approval quietly crossed into live vision
+
+I built the frozen-boss amendment test with simulated Meshy and still watched it reach for a signed-in provider before the amendment route ran. Approving references on a live hero immediately performs biped detection, so I injected both provider readiness and a structured-vision fixture; the test now covers the live world shape without any network call, and the full suite passes 711 tests.
+
+## 2026-08-29 — A 120-credit approval screen was only a workflow detour
+
+I removed the M2 asset-plan review after it proved capable of opening the old paid pipeline from one unnecessary click. Planning now writes an exact hash-bound automatic finalization and immediately sends live Meshy worlds to the parked staged gate, while replay worlds finish through the legacy path without stopping. Old worlds stranded at `asset-plan-approval` heal on their next graph touch, and I kept the planner's revision and replan lineage intact for the coming section-chat amendments.
+
+## 2026-08-29 — The approved character references built the shape, but the scene concept painted it
+
+I traced a washed-out 10-credit texture to one input line: geometry correctly preferred the approved four-view set, while texture still styled from the full M1 isometric scene. I made texture prefer the approved front view with a verified anchor fallback, and locked the behavior down across both the first texture round and retexture. The same audit found the new human rig override still sat behind planner classification, so I moved the human decision to the top and proved a planned kit can reach rigging without automatic vision ever inspecting it.
+
+## 2026-08-29 — One missing planner field permanently hid an 8-credit character path
+
+I found rig eligibility was recomputed from the approved asset plan in three places, so a hero that arrived without `poseMode` could never expose the 5 CR rig or 3 CR animation steps after approval. I moved biped evidence into its own automatic-detection and manual-override revisions, with the human decision taking priority, so fixing the call does not touch the plan revision or its one-replan counter. The exact live-shaped regression now walks an old approved pose-less hero through completed geometry and texture, marks it biped, and authorizes both later stages without an override or detection firing a Meshy task.
+
+## 2026-08-28 — Asset-plan approval opened the old autopilot behind the new paid gates
+
+I traced six surprise live ImageGen jobs to the M2 approval checkpoint: it moved the world to `asset-batch`, then immediately fell through into the old multiview, geometry, QA, regeneration, and finishing graph. I added a live-Meshy suspension before asset expansion plus a reconstruction guard, so stale `pending` submissions remain inert instead of authorizing another poll or provider call. Replay still runs the legacy graph to completion, and the suite now passes 700 tests across 46 files.
+
+## 2026-08-28 — One `if` ahead of the stage switch made the asset plan impossible to approve from the browser
+
+The M2 asset gate was returned for any m2 world that had a plan, three lines above the stage switch that picks a screen. So at `asset-plan-approval` the gate won, and `AssetPlanView` — the only screen with Approve, Request changes and Reject on it — could never render: you could not approve, reject or ask for changes on a production batch from the UI at all, only through curl. Two smaller lies rode along: the gate offered "Generate with Meshy · 20 CR" buttons the server refuses without an approved plan, and a replan (stage back at `asset-planning`, old plan still in state) got the gate instead of "Revising the production batch…". Fix was two pure derivations in `snapshot-view.ts` — `assetFlowOwner`, which hands planning back to the stage switch, and `assetPlanGateReview`, which returns the banner copy plus the one spend-lock sentence, mirroring the server's rule (`plannedAsset` refuses on the approval decision alone) instead of inventing a second one. The gate keeps the screen and carries the decision as a pinned band above the inventory, because building reference sets is deliberately free before approval — that free work is how you decide. 693 tests, 8/8 typecheck. The one thing that only showed up on screen: the return banner added 78px, the studio stage sizes its rows to content, and the approve/reject footer slid 46px below the fold — a decision screen with the decision off-screen, i.e. the same bug again. Pinning the host to `calc(100vh - 186px)`, the way the gate already pins itself, put it back.
+
+## 2026-08-28 — The four reference views I spent ImageGen credits approving never left the browser
+
+Found this while prepping the first live-credit Meshy run, which is the only reason it didn't cost me 20 CR of garbage. The Images stage generates four orthographic views, you approve them, the button says "Meshy uses the approved set" — and then the approve handler only mutated React state. The whole set lived in `blob:` URLs, and the start route takes nothing but an asset id, so on the server `geometryImages()` shrugged and fell back to the single M1 concept image. Fix was a real route (`POST .../assets/:assetId/references`), sharp re-encode, content-addressed artifacts, a revision, and a snapshot field so a reload rehydrates instead of showing empty slots. Two smaller lies went with it: the approve button charged "30 CREDITS" for an action no route bills (the staged 20/10/5/3 buttons are the only spend, so I deleted the whole acknowledge-credit state-machine step), and the planner prompt asked for `poseMode` only on heroes "explicitly intended for later rigging", which in a live run meant the model omitted it on every hero including one literally named "Scavenger Player Character" — making every character permanently un-riggable. 687 tests green.
+
+## 2026-08-28 — A "loading" overlay stuck over a model that had already loaded, because React runs child effects first
+
+Built the 3D review screen for the staged Meshy flow: one long-lived canvas where the untextured model is swapped for its textured self without losing the camera angle you were judging it from. The swap worked, but the "Opening the model…" mat sat on top of the finished model forever. My parent had `useEffect(() => setReady(false), [uri])` to reset the flag on a swap, and the child called `onReady()` in its own effect — React commits child effects before parent effects, so on every swap the child said "ready" and the parent immediately overwrote it with false. Fix was to stop storing a boolean and store which URL is actually on screen (`ready = readyUri === uri`), which is unorderable by construction; a headless poll went from `1,1,1` to `1,1,0` and 665 tests stayed green.
+
+## 2026-08-28 — Meshy's retexture endpoint won't take the task id my own pipeline produces, and free retries don't exist
+
+Split the single 30-credit "resolve" into a staged gate (geometry 20 CR → review → texture 10 → rig 5 → animate 3), and two findings changed the design before a single credit could be burned. Retexture's `input_task_id` accepts an Image-to-3D task but _not_ a Multi-Image-to-3D one — which is exactly the endpoint Fulcrum's 4-view profile posts to — so the texture stage uploads the GLB Fulcrum already stored instead of chaining a task id, which also survives Meshy deleting results after ~3 days (that's why "expired" is a separate terminal state from "failed": failed refunds, expired bills). I also went looking for a free-retry path in Meshy's OpenAPI doc and the retexture/rigging references and found nothing, so "retry" is modelled honestly as a brand-new 20 CR task rather than a free do-over. The one self-inflicted trap: reserving credits unconditionally would have deadlocked every replay world, since those have a 0 credit budget — the ledger now only runs for live projects or ones with a real cap, so 45 test files / 644 tests rehearse the whole accounting offline at zero spend.
+
+## 2026-08-28 — Paste-an-image was 90% plumbing that already existed, and one zod `.default([])` cost me 40 type errors
+
+Added clipboard image paste to the grilling answer boxes. I expected the hard part to be sending the picture to the model, but `runOpenAIApi` has built `input_image` content parts for months — it was `generateStructured` one layer up that never forwarded `frames`, so the whole vision path was three lines of forwarding plus making the seam's vision method optional (only 2 of the 5 execution providers can read an image at all; claude/grok/opencode get an honest "not available to you on this route" line in the transcript instead of a silent drop). The actual time sink was writing `attachments: z.array(...).default([])` on the interrogation answer: a zod default makes the field _required_ on the output type, which broke ~40 typecheck sites across 10 test fixtures that build interrogation states by hand. Switching to `.optional()` fixed all of them in one edit and had the better property anyway — an image-free answer serializes to exactly the bytes it did before this feature existed, so replay determinism is untouched.
+
+## 2026-08-28 — The "full" context window was a lie told by someone else's odometer
+
+Autocompact looked broken: meter pinned at ~90%, threshold crossed, no compaction, session stalled — happened across multiple sessions. Two hours of log archaeology showed the real parent context was 86–138k of 300k the whole time. A background subagent's _cumulative lifetime_ token count (267,944 after 284 tool uses) was being written into the parent's meter through a Math.max ratchet, so once one long agent outran the parent, the bar could only go up. The compaction system was right; the gauge was wrong — and I'd been manually compacting half-empty sessions because of it. Turned out to be a known upstream bug with a fix PR open; posted the captured numbers there.
+
+## 2026-08-28 — Continuing M1 into M2 copies nothing, and one stray projectId broke determinism
+
+The "still can't get to M2" complaint turned out to be a missing seam, not a bug: a finished M1 world had no way to spawn the M2 world that consumes it. I expected to have to copy the approved spec, visual bible and 5-image concept set into the new project, but the artifact store has no `project_id` predicate on reads — revisions resolve across projects — so the descendant just _references_ the same revision ids and sha256s and the concept lineage still validates. The only thing that has to be new is the three ApprovalDecisions, because `AssetPlanningInputSchema` insists `approval.projectId === input.projectId`. Whole seeding action ended up ~60 lines and the source world is never written to, so continuing twice is legal.
+
+Then the replay byte-determinism test started failing on the new game-name step for a dumb reason: I derived `candidateSetId` from `stableId("names", projectId + round + names)`. Every artifact in replay has to be byte-identical across two fresh runs of the same brief, and the projectId is a fresh UUID each run. Dropping the projectId from the hash fixed it. Rule I keep re-learning: nothing that lands inside a content-addressed artifact may touch a per-run identifier.
+
+## 2026-08-28 — A Continue button that "did nothing" was doing exactly what it was told
+
+Live-world report: clicking "Keep this revision and continue" on the concept review just… stayed. No error, no navigation. The handler only advanced past the pinned image when every slot was already selected — so if you revisited an image you'd already kept (which the new history navigation makes easy), Continue re-selected the same revision forever. An idempotent write looks identical to a no-op from the user's chair. Fix was a pure `nextReviewSlotId` helper that always repoints to the next open slot, with the pin cleared, plus a regression test that drives the exact revisit path.
+
+## 2026-08-27 — The "squished robot" was never squished
+
+Bug report said the mascot got distorted by a layout change. Measured the Three.js canvas at ten widths: drawing buffer matched the CSS box everywhere, camera aspect correct, proportions pixel-identical before and after. The real problem: in a 300px window-width band (1500–1799), the robot's perch crate landed exactly on the diorama board's front-right corner, so the crate read as one of the board's blocks and the sitting robot read as sunk into the grid. The fix wasn't a resize handler — it was parking his crate on clear paper beside the board at every width. Perception bugs deserve measurement before code.
+
+## 2026-08-27 — The "clipping" complaint was object-fit eating 44% of every concept image
+
+Zach marked "clipping" on the concept review screen. The images are 768×768 and the card cell is ~778×436 with `object-fit: cover` — so 342 vertical pixels (171 off the top, 171 off the bottom) were being silently cropped from every concept render, including the creature's head. `object-fit: contain` on a paper mat fixed it. Same session, the "robot didn't place his block" bug was one missing `data-mascot-frame` attribute — the dock measurement fell into free mode and dissolved the block in his hands instead of snapping it to the board.
+
+## 2026-08-27 — Clicking "Reject" killed the world, and two live worlds died of it
+
+Every approval gate treated a rejection as a fatal error: the coordinator wrote `stage: blocked` with `recoverable: false` and there was no route back. Two live worlds were dead this way — one at the concept package, one at the visual direction — after a single click on a button that reads like a normal decision. The fix was mostly deleting: rejection now leaves the project sitting at the same gate, `awaiting-approval`, on the same revisions, so the human can change a selection, approve, or reject again. Five gates had the same bug (game design, visual direction, concept set, sound set, asset plan).
+
+The harder half was the two worlds already on disk with `recoverable: false` persisted. Rather than run a migration over the SQLite state, the reason code itself now derives recoverability on read — five known `*-not-approved` codes normalize to `recoverable: true` plus a `reviewGate` the UI can render, so the dead worlds came back with zero writes and a `POST /approvals/:gate/reopen` to walk them back into review. Real failures still block terminally, and the macro graph explicitly refuses to auto-resume a human gate, so nothing generates on the way back in.
+
+## 2026-08-27 — The "nested scroller" bug was a 36px math error
+
+The M2 inventory scrolled inside a page that also scrolled, and wheel input silently handed off between the two. I assumed messy overflow CSS. The real bug: the panel sized itself `calc(100vh - 150px)` for a 62px topbar and an 88px hotbar, but the stage it sits in adds 18px of padding top and bottom — so the panel was exactly 36px taller than its container, and that 36px WAS the second scroller. Changing one number (150 → 186) deleted an entire scrollbar.
+
+## 2026-08-27 — Every live M2 world shipped with a $1 spend cap nobody chose
+
+The create form treated the Meshy credit cap and the USD cap as an either/or, and on M2 the credit field won — so the USD field never rendered. But the submit path sent both, and the USD field's `useState(1)` seed went to the server anyway. A live M2 run reserves $0.25 a text call and $0.20 an image, so those worlds hard-stopped after roughly three calls at a cap the user had never seen, let alone picked. Fixed by rendering every cap that gets submitted and defaulting to $25.
+
+Same file, second bug: `reserveBudget` (dollars) and `reserveMeshyCredits` (credits) both throw the identical `budget-refused` code, so the UI offered a raise-USD-dollars field for a credit stop — a recovery that cannot buy a single credit. The only thing that survives the wire is the message text, so the split is now on "Meshy credit budget exhausted" vs "Budget exhausted", in one function with tests, instead of guessed from the project's routing.
+
+## 2026-08-27 — My dev server kept dying because my editor ate 96% of the file watchers
+
+Vite crashed twice mid-verification with ENOSPC, which on Linux usually means inotify watches, not disk. Counted watches per process and found the editor's remote server holding 117,451 of the box's 122,649 — Vite was living off the leftover ~4k and died whenever an agent's edits needed more. Couldn't raise the sysctl without sudo and wasn't about to kill the editor session, so the fix was CHOKIDAR_USEPOLLING=1 on the dev server: zero inotify watches, boots in 141ms, survives everything.
+
+## 2026-08-27 — My "broken" button was a screen-reader name collision
+
+Post-fix verification showed the Generate button doing literally nothing — clicked, enabled, zero network calls, and I'd just landed 22 UI changes, so I assumed we broke the handler. Instrumented the handler, probed React fiber keys, and the code was fine: the path-chooser card's description text contains the words "Generate free references," so Playwright's accessible-name lookup was clicking the already-selected path card instead of the real button the whole time. One selector scoped to the compose panel and every "failure" passed on the first try. Lesson: when a button "does nothing," check which button you're actually clicking before blaming the diff.
+
+## 2026-08-27 — A z-index of 1200 lost to a z-index of 6
+
+Laptop feedback said the asset page "feels cramped" — root cause was a fixed-height frame nesting three scrollbars on a 1080p screen. Made the page flow normally and found the credit modal (z-index 1200) was being painted over by the bottom hotbar (z-index 6): the studio's entrance animation leaves a stacking context on the host, so the overlay could never escape it. Swapped the div overlay for a native dialog with showModal() — the browser top layer beats any stacking context, no z-index war needed.
+
+## 2026-08-26 — My review agents couldn't tell new code from old
+
+Ran a 6-agent GPT workflow to rebuild the M2 Images flow, and the review stage flagged 3 "blockers" that were actually Zach-approved recovery code sitting in the same uncommitted diff — auto-applying those fixes would have reverted a working feature. The fix agent also died silently at a 2-minute Bash timeout mid-run. Hand-triaged the 20 findings against file mtimes and git history, re-ran Codex in the background with no timeout, and all 10 real fixes landed clean. Lesson: review agents need a diff baseline, not just "review the uncommitted changes."
+
+## 2026-08-26 — A live link died between two clicks
+
+I handed off Fulcrum through foreground processes that disappeared when my agent turn ended, so Zach's image approval never reached the server and the browser reduced the outage to “Failed to fetch.” The first restart was still broken because Docker Caddy already owned port 8443; the working fix was to supervise both processes in detached tmux sessions, move Tailscale Serve to verified-free port 8444, and test the project API plus both 1024×1024 artifact responses through the exact laptop URL.
+
+## 2026-08-26 — One Meshy asset was one opaque 30-credit bet
+
+I found M2 inventing USD charges while asking Meshy to generate geometry, remesh it, and texture it before we knew whether the shape was usable. I split Meshy 6 into a 20-credit unremeshed geometry gate and a 10-credit 4K PBR Retexture gate, made each reservation idempotent, and now ingest the GLB, four QA views, and texture maps before Meshy's signed URLs expire. The full 464-test run caught one live-only contract mistake in that work: OpenAI strict output required `poseMode: null` instead of an optional field, so the wire stays strict while the saved asset plan stays clean.
+
+## 2026-08-25 — I kept proving the report to myself instead of delivering it
+
+I burned four attempts on local file links, collapsed image outputs, and an in-memory browser tab that Zach could not actually see. The fix was simple once I tested the delivery path instead of the HTML: serve only the self-contained artifact on localhost, expose it through a temporary Tailnet-only HTTPS port, and verify the exact URL plus all eight images before handing it over. Browser artifacts should use that route from the start.
+
+## 2026-08-25 — M2 was judging every textured model as white clay
+
+I resumed the live run to $12 and proved Meshy's remeshing worked, then found our zero-tolerance topology gate rejected 111 isolated seams on a 208k-triangle keeper and our software renderer ignored all four embedded textures. Class-aware sparse-seam limits got the real heroes through deterministic QA, and a UV-aware bilinear renderer finally showed the brass body and pale cloak to vision. The honest result still failed: Meshy's baked mottling buried the keeper's hands, face, and chest mechanism, so M2 stopped without a validated hero instead of grading its way around a bad asset.
+
+## 2026-08-25 — M2 paid for 1.4M triangles, then rejected them
+
+I recovered a $5 live run after eight Meshy jobs had spent $4.80 and found the adapter explicitly requested `should_remesh: false` while QA capped heroes at 250k triangles; the returned models averaged roughly 1.4M triangles, so no hero could ever reach vision. M2 now gives Meshy a class-aware triangle target with 20% headroom and fingerprints that target, and the stranded blocked screen finally lets me raise the cap and resume after reload instead of requiring an impossible API sequence.
+
+## 2026-08-25 — A free API call's timeout killed a $3.00 live run, and "recoverable: true" was a lie
+
+One concept-view image call blew past its 360-second timeout — a $0 subscription call, tail latency, nothing lost — and the durable layer parked it as "will not spend again automatically," permanently blocking a project with $3.00 of finished Meshy work and a healthy $0.60 job still cooking. The flag said recoverable, but the coordinator had no re-entry path for blocked projects at all. The fix: $0 calls now retry in place (the double-spend guard they inherited only makes sense for metered calls), and an explicit advance can reopen any recoverable block. Ninety seconds after deploying, the rescued run picked up its orphaned Meshy model and drove three more assets to completion.
+
+## 2026-08-25 — The first real Meshy mesh OOM'd my QA pipeline at 2GB
+
+Replay fixtures are tiny synthetic meshes, so deterministic QA happily built JavaScript arrays per vertex. The first live 45MB GLB (843k vertices) killed the orchestrator with heap exhaustion mid-QA. Refactored to flat Float64Arrays and open-addressing hash tables: peak RSS fell from 1,206 MiB to 290 MiB, and a 200-fixture differential run proved byte-identical determinism — every hash-pinned fingerprint unchanged. Same mesh now clears QA in 5 seconds. Bonus finding: all 8 real Meshy models fail the polygon-budget gates honestly (1.39M triangles vs a 250k budget) — raw AI meshes aren't game-ready, which is next milestone's retopology work, not a QA bug.
+
+## 2026-08-24 — Three live projects died in one day; 442 green tests never saw any of it
+
+Each paid live run exposed a defect the replay suite structurally could not catch: OpenAI's strict mode rejected our JSON schemas (z.record produces propertyNames — forbidden), one invalid model draft permanently dead-ended a project because durable failures are sticky by design, and two Meshy jobs suspending concurrently crashed the workflow run because Mastra records suspend() without unwinding the executing function. Three projects and $1.20 of orphaned Meshy spend later, the pattern was undeniable: replay providers complete synchronously and validate nothing about the live wire. Every fix got a live re-run as its regression test.
+
+## 2026-08-24 — My own code-review fix broke replay for every future project
+
+The M2 review (two GPT reviewers, six spec findings, eight standards findings) flagged the semantic-evaluation digest as incomplete — it ignored per-asset fields like requiredFeatures. I directed a fix that hashed them in, all 405 targeted tests passed, and then the full suite failed exactly one test: the replay acceptance. The digest is content-only ON PURPOSE — the 2-fixture replay catalog matches any project's hero by asset bytes, and brief-derived fields in the hash meant no fresh project could ever hit it again. The real fix took 20 minutes: catalog lookup stays content-addressed, and the staleness concern moves into the submission idempotency key as a separate scope hash. Same review also caught a validated-hero gate that accepted semantically rejected heroes at the attempt cap, and a schema rule I'd added that made the whole Studio refuse to boot over one pre-rule document in the dev database. 407 tests now.
+
+## 2026-08-24 — 388 green tests, and the browser still found two bugs the suite couldn't
+
+Clicking through the full M2 flow caught what 384 unit tests missed: two hero assets with byte-identical replay GLBs shared one durable submission row (the idempotency key was content-only, no asset identity), so the second asset tripped the first's in-flight marker and blocked the whole project with "submission-unknown" — in replay mode, where no money exists. Fixed, re-ran the walkthrough, and the browser immediately caught bug two: my `.env` had `FULCRUM_MESHY_MODEL=meshy-6`, which silently switched replay's multiview capability off, while the regeneration decider read capability from the policy allowlist instead of the adapter — so it picked change-views, burned its one bounded attempt on a byte-identical request, and gave up. Vitest never loads `.env`, which is exactly why the suite stayed green both times. Two fixes, six new tests, and the demo path now validates heroes in 2 attempts. The walkthrough is not a formality.
+
 ## 2026-08-24: A fresh snapshot rewound the screen after a paid regeneration
 
 I reproduced the slot jump with a 6,000 ms replay regeneration: the POST returned slot 02 r02, then an effect keyed to the new concept-set revision cleared the browser selection and exposed slot 01 r01. I made review state project-scoped, moved intentional form cleanup into the actions that own it, and found the same poll-triggered reset pattern in interrogation drafts, visual-direction notes, and sound notes; slot 02 r02 now survives the response and six 2.5-second poll intervals.

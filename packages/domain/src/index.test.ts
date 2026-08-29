@@ -1,15 +1,891 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ASSET_CLASS_HANDLING_POLICIES_V1,
+  AssetEvaluationSchema,
+  AssetDocumentSchema,
+  AssetPlanningInputSchema,
+  AssetPolicySchema,
+  AssetPlanSchema,
+  AssetBatchEntrySchema,
+  ConceptViewGuidanceSchema,
   CreateProjectInputSchema,
+  EvaluationFindingSchema,
+  FailureKindSchema,
+  MacroGraphSuspendSchema,
+  MultiviewConceptSetSchema,
+  NormalizedCropSchema,
+  PlannedAssetSchema,
+  AnswerFrontierRoundInputSchema,
+  InterrogationAnswerSchema,
+  ProjectSnapshotSchema,
   ProjectStateSchema,
+  StoreImageAttachmentInputSchema,
+  SuggestGameNamesInputSchema,
+  attachmentsReachOrchestrator,
+  readsImageAttachments,
+  type ProjectState,
+  RegenerationStrategySchema,
+  WorkflowFailureSchema,
+  approvalGateBlock,
+  assetPlanGraphIssues,
+  handlingForPlannedAsset,
   hasMeteredRoutes,
+  normalizeBlockedReason,
+  projectNeedsBudget,
+  projectNeedsMeshyCredits,
 } from "./index.js";
 
 const brief =
   "Create a compact lunar greenhouse stealth game with one creature and one readable escape route.";
 
+const persistedState = (milestone: "m0" | "m1" | "m2", stage: string) => {
+  const createdAt = new Date().toISOString();
+  return {
+    schemaVersion: 1 as const,
+    milestone,
+    projectId: `${milestone}-project`,
+    name: `${milestone.toUpperCase()} project`,
+    mode: "replay" as const,
+    status: "active" as const,
+    stage,
+    runId: "run-1",
+    spentUsd: 0,
+    brief: {
+      entityId: "brief-1",
+      revisionId: "revision-1",
+      kind: "game-brief",
+      artifact: {
+        artifactId: "artifact-1",
+        sha256: "a".repeat(64),
+        mediaType: "application/json",
+        byteLength: 1,
+        uri: "/api/artifacts/artifact-1",
+      },
+      createdAt,
+      createdByRunId: "run-1",
+    },
+    createdAt,
+    updatedAt: createdAt,
+  };
+};
+
+const ancestor = (revisionId: string, sha = "a".repeat(64)) => ({
+  revisionId,
+  sha256: sha,
+  kind: "test-revision",
+});
+
+const artifact = (artifactId: string, sha = "a".repeat(64)) => ({
+  artifactId,
+  sha256: sha,
+  mediaType: "image/png",
+  byteLength: 64,
+  uri: `/api/artifacts/${artifactId}`,
+});
+
+const revision = (entityId: string, revisionId: string, sha: string) => ({
+  entityId,
+  revisionId,
+  kind: "concept-view-document",
+  artifact: artifact(`${revisionId}-artifact`, sha),
+  createdAt: "2026-08-24T12:00:00.000Z",
+  createdByRunId: "run-1",
+});
+
+const guidance = {
+  front: {
+    role: "front" as const,
+    azimuthDegrees: 0 as const,
+    elevationDegrees: 0 as const,
+    projection: "orthographic" as const,
+    framing: "full-subject-centered" as const,
+    background: "neutral-studio" as const,
+  },
+  left: {
+    role: "left" as const,
+    azimuthDegrees: 90 as const,
+    elevationDegrees: 0 as const,
+    projection: "orthographic" as const,
+    framing: "full-subject-centered" as const,
+    background: "neutral-studio" as const,
+  },
+  back: {
+    role: "back" as const,
+    azimuthDegrees: 180 as const,
+    elevationDegrees: 0 as const,
+    projection: "orthographic" as const,
+    framing: "full-subject-centered" as const,
+    background: "neutral-studio" as const,
+  },
+};
+
+it("project snapshot accepts additive M2 quality evidence and event trails", () => {
+  const parsed = ProjectSnapshotSchema.parse({
+    state: persistedState("m2", "complete"),
+    briefText: brief,
+    assetQualityEvidence: {
+      hero: {
+        deterministicReports: [],
+        turntables: [],
+        semanticReports: [],
+        decisions: [],
+        events: [
+          {
+            eventId: "event-1",
+            runId: "run-1",
+            type: "asset.regeneration-strategy-selected",
+            payload: { assetId: "hero", strategyKind: "change-views" },
+            createdAt: "2026-08-24T12:00:00.000Z",
+          },
+        ],
+      },
+    },
+  });
+
+  expect(parsed.assetQualityEvidence?.hero?.events[0]?.type).toBe(
+    "asset.regeneration-strategy-selected",
+  );
+});
+
+const multiviewSet = (roles: Array<keyof typeof guidance>) => ({
+  multiviewConceptSetId: "hero:multiview-concept-set",
+  assetId: "hero",
+  sourceAssetPlanRevisionId: "asset-plan-revision-1",
+  sourceConceptSetRevisionId: "concept-set-revision-1",
+  anchorConcept: {
+    revision: revision(
+      "hero-concept",
+      "hero-concept-revision-1",
+      "1".repeat(64),
+    ),
+    image: artifact("hero-concept-image", "2".repeat(64)),
+  },
+  views: roles.map((role, index) => ({
+    role,
+    guidance: guidance[role],
+    revision: revision(
+      `hero:concept-view:${role}`,
+      `hero-${role}-revision-1`,
+      `${index + 3}`.repeat(64),
+    ),
+    image: artifact(`hero-${role}-image`, `${index + 7}`.repeat(64)),
+  })),
+  sourceRevisionIds: [
+    "asset-plan-revision-1",
+    "concept-set-revision-1",
+    "hero-concept-revision-1",
+  ],
+});
+
+describe("multiview concept schemas", () => {
+  it("multiview_set_rejects_duplicate_roles", () => {
+    expect(
+      MultiviewConceptSetSchema.safeParse(
+        multiviewSet(["front", "left", "left"]),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("multiview_set_requires_front_view", () => {
+    expect(
+      MultiviewConceptSetSchema.safeParse(multiviewSet(["left", "back"]))
+        .success,
+    ).toBe(false);
+  });
+
+  it("guidance_rejects_role_angle_mismatch", () => {
+    expect(
+      ConceptViewGuidanceSchema.safeParse({
+        ...guidance.left,
+        azimuthDegrees: 270,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("existing_asset_document_without_multiview_fields_still_parses", () => {
+    expect(
+      AssetDocumentSchema.parse({
+        assetId: "asset-1",
+        name: "Reliquary",
+        classification: "hero",
+        glb: { ...artifact("asset-glb"), mediaType: "model/gltf-binary" },
+        provider: "fulcrum-replay",
+        model: "reliquary-v1",
+        sourceConceptRevisionId: "concept-revision-1",
+        externalJobId: "replay-task-1",
+        costUsd: 0,
+      }).sourceMultiviewConceptSetRevisionId,
+    ).toBeUndefined();
+  });
+});
+
+const plannedAsset = (overrides: Record<string, unknown> = {}) => ({
+  assetId: "project-1:planned-asset:hero",
+  name: "Reliquary",
+  classification: "hero",
+  rationale: "The approved gameplay anchor needs a readable hero asset.",
+  sourceRefs: {
+    gameDesignSpec: ancestor("gds-1"),
+    conceptSet: ancestor("concept-set-1", "b".repeat(64)),
+    conceptSlots: [
+      {
+        slotId: "gameplay-anchor",
+        concept: ancestor("concept-1", "c".repeat(64)),
+      },
+    ],
+  },
+  dependsOnAssetIds: [],
+  acceptanceCriteria: ["Readable from across the play space."],
+  ...overrides,
+});
+
+const assetPlan = (assets = [plannedAsset()]) => ({
+  planId: "project-1:asset-plan",
+  assets,
+  handling: ASSET_CLASS_HANDLING_POLICIES_V1,
+  provenance: {
+    revisionId: "asset-plan-revision-1",
+    parentRevisionIds: ["gds-1", "concept-set-1", "concept-1"],
+    sourceArtifactHashes: ["a".repeat(64), "b".repeat(64), "c".repeat(64)],
+    runId: "run-1",
+    operation: "asset-plan.initial",
+    createdAt: "2026-08-24T12:00:00.000Z",
+  },
+});
+
+const parsedPlannedAsset = (overrides: Record<string, unknown> = {}) =>
+  PlannedAssetSchema.parse(plannedAsset(overrides));
+
+describe("asset plan schema", () => {
+  it("asset_plan_schema_accepts_the_four_class_contract", () => {
+    const policy = ASSET_CLASS_HANDLING_POLICIES_V1;
+
+    expect(policy).toEqual({
+      policyVersion: 1,
+      hero: {
+        productionRoute: "provider-3d",
+        conceptViews: "multiview-if-supported",
+        deterministicQa: "full",
+        semanticQa: "turntable",
+        regenerationStrategy: "finding-directed",
+        maxRegenerationAttempts: 2,
+      },
+      kit: {
+        productionRoute: "provider-3d",
+        conceptViews: "single-view",
+        deterministicQa: "standard",
+        semanticQa: "none",
+        regenerationStrategy: "finding-directed",
+        maxRegenerationAttempts: 1,
+      },
+      procedural: {
+        productionRoute: "parameterized-generation",
+        conceptViews: "none",
+        deterministicQa: "procedural-output",
+        semanticQa: "none",
+        regenerationStrategy: "parameter-adjustment",
+        maxRegenerationAttempts: 2,
+      },
+      functional: {
+        productionRoute: "runtime-authored",
+        conceptViews: "none",
+        deterministicQa: "gameplay-function",
+        semanticQa: "none",
+        regenerationStrategy: "implementation-repair",
+        maxRegenerationAttempts: 1,
+      },
+    });
+    expect(AssetPlanSchema.parse(assetPlan()).handling).toEqual(policy);
+  });
+
+  it("asset_plan_schema_requires_parameters_only_for_procedural_assets", () => {
+    expect(
+      PlannedAssetSchema.safeParse(
+        plannedAsset({ classification: "procedural" }),
+      ).success,
+    ).toBe(false);
+    expect(
+      PlannedAssetSchema.safeParse(
+        plannedAsset({
+          classification: "procedural",
+          procedure: {
+            generatorId: "scatter-dressing-v1",
+            parameters: { density: 0.65, avoidGameplayLane: true },
+          },
+        }),
+      ).success,
+    ).toBe(true);
+    expect(
+      PlannedAssetSchema.safeParse(
+        plannedAsset({
+          procedure: {
+            generatorId: "not-for-heroes",
+            parameters: { enabled: true },
+          },
+        }),
+      ).success,
+    ).toBe(false);
+  });
+
+  it("asset_plan_schema_rejects_more_than_twelve_assets", () => {
+    const assets = Array.from({ length: 13 }, (_, index) =>
+      plannedAsset({
+        assetId: `project-1:planned-asset:hero-${index}`,
+        name: `Hero ${index}`,
+      }),
+    );
+
+    expect(AssetPlanSchema.safeParse(assetPlan(assets)).success).toBe(false);
+  });
+
+  it("handling_for_planned_asset_returns_the_approved_policy", () => {
+    const plan = AssetPlanSchema.parse(assetPlan());
+
+    expect(
+      handlingForPlannedAsset(plan, "project-1:planned-asset:hero"),
+    ).toEqual({ asset: plan.assets[0], policy: plan.handling.hero });
+  });
+
+  it("project_state_schema_still_parses_existing_m0_and_m1_rows", () => {
+    expect(
+      ProjectStateSchema.safeParse(persistedState("m0", "asset-production"))
+        .success,
+    ).toBe(true);
+    expect(
+      ProjectStateSchema.safeParse(persistedState("m1", "interrogation"))
+        .success,
+    ).toBe(true);
+  });
+
+  it("character_pose_is_explicit_and_limited_to_hero_assets", () => {
+    expect(parsedPlannedAsset({ poseMode: "a-pose" }).poseMode).toBe("a-pose");
+    expect(
+      PlannedAssetSchema.safeParse(
+        plannedAsset({
+          classification: "kit",
+          poseMode: "t-pose",
+        }),
+      ).success,
+    ).toBe(false);
+  });
+});
+
+describe("asset plan graph", () => {
+  it("asset_plan_graph_rejects_duplicate_logical_ids", () => {
+    const issues = assetPlanGraphIssues([
+      parsedPlannedAsset(),
+      parsedPlannedAsset({ name: "Duplicate reliquary" }),
+    ]);
+
+    expect(issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "duplicate-asset-id",
+          assetId: "project-1:planned-asset:hero",
+        }),
+      ]),
+    );
+  });
+
+  it("asset_plan_graph_rejects_an_unknown_dependency", () => {
+    const issues = assetPlanGraphIssues([
+      parsedPlannedAsset({ dependsOnAssetIds: ["missing-asset"] }),
+    ]);
+
+    expect(issues).toEqual([
+      expect.objectContaining({
+        code: "unknown-dependency",
+        relatedAssetId: "missing-asset",
+      }),
+    ]);
+  });
+
+  it("asset_plan_graph_rejects_a_self_dependency", () => {
+    const asset = parsedPlannedAsset({
+      dependsOnAssetIds: ["project-1:planned-asset:hero"],
+    });
+
+    expect(assetPlanGraphIssues([asset])).toEqual([
+      expect.objectContaining({
+        code: "self-dependency",
+        assetId: asset.assetId,
+      }),
+    ]);
+  });
+
+  it("asset_plan_graph_reports_the_members_of_a_cycle", () => {
+    const heroId = "project-1:planned-asset:hero";
+    const kitId = "project-1:planned-asset:kit";
+    const issues = assetPlanGraphIssues([
+      parsedPlannedAsset({ dependsOnAssetIds: [kitId] }),
+      parsedPlannedAsset({
+        assetId: kitId,
+        name: "Arena kit",
+        classification: "kit",
+        dependsOnAssetIds: [heroId],
+      }),
+    ]);
+
+    expect(
+      issues
+        .filter((issue) => issue.code === "dependency-cycle")
+        .map((issue) => issue.assetId)
+        .sort(),
+    ).toEqual([heroId, kitId]);
+  });
+
+  it("asset_plan_graph_accepts_a_disconnected_acyclic_graph", () => {
+    const heroId = "project-1:planned-asset:hero";
+    const kitId = "project-1:planned-asset:kit";
+    const assets = [
+      parsedPlannedAsset(),
+      parsedPlannedAsset({
+        assetId: kitId,
+        name: "Arena kit",
+        classification: "kit",
+        dependsOnAssetIds: [heroId],
+      }),
+      parsedPlannedAsset({
+        assetId: "project-1:planned-asset:portal",
+        name: "Exit portal",
+        classification: "functional",
+      }),
+    ];
+
+    expect(assetPlanGraphIssues(assets)).toEqual([]);
+  });
+});
+
+describe("M2 domain boundaries", () => {
+  it("accepts_m2_replay_without_budget_and_defaults_concurrency", () => {
+    const parsed = CreateProjectInputSchema.parse({
+      milestone: "m2",
+      brief,
+      mode: "replay",
+      imageProvider: "none",
+      rightsConfirmed: true,
+    });
+
+    expect(parsed.budgetUsd).toBeUndefined();
+    expect(parsed.maxConcurrentExternalJobs).toBe(2);
+  });
+
+  it("requires_positive_meshy_credit_budget_for_live_m2", () => {
+    const input = {
+      milestone: "m2" as const,
+      brief,
+      mode: "live" as const,
+      imageProvider: "openai-subscription" as const,
+      soundProvider: "none" as const,
+      rightsConfirmed: true as const,
+    };
+
+    expect(CreateProjectInputSchema.safeParse(input).success).toBe(false);
+    expect(
+      CreateProjectInputSchema.safeParse({
+        ...input,
+        meshyCreditBudget: 300,
+      }).success,
+    ).toBe(true);
+  });
+
+  it("rejects_non_none_sound_provider_for_m2", () => {
+    expect(
+      CreateProjectInputSchema.safeParse({
+        milestone: "m2",
+        brief,
+        mode: "replay",
+        imageProvider: "none",
+        soundProvider: "elevenlabs",
+        rightsConfirmed: true,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects_m2_sound_stage_and_m1_asset_batch_stage", () => {
+    expect(
+      ProjectStateSchema.safeParse(persistedState("m2", "sound-generation"))
+        .success,
+    ).toBe(false);
+    expect(
+      ProjectStateSchema.safeParse(persistedState("m1", "asset-batch")).success,
+    ).toBe(false);
+  });
+
+  it("parses_existing_schema_v1_m0_and_m1_rows_without_migration", () => {
+    expect(
+      ProjectStateSchema.parse(persistedState("m0", "asset-production"))
+        .maxConcurrentExternalJobs,
+    ).toBeUndefined();
+    expect(
+      ProjectStateSchema.parse(persistedState("m1", "interrogation"))
+        .maxConcurrentExternalJobs,
+    ).toBeUndefined();
+  });
+
+  it("uses_failure_kind_at_workflow_boundaries", () => {
+    expect(FailureKindSchema.parse("user-action-required")).toBe(
+      "user-action-required",
+    );
+    expect(
+      WorkflowFailureSchema.parse({
+        code: "planner-missing",
+        message: "No planner is configured.",
+        kind: "user-action-required",
+      }),
+    ).toMatchObject({ kind: "user-action-required", evidenceRevisionIds: [] });
+    expect(
+      MacroGraphSuspendSchema.parse({
+        projectId: "project-1",
+        nodeId: "m2.asset-plan-approval",
+        reason: "approval-required",
+      }).nodeId,
+    ).toBe("m2.asset-plan-approval");
+  });
+
+  it("accepts_the_authoritative_asset_batch_entry_shape", () => {
+    const current = ProjectStateSchema.parse(
+      persistedState("m2", "asset-batch"),
+    ).brief;
+    const entry = AssetBatchEntrySchema.parse({
+      assetId: "hero",
+      classification: "hero",
+      current,
+      best: current,
+      attemptCount: 1,
+      validated: true,
+      deterministicReport: current,
+    });
+
+    const state = ProjectStateSchema.parse({
+      ...persistedState("m2", "asset-batch"),
+      assetBatch: { hero: entry },
+    });
+    expect(state.assetBatch?.hero?.classification).toBe("hero");
+  });
+});
+
+describe("D3 quality schemas", () => {
+  it("parses_legacy_m0_asset_evaluation_without_d3_fields", () => {
+    expect(
+      AssetEvaluationSchema.parse({
+        evaluationId: "evaluation-1",
+        assetRevisionId: "asset-revision-1",
+        passed: true,
+        measurements: {
+          meshCount: 1,
+          primitiveCount: 1,
+          vertexCount: 24,
+          triangleCount: 12,
+          materialCount: 1,
+          textureCount: 0,
+          animationCount: 0,
+          boundsMeters: { x: 1, y: 2, z: 1 },
+        },
+        gates: [
+          {
+            id: "mesh-present",
+            label: "Mesh is present",
+            passed: true,
+            detail: "Found one mesh.",
+          },
+        ],
+        evaluatedAt: "2026-08-24T12:00:00.000Z",
+      }).evaluationId,
+    ).toBe("evaluation-1");
+  });
+
+  it("parses_m1_project_without_asset_quality_selection", () => {
+    const state = ProjectStateSchema.parse(
+      persistedState("m1", "interrogation"),
+    );
+
+    expect(state.assetBatch).toBeUndefined();
+  });
+
+  it("rejects_crop_outside_normalized_frame", () => {
+    expect(
+      NormalizedCropSchema.safeParse({ x: 0.8, y: 0, width: 0.3, height: 1 })
+        .success,
+    ).toBe(false);
+    expect(
+      NormalizedCropSchema.safeParse({ x: 0, y: 0.7, width: 1, height: 0.4 })
+        .success,
+    ).toBe(false);
+  });
+
+  it("accepts_legacy_sorted_evidence_ids_and_rejects_set_mismatches", () => {
+    const finding = {
+      findingId: "finding-1",
+      findingCode: "geometry.rear-silhouette",
+      rubricVersion: "asset-turntable-v1",
+      category: "geometry",
+      summary: "The rear silhouette collapses into one flat mass.",
+      evidenceArtifactIds: ["a-frame", "m-frame", "z-frame"],
+      evidence: [
+        {
+          artifactId: "z-frame",
+          kind: "turntable-frame",
+          frameIndex: 3,
+        },
+        {
+          artifactId: "a-frame",
+          kind: "turntable-frame",
+          frameIndex: 4,
+        },
+        {
+          artifactId: "m-frame",
+          kind: "turntable-frame",
+          frameIndex: 5,
+        },
+      ],
+      severity: "major",
+      confidence: 0.92,
+      ownerModule: "asset-production",
+    };
+
+    expect(EvaluationFindingSchema.safeParse(finding).success).toBe(true);
+    expect(
+      EvaluationFindingSchema.safeParse({
+        ...finding,
+        evidenceArtifactIds: ["a-frame", "m-frame", "not-cited", "z-frame"],
+      }).success,
+    ).toBe(false);
+    expect(
+      EvaluationFindingSchema.safeParse({
+        ...finding,
+        evidenceArtifactIds: ["a-frame", "z-frame"],
+      }).success,
+    ).toBe(false);
+    expect(
+      EvaluationFindingSchema.safeParse({
+        ...finding,
+        evidenceArtifactIds: ["a-frame", "m-frame", "z-frame", "z-frame"],
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects_non_turntable_evidence_with_frame_coordinates", () => {
+    expect(
+      EvaluationFindingSchema.safeParse({
+        findingId: "finding-1",
+        findingCode: "geometry.rear-silhouette",
+        rubricVersion: "asset-turntable-v1",
+        category: "geometry",
+        summary: "The rear silhouette collapses into one flat mass.",
+        evidenceArtifactIds: ["source-asset"],
+        evidence: [
+          {
+            artifactId: "source-asset",
+            kind: "source-asset",
+            frameIndex: 3,
+            crop: { x: 0, y: 0, width: 0.5, height: 0.5 },
+          },
+        ],
+        severity: "major",
+        confidence: 0.92,
+        ownerModule: "asset-production",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects_policy_above_twelve_frames_or_five_attempts", () => {
+    const policy = {
+      schema: "fulcrum.asset-policy",
+      version: 1,
+      classification: "hero",
+      mesh: {
+        maxMeshes: 64,
+        maxPrimitives: 128,
+        maxVertices: 300_000,
+        maxTriangles: 250_000,
+        minLargestExtentMeters: 0.1,
+        maxLargestExtentMeters: 25,
+        warnAspectRatioAbove: 8,
+      },
+      material: {
+        requireAssignedMaterial: true,
+        requireNormals: true,
+        warnUnusedAbove: 0,
+        warnDuplicateGroupsAbove: 0,
+        requiredClaimedTextureChannels: ["base-color", "metallic-roughness"],
+      },
+      texture: {
+        minDimensionPx: 1024,
+        maxDimensionPx: 4096,
+        warnUnusedAbove: 0,
+      },
+      topology: {
+        maxDegenerateTriangleRatio: 0.001,
+        maxNonManifoldEdges: 0,
+        maxUnreferencedVertexRatio: 0.01,
+        maxInconsistentWindingRatio: 0.02,
+        maxNormalMismatchRatio: 0.05,
+        warnBoundaryEdgeRatioAbove: 0.5,
+        weldToleranceRatio: 0.00001,
+      },
+      turntable: {
+        frameCount: 8,
+        width: 256,
+        height: 256,
+        elevationDegrees: 15,
+        paddingRatio: 0.15,
+      },
+      regeneration: {
+        maxAttempts: 3,
+        maxSameStrategyRetries: 1,
+        allowedStrategies: ["retry-same", "change-prompt", "change-views"],
+      },
+    };
+
+    expect(AssetPolicySchema.safeParse(policy).success).toBe(true);
+    expect(
+      AssetPolicySchema.safeParse({
+        ...policy,
+        turntable: { ...policy.turntable, frameCount: 13 },
+      }).success,
+    ).toBe(false);
+    expect(
+      AssetPolicySchema.safeParse({
+        ...policy,
+        regeneration: { ...policy.regeneration, maxAttempts: 6 },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("uses_cardinal_roles_for_change_views", () => {
+    const parsed = RegenerationStrategySchema.parse({
+      kind: "change-views",
+      rationale: "The rear silhouette needs direct evidence.",
+      reasonFindingIds: ["finding-1"],
+      operation: "add",
+      roles: ["back", "left", "right"],
+      brief: "Show the rear structure and both side transitions.",
+    });
+
+    expect(parsed).toMatchObject({ roles: ["back", "left", "right"] });
+    expect(
+      RegenerationStrategySchema.safeParse({
+        kind: "change-views",
+        rationale: "The rear silhouette needs direct evidence.",
+        reasonFindingIds: ["finding-1"],
+        operation: "add",
+        yawDegrees: [180],
+        brief: "Show the rear structure.",
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("AssetPlanningInputSchema", () => {
+  it("rejects_an_approval_binding_from_another_project", () => {
+    const gameDesign = revision(
+      "game-design",
+      "game-design-revision",
+      "a".repeat(64),
+    );
+    const conceptSet = revision(
+      "concept-set",
+      "concept-set-revision",
+      "b".repeat(64),
+    );
+    const approval = (
+      projectId: string,
+      targetType: "game-design" | "concept-set",
+      target: ReturnType<typeof revision>,
+    ) => ({
+      approvalId: `${targetType}-approval`,
+      projectId,
+      targetType,
+      targetRevisionId: target.revisionId,
+      targetSha256: target.artifact.sha256,
+      decision: "approved" as const,
+      decidedBy: "test",
+      decidedAt: "2026-08-24T12:00:00.000Z",
+    });
+
+    const parsed = AssetPlanningInputSchema.safeParse({
+      projectId: "project-y",
+      runId: "run-1",
+      mode: "replay",
+      orchestratorProvider: "openai",
+      gameDesignSpec: {
+        revision: gameDesign,
+        approval: approval("project-x", "game-design", gameDesign),
+      },
+      conceptSet: {
+        revision: conceptSet,
+        approval: approval("project-y", "concept-set", conceptSet),
+      },
+    });
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success)
+      expect(parsed.error.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            path: ["gameDesignSpec", "approval", "projectId"],
+          }),
+        ]),
+      );
+  });
+});
+
 describe("metered project routing", () => {
+  it("identifies every milestone and route combination that needs a budget", () => {
+    const subscriptionRoutes = {
+      orchestratorProvider: "openai" as const,
+      implementationProvider: "openai" as const,
+      imageProvider: "openai-subscription" as const,
+      soundProvider: "none" as const,
+    };
+
+    expect(
+      projectNeedsBudget({
+        ...subscriptionRoutes,
+        milestone: "m2",
+        mode: "live",
+      }),
+    ).toBe(false);
+    expect(
+      projectNeedsMeshyCredits({
+        milestone: "m2",
+        mode: "live",
+        assetProvider: "meshy",
+      }),
+    ).toBe(true);
+    expect(
+      projectNeedsBudget({
+        ...subscriptionRoutes,
+        milestone: "m2",
+        mode: "replay",
+      }),
+    ).toBe(false);
+    expect(
+      projectNeedsBudget({
+        ...subscriptionRoutes,
+        milestone: "m1",
+        mode: "live",
+      }),
+    ).toBe(false);
+    expect(
+      projectNeedsBudget({
+        ...subscriptionRoutes,
+        milestone: "m1",
+        mode: "live",
+        imageProvider: "openai-gpt-image-2",
+      }),
+    ).toBe(true);
+    expect(
+      projectNeedsBudget({
+        ...subscriptionRoutes,
+        milestone: "m0",
+        mode: "replay",
+      }),
+    ).toBe(true);
+  });
+
   it("allows M1 subscription and replay projects to omit budgetUsd", () => {
     const subscription = CreateProjectInputSchema.parse({
       milestone: "m1",
@@ -132,5 +1008,170 @@ describe("metered project routing", () => {
     });
 
     expect(parsed.budgetUsd).toBe(0);
+  });
+});
+
+describe("approval gate blocks", () => {
+  const blockedState = (
+    milestone: "m0" | "m1" | "m2",
+    blockedReason: { code: string; message: string; recoverable: boolean },
+  ) => ({ milestone, status: "blocked" as const, blockedReason });
+
+  it("maps a rejection code to the gate that owns the review", () => {
+    expect(
+      approvalGateBlock(
+        blockedState("m1", {
+          code: "concept-set-not-approved",
+          message: "The concept set was not approved.",
+          recoverable: false,
+        }),
+      ),
+    ).toEqual({ gate: "concept-set", reviewStage: "concept-set-approval" });
+    expect(
+      approvalGateBlock(
+        blockedState("m2", {
+          code: "asset-plan-not-approved",
+          message: "The asset plan was rejected.",
+          recoverable: false,
+        }),
+      ),
+    ).toEqual({ gate: "asset-plan", reviewStage: "asset-plan-approval" });
+  });
+
+  it("ignores failures and gates the milestone cannot reach", () => {
+    expect(
+      approvalGateBlock(
+        blockedState("m2", {
+          code: "asset-quality-failed",
+          message: "The provider returned an unusable mesh.",
+          recoverable: false,
+        }),
+      ),
+    ).toBeUndefined();
+    expect(
+      approvalGateBlock(
+        blockedState("m2", {
+          code: "sound-set-not-approved",
+          message: "The sound set was not approved.",
+          recoverable: false,
+        }),
+      ),
+    ).toBeUndefined();
+    expect(approvalGateBlock({ milestone: "m1" })).toBeUndefined();
+  });
+
+  it("normalizes an old rejection block and leaves other state untouched", () => {
+    const state = {
+      milestone: "m1",
+      blockedReason: {
+        code: "game-design-not-approved",
+        message: "The Game Design Spec was not approved.",
+        recoverable: false,
+      },
+    } as unknown as ProjectState;
+
+    expect(normalizeBlockedReason(state).blockedReason).toEqual({
+      code: "game-design-not-approved",
+      message: "The Game Design Spec was not approved.",
+      recoverable: true,
+      failureKind: "user-action-required",
+      resumeStage: "game-design-approval",
+      reviewGate: "game-design",
+    });
+
+    const failure = {
+      milestone: "m1",
+      blockedReason: {
+        code: "workflow-phase-failed",
+        message: "The provider returned an unusable response.",
+        recoverable: false,
+      },
+    } as unknown as ProjectState;
+    expect(normalizeBlockedReason(failure)).toBe(failure);
+  });
+});
+
+describe("pasted image attachments", () => {
+  it("only claims vision on the two routes that have it", () => {
+    expect(readsImageAttachments("openai")).toBe(true);
+    expect(readsImageAttachments("openai-api")).toBe(true);
+    for (const provider of ["claude", "grok", "opencode"] as const)
+      expect(readsImageAttachments(provider)).toBe(false);
+  });
+
+  it("never claims a replay world reads an image", () => {
+    expect(
+      attachmentsReachOrchestrator({
+        mode: "replay",
+        orchestratorProvider: "openai",
+      }),
+    ).toBe(false);
+    expect(
+      attachmentsReachOrchestrator({
+        mode: "live",
+        orchestratorProvider: "openai",
+      }),
+    ).toBe(true);
+    expect(
+      attachmentsReachOrchestrator({
+        mode: "live",
+        orchestratorProvider: "claude",
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps an image-free answer exactly as it was", () => {
+    const parsed = InterrogationAnswerSchema.parse({
+      questionId: "q1",
+      value: "Explore, charge, defend",
+      origin: { source: "user", reference: "round-1" },
+    });
+    expect(parsed).not.toHaveProperty("attachments");
+  });
+
+  it("carries at most four attachment ids on a submitted answer", () => {
+    const answer = (count: number) => ({
+      interrogationRevisionId: "revision-1",
+      roundId: "round-1",
+      answers: [
+        {
+          questionId: "q1",
+          value: "It looks like this",
+          attachmentArtifactIds: Array.from(
+            { length: count },
+            (_, index) => `artifact-${index}`,
+          ),
+        },
+      ],
+    });
+    expect(
+      AnswerFrontierRoundInputSchema.parse(answer(4)).answers[0]
+        ?.attachmentArtifactIds,
+    ).toHaveLength(4);
+    expect(() => AnswerFrontierRoundInputSchema.parse(answer(5))).toThrow();
+    expect(
+      SuggestGameNamesInputSchema.parse({
+        gameNameCandidatesRevisionId: "revision-1",
+        feedback: "Shorter, darker",
+        attachmentArtifactIds: ["artifact-0"],
+      }).attachmentArtifactIds,
+    ).toEqual(["artifact-0"]);
+  });
+
+  it("accepts only the three clipboard image formats as an upload", () => {
+    for (const mediaType of ["png", "jpeg", "webp"])
+      expect(() =>
+        StoreImageAttachmentInputSchema.parse({
+          dataUrl: `data:image/${mediaType};base64,AAAA`,
+        }),
+      ).not.toThrow();
+    for (const dataUrl of [
+      "data:image/gif;base64,AAAA",
+      "data:text/html;base64,AAAA",
+      "https://example.invalid/steal.png",
+    ])
+      expect(() =>
+        StoreImageAttachmentInputSchema.parse({ dataUrl }),
+      ).toThrow();
   });
 });

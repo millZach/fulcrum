@@ -1,29 +1,262 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import {
+  AssetPlanSchema,
+  AssetProductionRequestSchema,
   AssetDocumentSchema,
   AssetEvaluationSchema,
+  AssetPolicySchema,
+  ConceptSetSchema,
+  ConceptViewDocumentSchema,
+  DeterministicAssetReportSchema,
+  FinalizedAssetPlanBindingSchema,
+  M1ConceptDocumentSchema,
+  MultiviewConceptRequestSchema,
+  MultiviewConceptSetSchema,
+  RegenerationDecisionReportSchema,
+  RegenerationStrategySchema,
+  SemanticAssetReportSchema,
+  TurntableManifestSchema,
   decideDurableSubmission,
+  handlingForPlannedAsset,
   isProviderPreflightError,
   ProviderPreflightError,
   type AssetProvider,
+  type AssetProductionRequest,
   type AssetDocument,
   type AssetEvaluation,
+  type AssetPolicy,
+  type MacroPhaseOutcome,
+  type M2AssetProductionRequest,
+  type MultiviewConceptRequest,
+  type MultiviewNodeOutput,
+  type DeterministicAssetReport,
+  type ArtifactRef,
   type ConceptDocument,
   type ProductionOutcome,
   type ProviderMode,
   type RevisionRef,
+  type RegenerationAttempt,
+  type RegenerationDecisionReport,
+  type RegenerationStrategy,
+  type SemanticAssetReport,
   type SubmissionRecord,
+  type TurntableManifest,
 } from "@fulcrum/domain";
+import { MultiviewConceptProduction } from "@fulcrum/creative";
+import {
+  inspectExecutionProviders,
+  ModelExecution,
+  preferredVisionProvider,
+  type ExecutionProviderStatus,
+  type StructuredVisionExecution,
+} from "@fulcrum/execution";
 import { ProjectRepository } from "@fulcrum/project";
 import { Document, getBounds, NodeIO, Primitive } from "@gltf-transform/core";
+import { z } from "zod";
+
 import {
-  BoxGeometry,
-  BufferGeometry,
-  CylinderGeometry,
-  OctahedronGeometry,
-  TorusGeometry,
-} from "three";
+  DEFAULT_ASSET_POLICIES,
+  inspectParsedAsset,
+} from "./deterministic-quality.js";
+import {
+  adapterJobRefFromSubmissionPayload,
+  CARDINAL_VIEW_ROLES,
+  decideMultiviewStrategy,
+  m2AssetIdempotencyKey,
+  type AdapterJobRef,
+  type AssetGenerationJob,
+  type ExternalJobState,
+} from "./asset-generation.js";
+import {
+  createAssetGenerationAdapter,
+  resolveAssetGenerationProfile,
+} from "./asset-generation-profile.js";
+import {
+  MESHY_GEOMETRY_CREDITS,
+  MESHY_TEXTURE_CREDITS,
+  MeshyRetextureAdapter,
+  meshyConfiguration,
+  type MeshyRetextureJob,
+} from "./meshy-adapter.js";
+import { createReplayReliquary } from "./replay-reliquary.js";
+import {
+  bestRegenerationAttempt,
+  compareQualityVectors,
+  decideRegeneration,
+} from "./regeneration.js";
+import { renderTurntable } from "./turntable.js";
+import { AssetPreparationError, tripoConfiguration } from "./tripo-adapter.js";
+import {
+  ASSET_GEOMETRY_VISION_RUBRIC_V1,
+  ASSET_VISION_RUBRIC_V1,
+  LiveVisionEvaluationPort,
+  materializeVisionReport,
+  REPLAY_VISION_CATALOG,
+  ReplayVisionEvaluationPort,
+  ReplayVisionCatalogSchema,
+  VisionEvaluationError,
+  VisionRequestDescriptorSchema,
+  visionRequestDigest,
+  visionRequestScopeHash,
+  type ReplayVisionCatalog,
+  type VisionRequestDescriptor,
+} from "./vision-evaluation.js";
+
+export {
+  AssetPlanAmender,
+  AssetPlanAmendmentError,
+  AssetPlanner,
+} from "./asset-planner.js";
+export type {
+  AssetPlanAmending,
+  AssetPlanAmendmentRequest,
+  AssetPlanAmendmentResult,
+  AssetPlanning,
+} from "./asset-planner.js";
+export { DEFAULT_ASSET_POLICIES } from "./deterministic-quality.js";
+export { ASSET_VISION_RUBRIC_V1 } from "./vision-evaluation.js";
+export { ASSET_GEOMETRY_VISION_RUBRIC_V1 } from "./vision-evaluation.js";
+export {
+  BipedDetectionVerdictSchema,
+  detectBipedDeterministically,
+  LiveBipedDetectionPort,
+  ReplayBipedDetectionPort,
+} from "./vision-evaluation.js";
+export type {
+  BipedDetectionInput,
+  BipedDetectionPort,
+  BipedDetectionVerdict,
+} from "./vision-evaluation.js";
+export { createReplayReliquary } from "./replay-reliquary.js";
+export {
+  assetStageView,
+  assetStageViews,
+  resolveMeshyConfig,
+  StagedAssetLifecycle,
+} from "./staged-asset-lifecycle.js";
+export type {
+  StagedAssetLifecycleOptions,
+  StagedAssetOutcome,
+} from "./staged-asset-lifecycle.js";
+export {
+  createStagedAssetAdapter,
+  LiveMeshyStagedAdapter,
+  SimulatedStagedAdapter,
+} from "./staged-meshy.js";
+export type {
+  SimulatedStagedOptions,
+  StagedAssetAdapter,
+  StagedInspectInput,
+  StagedSubmitInput,
+  StagedTaskState,
+} from "./staged-meshy.js";
+export { createStagedPlaceholderGlb, stagedShapeSeed } from "./staged-glb.js";
+export {
+  buildMeshyStagedAnimationRequest,
+  buildMeshyStagedGeometryRequest,
+  buildMeshyStagedRigRequest,
+  buildMeshyStagedTextureRequest,
+  meshyTaskStatus,
+  MESHY_ANIMATION_CREDITS,
+  MESHY_RIG_CREDITS,
+  MESHY_RIG_MAX_FACES,
+  MESHY_STAGE_ENDPOINTS,
+} from "./meshy-adapter.js";
+
+export type AssetQualityOptions = {
+  visionExecution?: StructuredVisionExecution;
+  replayVisionCatalog?: ReplayVisionCatalog;
+  visionProviderStatuses?: ExecutionProviderStatus[];
+};
+
+export type InspectAssetRequest = {
+  projectId: string;
+  runId: string;
+  asset: RevisionRef;
+  policy: { revision: RevisionRef; value: AssetPolicy };
+};
+
+export type InspectAssetResult = {
+  deterministicReport: RevisionRef;
+  turntable?: RevisionRef;
+  report: DeterministicAssetReport;
+  manifest?: TurntableManifest;
+};
+
+export type AssetEvaluationContext = {
+  intendedUse: string;
+  requiredFeatures: string[];
+  prohibitedFeatures: string[];
+  referenceArtifacts: ArtifactRef[];
+};
+
+export type SemanticAssetRequest = {
+  projectId: string;
+  runId: string;
+  mode: ProviderMode;
+  asset: RevisionRef;
+  deterministicReport: RevisionRef;
+  turntable: RevisionRef;
+  policy: { revision: RevisionRef; value: AssetPolicy };
+  context: AssetEvaluationContext;
+};
+
+export type SelectRegenerationRequest = {
+  projectId: string;
+  runId: string;
+  assetId: string;
+  currentAttempt: RegenerationAttempt;
+  attemptHistory: RegenerationAttempt[];
+  policy: AssetPolicy;
+};
+
+export type AssetRegenerationInput = {
+  attemptNumber: number;
+  strategyRevision: RevisionRef;
+  parentAssetRevision: RevisionRef;
+  additionalConceptViews?: RevisionRef[];
+};
+
+export type FinishAssetRequest = {
+  projectId: string;
+  assetPlan: RevisionRef;
+  assetId: string;
+  geometryAsset: RevisionRef;
+};
+
+export class AssetQualityFailure extends Error {
+  readonly failureKind = "strategy-changing" as const;
+
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "AssetQualityFailure";
+  }
+}
+
+const QualityWorkflowEventSchema = z.object({
+  projectId: z.string().min(1),
+  runId: z.string().min(1),
+  type: z.enum([
+    "asset.deterministic-quality-completed",
+    "asset.turntable-rendered",
+    "asset.semantic-evaluation-submitted",
+    "asset.semantic-evaluation-completed",
+    "asset.semantic-evaluation-submission-unknown",
+    "asset.regeneration-strategy-selected",
+    "asset.regeneration-attempt-started",
+    "asset.best-revision-considered",
+  ]),
+  payload: z.record(z.string(), z.unknown()),
+});
+
+const appendQualityEvent = (
+  repository: ProjectRepository,
+  event: z.input<typeof QualityWorkflowEventSchema>,
+) => repository.appendEvent(QualityWorkflowEventSchema.parse(event));
 
 type GeneratedAsset = {
   bytes: Uint8Array;
@@ -31,134 +264,1200 @@ type GeneratedAsset = {
   model: string;
   externalJobId: string;
   costUsd: number;
+  costCredits?: number;
+  generationClaims?: AssetDocument["generationClaims"];
+  supportingArtifacts?: Array<{
+    role: string;
+    mediaType: string;
+    bytes: Uint8Array;
+  }>;
   providerMetadata?: Record<string, unknown>;
 };
 
-const addGeometry = (
-  document: Document,
-  buffer: ReturnType<Document["createBuffer"]>,
-  name: string,
-  geometry: BufferGeometry,
-  material: ReturnType<Document["createMaterial"]>,
-): void => {
-  geometry.computeVertexNormals();
-  const positions = geometry.getAttribute("position");
-  const normals = geometry.getAttribute("normal");
-  if (!positions || !normals)
-    throw new Error(`Geometry ${name} has no renderable attributes.`);
-  const primitive = document
-    .createPrimitive()
-    .setAttribute(
-      "POSITION",
-      document
-        .createAccessor(`${name}:positions`, buffer)
-        .setType("VEC3")
-        .setArray(new Float32Array(positions.array)),
-    )
-    .setAttribute(
-      "NORMAL",
-      document
-        .createAccessor(`${name}:normals`, buffer)
-        .setType("VEC3")
-        .setArray(new Float32Array(normals.array)),
-    )
-    .setMaterial(material);
-  if (geometry.index) {
-    const values = Array.from(geometry.index.array);
-    const max = Math.max(...values);
-    primitive.setIndices(
-      document
-        .createAccessor(`${name}:indices`, buffer)
-        .setType("SCALAR")
-        .setArray(
-          max > 65_535 ? new Uint32Array(values) : new Uint16Array(values),
-        ),
+export class AssetProduction {
+  private readonly multiviewConceptProduction: MultiviewConceptProduction;
+
+  constructor(private readonly repository: ProjectRepository) {
+    this.multiviewConceptProduction = new MultiviewConceptProduction(
+      repository,
     );
   }
-  const mesh = document.createMesh(name).addPrimitive(primitive);
-  document
-    .getRoot()
-    .listScenes()[0]
-    ?.addChild(document.createNode(name).setMesh(mesh));
-  geometry.dispose();
-};
 
-export const createReplayReliquary = async (): Promise<Uint8Array> => {
-  const document = new Document();
-  document.createScene("Fulcrum M0 Reliquary");
-  const buffer = document.createBuffer("reliquary-buffer");
-  const stone = document
-    .createMaterial("Weathered basalt")
-    .setBaseColorFactor([0.085, 0.105, 0.14, 1])
-    .setMetallicFactor(0.05)
-    .setRoughnessFactor(0.86);
-  const edgeStone = document
-    .createMaterial("Ash edge planes")
-    .setBaseColorFactor([0.25, 0.29, 0.34, 1])
-    .setMetallicFactor(0.02)
-    .setRoughnessFactor(0.78);
-  const bronze = document
-    .createMaterial("Aged bronze")
-    .setBaseColorFactor([0.52, 0.32, 0.16, 1])
-    .setMetallicFactor(0.78)
-    .setRoughnessFactor(0.42);
-  const crystal = document
-    .createMaterial("Cyan crystal")
-    .setBaseColorFactor([0.13, 0.78, 0.86, 1])
-    .setEmissiveFactor([0.12, 0.74, 0.82])
-    .setMetallicFactor(0.05)
-    .setRoughnessFactor(0.18);
-
-  const base = new CylinderGeometry(1.45, 1.62, 0.32, 8).translate(0, 0.16, 0);
-  addGeometry(document, buffer, "octagonal plinth", base, stone);
-  const foot = new CylinderGeometry(1.26, 1.42, 0.24, 8).translate(0, 0.43, 0);
-  addGeometry(document, buffer, "bronze foot", foot, bronze);
-  const body = new BoxGeometry(1.9, 1.55, 1.55).translate(0, 1.27, 0);
-  addGeometry(document, buffer, "stone vessel", body, stone);
-  const shoulder = new CylinderGeometry(1.16, 1.34, 0.36, 8).translate(
-    0,
-    2.13,
-    0,
-  );
-  addGeometry(document, buffer, "crowned shoulder", shoulder, edgeStone);
-  const lid = new CylinderGeometry(0.95, 1.14, 0.24, 8).translate(0, 2.43, 0);
-  addGeometry(document, buffer, "capstone", lid, stone);
-
-  for (const [index, height] of [0.73, 1.82, 2.35].entries()) {
-    const ring = new TorusGeometry(index === 1 ? 1.25 : 1.08, 0.085, 8, 32)
-      .rotateX(Math.PI / 2)
-      .translate(0, height, 0);
-    addGeometry(document, buffer, `bronze binding ${index + 1}`, ring, bronze);
+  async ensureMultiviewConcepts(
+    input: MultiviewConceptRequest,
+  ): Promise<MacroPhaseOutcome<MultiviewNodeOutput>> {
+    try {
+      const request = MultiviewConceptRequestSchema.parse(input);
+      const context = this.resolveM2Context({
+        projectId: request.projectId,
+        assetPlan: request.assetPlan,
+        assetId: request.assetId,
+      });
+      const capability = resolveAssetGenerationProfile(
+        context.state.assetProvider,
+        context.state.mode,
+      ).multiviewImageInput;
+      const decision = decideMultiviewStrategy(
+        context.policy,
+        capability,
+        request.requestedRoles,
+      );
+      if (decision.kind === "not-required") {
+        return {
+          status: "ready",
+          value: {
+            projectId: request.projectId,
+            assetPlan: request.assetPlan,
+            assetId: request.assetId,
+            classification: context.asset.classification,
+            multiviewDecision: "not-required",
+          },
+        };
+      }
+      const outcome = await this.multiviewConceptProduction.ensure({
+        ...request,
+        runId: context.state.runId,
+        mode: context.state.mode,
+        imageProvider: context.state.imageProvider,
+        sourceConceptSet: context.conceptSetRevision,
+        anchorConcept: context.anchorConcept,
+        rolesToGenerate: decision.roles,
+      });
+      if (outcome.status !== "ready") return outcome;
+      return {
+        status: "ready",
+        value: {
+          projectId: request.projectId,
+          assetPlan: request.assetPlan,
+          assetId: request.assetId,
+          classification: context.asset.classification,
+          multiviewConceptSet: outcome.value,
+          multiviewDecision: "ready",
+        },
+      };
+    } catch (error) {
+      return {
+        status: "failed",
+        error: {
+          code: "multiview-lineage-invalid",
+          message: error instanceof Error ? error.message : String(error),
+          kind: "policy-blocked",
+          evidenceRevisionIds: [
+            input.assetPlan.revisionId,
+            input.previousMultiviewConceptSet?.revisionId,
+            input.strategyRevision?.revisionId,
+          ].filter((value): value is string => Boolean(value)),
+        },
+      };
+    }
   }
 
-  const core = new OctahedronGeometry(0.56, 0)
-    .scale(0.72, 1.55, 0.72)
-    .translate(0, 1.43, 0.88);
-  addGeometry(document, buffer, "awakened cyan core", core, crystal);
-  const coreFrameLeft = new BoxGeometry(0.16, 1.4, 0.18)
-    .rotateZ(-0.16)
-    .translate(-0.65, 1.42, 0.74);
-  addGeometry(document, buffer, "left core guard", coreFrameLeft, bronze);
-  const coreFrameRight = new BoxGeometry(0.16, 1.4, 0.18)
-    .rotateZ(0.16)
-    .translate(0.65, 1.42, 0.74);
-  addGeometry(document, buffer, "right core guard", coreFrameRight, bronze);
+  async ensure(
+    input: AssetProductionRequest,
+  ): Promise<ProductionOutcome<RevisionRef>> {
+    const parsed = AssetProductionRequestSchema.parse(input);
+    return "concept" in parsed
+      ? this.ensureLegacy(parsed)
+      : this.ensureM2(parsed);
+  }
 
-  document.getRoot().getAsset().generator = "Fulcrum replay asset generator";
-  return new NodeIO().writeBinary(document);
-};
+  async finish(
+    input: FinishAssetRequest,
+  ): Promise<ProductionOutcome<RevisionRef>> {
+    const fallbackRequestId = `m2-texture-${createHash("sha256")
+      .update(
+        JSON.stringify([
+          input.projectId,
+          input.assetId,
+          input.geometryAsset.artifact.sha256,
+        ]),
+      )
+      .digest("hex")}`;
+    try {
+      const context = this.resolveM2Context(input);
+      const source = AssetDocumentSchema.parse(
+        this.repository.resolveRevision<AssetDocument>(input.geometryAsset),
+      );
+      if (source.assetId !== input.assetId) {
+        throw new Error(
+          `Geometry asset ${input.geometryAsset.revisionId} belongs to ${source.assetId}, not ${input.assetId}.`,
+        );
+      }
+      if (source.generationClaims?.textured) {
+        return {
+          status: "ready",
+          requestId: `already-textured-${input.geometryAsset.revisionId}`,
+          value: input.geometryAsset,
+        };
+      }
+      if (
+        context.state.mode !== "live" ||
+        context.state.assetProvider !== "meshy" ||
+        source.provider !== "meshy"
+      ) {
+        return {
+          status: "ready",
+          requestId: `finishing-not-required-${input.geometryAsset.revisionId}`,
+          value: input.geometryAsset,
+        };
+      }
 
-export class AssetProduction {
-  constructor(private readonly repository: ProjectRepository) {}
+      const job: MeshyRetextureJob = {
+        projectId: input.projectId,
+        assetId: input.assetId,
+        sourceModel: source.glb,
+        styleImage: context.anchorDocument.image,
+      };
+      const adapter = new MeshyRetextureAdapter(this.repository);
+      const requestFingerprint = adapter.requestFingerprint(job);
+      const idempotencyKey = `asset-texture:v1:${input.projectId}:meshy:${requestFingerprint}`;
+      const prior = this.repository.getSubmissionByKey(idempotencyKey);
+      const decision = decideDurableSubmission(prior, context.state.mode);
+      if (decision.kind === "ready") {
+        if (!decision.submission.resultRevisionId) {
+          return {
+            status: "failed",
+            requestId: decision.submission.requestId,
+            error: {
+              code: "asset-texture-result-missing",
+              message: "The completed Meshy texture job has no asset revision.",
+              recoverable: true,
+              failureKind: "user-action-required",
+            },
+          };
+        }
+        return {
+          status: "ready",
+          requestId: decision.submission.requestId,
+          value: this.repository.getRevision(
+            decision.submission.resultRevisionId,
+          ),
+        };
+      }
+      if (decision.kind === "terminal-failed") {
+        return {
+          status: "failed",
+          requestId: decision.submission.requestId,
+          error: {
+            code:
+              decision.submission.status === "submission-unknown"
+                ? "submission-unknown"
+                : "asset-texture-failed",
+            message:
+              decision.submission.status === "submission-unknown"
+                ? "Meshy may have accepted the texture request; Fulcrum will not submit it twice."
+                : "The previous Meshy texture job failed.",
+            recoverable: true,
+            failureKind:
+              decision.submission.status === "submission-unknown"
+                ? "user-action-required"
+                : "strategy-changing",
+          },
+        };
+      }
+      if (decision.kind === "unknown-interruption") {
+        this.repository.updateSubmission(decision.submission.requestId, {
+          status: "submission-unknown",
+        });
+        return {
+          status: "failed",
+          requestId: decision.submission.requestId,
+          error: {
+            code: "submission-unknown",
+            message:
+              "Meshy may have accepted the texture request; Fulcrum will not submit it twice.",
+            recoverable: true,
+            failureKind: "user-action-required",
+          },
+        };
+      }
 
-  async ensure(input: {
-    projectId: string;
-    runId: string;
-    mode: ProviderMode;
-    assetProvider: AssetProvider;
-    concept: RevisionRef;
-  }): Promise<ProductionOutcome<RevisionRef>> {
-    const idempotencyKey = `asset:${input.projectId}:${input.concept.artifact.sha256}:${input.mode}:${input.assetProvider}`;
+      const submission =
+        "submission" in decision && decision.submission
+          ? decision.submission
+          : this.repository.recordSubmissionIntent({
+              projectId: input.projectId,
+              operation: "m2-meshy-retexture",
+              provider: "meshy",
+              idempotencyKey,
+              payload: {
+                assetId: input.assetId,
+                geometryAssetRevisionId: input.geometryAsset.revisionId,
+                geometryArtifactHash: source.glb.sha256,
+                styleImageArtifactHash: context.anchorDocument.image.sha256,
+                modelVersion: "meshy-6",
+                endpointKind: "retexture",
+                jobKind: "retexture",
+                pipelineStage: "texture",
+                requestFingerprint,
+              },
+            });
+
+      let generated: GeneratedAsset;
+      if (decision.kind === "inspect") {
+        let inspected: ExternalJobState;
+        try {
+          inspected = await adapter.inspect(
+            adapterJobRefFromSubmissionPayload(
+              decision.submission.externalJobId!,
+              decision.submission.payload,
+            ),
+          );
+        } catch (error) {
+          this.repository.updateSubmission(submission.requestId, {
+            status: "pending",
+            payload: {
+              ...submission.payload,
+              lastPollError:
+                error instanceof Error ? error.message : String(error),
+            },
+          });
+          return {
+            status: "pending",
+            requestId: submission.requestId,
+            resumeAfter: new Date(Date.now() + 5_000).toISOString(),
+          };
+        }
+        if (inspected.status === "pending") {
+          return {
+            status: "pending",
+            requestId: submission.requestId,
+            resumeAfter: inspected.resumeAfter,
+          };
+        }
+        if (inspected.status === "failed") {
+          const consumedCredits = inspected.providerMetadata?.consumedCredits;
+          const reconciledCredits =
+            typeof consumedCredits === "number" &&
+            Number.isInteger(consumedCredits) &&
+            consumedCredits >= 0
+              ? consumedCredits
+              : 0;
+          const failurePayload =
+            this.repository.reconcileMeshySubmissionCredits(
+              submission.requestId,
+              reconciledCredits,
+              "Meshy 6 4K Retexture",
+            ).payload;
+          this.repository.updateSubmission(submission.requestId, {
+            status: "failed",
+            payload: {
+              ...failurePayload,
+              ...(inspected.providerMetadata ?? {}),
+              creditReconciliationSource:
+                reconciledCredits === consumedCredits
+                  ? "provider-reported"
+                  : "documented-terminal-refund",
+              providerError: inspected.error,
+            },
+          });
+          return {
+            status: "failed",
+            requestId: submission.requestId,
+            error: {
+              code: "meshy-retexture-failed",
+              message: inspected.error,
+              recoverable: true,
+              failureKind: "strategy-changing",
+            },
+          };
+        }
+        generated = inspected.asset;
+      } else {
+        try {
+          meshyConfiguration();
+          this.repository.reserveMeshySubmissionCredits(
+            submission.requestId,
+            MESHY_TEXTURE_CREDITS,
+            "Meshy 6 4K Retexture",
+          );
+        } catch (error) {
+          if (isProviderPreflightError(error)) {
+            return this.refuseBeforeProviderCall(submission, error);
+          }
+          throw error;
+        }
+        const reserved =
+          this.repository.getSubmissionByKey(idempotencyKey) ?? submission;
+        this.repository.updateSubmission(submission.requestId, {
+          status: "pending",
+          payload: {
+            ...reserved.payload,
+            providerCallStartedAt: new Date().toISOString(),
+          },
+        });
+        let adapterJob: AdapterJobRef;
+        try {
+          adapterJob = await adapter.submit(job);
+        } catch (error) {
+          const current =
+            this.repository.getSubmissionByKey(idempotencyKey) ?? submission;
+          const message =
+            error instanceof Error ? error.message : String(error);
+          this.repository.updateSubmission(submission.requestId, {
+            status: "submission-unknown",
+            payload: { ...current.payload, error: message },
+          });
+          return {
+            status: "failed",
+            requestId: submission.requestId,
+            error: {
+              code: "submission-unknown",
+              message,
+              recoverable: true,
+              failureKind: "user-action-required",
+            },
+          };
+        }
+        const current =
+          this.repository.getSubmissionByKey(idempotencyKey) ?? submission;
+        this.repository.updateSubmission(submission.requestId, {
+          status: "pending",
+          externalJobId: adapterJob.taskId,
+          payload: {
+            ...current.payload,
+            submittedAt: new Date().toISOString(),
+          },
+        });
+        return {
+          status: "pending",
+          requestId: submission.requestId,
+          resumeAfter: new Date(Date.now() + 5_000).toISOString(),
+        };
+      }
+
+      this.repository.reconcileMeshySubmissionCredits(
+        submission.requestId,
+        generated.costCredits ?? MESHY_TEXTURE_CREDITS,
+        "Meshy 6 4K Retexture",
+      );
+      const glb = this.repository.putArtifact(
+        input.projectId,
+        generated.bytes,
+        "model/gltf-binary",
+      );
+      const providerEvidence = (generated.supportingArtifacts ?? []).map(
+        ({ role, mediaType, bytes }) => ({
+          role,
+          artifact: this.repository.putArtifact(
+            input.projectId,
+            bytes,
+            mediaType,
+          ),
+        }),
+      );
+      const finished = AssetDocumentSchema.parse({
+        ...source,
+        glb,
+        provider: generated.provider,
+        model: generated.model,
+        parentAssetRevisionId: input.geometryAsset.revisionId,
+        generationClaims: generated.generationClaims ?? {
+          textured: true,
+          textureChannels: ["base-color", "metallic-roughness", "normal"],
+        },
+        providerEvidence: [
+          ...(source.providerEvidence ?? []),
+          ...providerEvidence,
+        ],
+        externalJobId: generated.externalJobId,
+        costUsd: source.costUsd + generated.costUsd,
+        costCredits:
+          (source.costCredits ?? MESHY_GEOMETRY_CREDITS) +
+          (generated.costCredits ?? MESHY_TEXTURE_CREDITS),
+      });
+      const revision = this.repository.writeRevision({
+        projectId: input.projectId,
+        entityId: finished.assetId,
+        kind: "asset-document",
+        value: finished,
+        runId: context.state.runId,
+      });
+      const current =
+        this.repository.getSubmissionByKey(idempotencyKey) ?? submission;
+      this.repository.updateSubmission(submission.requestId, {
+        status: "ready",
+        resultRevisionId: revision.revisionId,
+        payload: { ...current.payload, ...(generated.providerMetadata ?? {}) },
+      });
+      this.repository.appendEvent({
+        projectId: input.projectId,
+        runId: context.state.runId,
+        type: "asset.textured",
+        payload: {
+          geometryAssetRevisionId: input.geometryAsset.revisionId,
+          texturedAssetRevisionId: revision.revisionId,
+          glbArtifactId: glb.artifactId,
+          textureCredits: generated.costCredits ?? MESHY_TEXTURE_CREDITS,
+          textureResolution: "4k",
+        },
+      });
+      return {
+        status: "ready",
+        requestId: submission.requestId,
+        value: revision,
+      };
+    } catch (error) {
+      return {
+        status: "failed",
+        requestId: fallbackRequestId,
+        error: {
+          code: isProviderPreflightError(error)
+            ? error.code
+            : "asset-texture-failed",
+          message: error instanceof Error ? error.message : String(error),
+          recoverable: true,
+          failureKind: isProviderPreflightError(error)
+            ? "retryable"
+            : "policy-blocked",
+        },
+      };
+    }
+  }
+
+  private resolveM2Context(input: M2AssetProductionRequest) {
+    const state = this.repository.getProject(input.projectId);
+    if (
+      !state.assetPlan ||
+      state.assetPlan.revisionId !== input.assetPlan.revisionId ||
+      state.assetPlan.artifact.sha256 !== input.assetPlan.artifact.sha256 ||
+      !FinalizedAssetPlanBindingSchema.safeParse({
+        projectId: input.projectId,
+        plan: input.assetPlan,
+        finalization: state.assetPlanApproval,
+      }).success
+    ) {
+      throw new Error("Asset production requires the current finalized plan.");
+    }
+    const plan = AssetPlanSchema.parse(
+      this.repository.resolveRevision(input.assetPlan),
+    );
+    const { asset, policy } = handlingForPlannedAsset(plan, input.assetId);
+    const conceptSetSource = asset.sourceRefs.conceptSet;
+    const conceptSetRevision = this.repository.getRevision(
+      conceptSetSource.revisionId,
+    );
+    if (
+      conceptSetRevision.artifact.sha256 !== conceptSetSource.sha256 ||
+      conceptSetRevision.kind !== conceptSetSource.kind ||
+      !state.conceptSet ||
+      state.conceptSet.revisionId !== conceptSetRevision.revisionId ||
+      state.conceptSet.artifact.sha256 !== conceptSetRevision.artifact.sha256 ||
+      state.conceptSetApproval?.decision !== "approved" ||
+      state.conceptSetApproval.targetRevisionId !==
+        conceptSetRevision.revisionId ||
+      state.conceptSetApproval.targetSha256 !==
+        conceptSetRevision.artifact.sha256
+    ) {
+      throw new Error(
+        "The planned concept set is stale or no longer approved.",
+      );
+    }
+    const conceptSource = asset.sourceRefs.conceptSlots[0]?.concept;
+    if (!conceptSource) {
+      throw new Error(`Planned asset ${asset.assetId} has no kept concept.`);
+    }
+    const anchorConcept = this.repository.getRevision(conceptSource.revisionId);
+    if (
+      anchorConcept.artifact.sha256 !== conceptSource.sha256 ||
+      anchorConcept.kind !== conceptSource.kind
+    ) {
+      throw new Error(
+        `Planned asset ${asset.assetId} has stale concept lineage.`,
+      );
+    }
+    const conceptSet = ConceptSetSchema.parse(
+      this.repository.resolveRevision(conceptSetRevision),
+    );
+    const kept = conceptSet.slots.some(
+      (slot) =>
+        slot.selectedRevisionId === anchorConcept.revisionId &&
+        slot.revisions.some(
+          ({ revision }) =>
+            revision.revisionId === anchorConcept.revisionId &&
+            revision.artifact.sha256 === anchorConcept.artifact.sha256,
+        ),
+    );
+    if (!kept) {
+      throw new Error(
+        "The planned anchor is not selected in the approved concept set.",
+      );
+    }
+    const anchorDocument = M1ConceptDocumentSchema.parse(
+      this.repository.resolveRevision(anchorConcept),
+    );
+    return {
+      state,
+      plan,
+      asset,
+      policy,
+      conceptSetRevision,
+      anchorConcept,
+      anchorDocument,
+    };
+  }
+
+  private async ensureM2(
+    input: M2AssetProductionRequest,
+  ): Promise<ProductionOutcome<RevisionRef>> {
+    const fallbackRequestId = `m2-asset-${createHash("sha256")
+      .update(JSON.stringify([input.projectId, input.assetId, input.assetPlan]))
+      .digest("hex")}`;
+    try {
+      const context = this.resolveM2Context(input);
+      let multiviewSet:
+        ReturnType<typeof MultiviewConceptSetSchema.parse> | undefined;
+      if (input.multiviewConceptSet) {
+        multiviewSet = MultiviewConceptSetSchema.parse(
+          this.repository.resolveRevision(input.multiviewConceptSet),
+        );
+        if (
+          multiviewSet.assetId !== input.assetId ||
+          multiviewSet.sourceAssetPlanRevisionId !==
+            input.assetPlan.revisionId ||
+          multiviewSet.sourceConceptSetRevisionId !==
+            context.conceptSetRevision.revisionId ||
+          multiviewSet.anchorConcept.revision.revisionId !==
+            context.anchorConcept.revisionId ||
+          multiviewSet.anchorConcept.revision.artifact.sha256 !==
+            context.anchorConcept.artifact.sha256 ||
+          multiviewSet.anchorConcept.image.sha256 !==
+            context.anchorDocument.image.sha256
+        ) {
+          throw new Error(
+            "The referenced multiview set does not match the approved asset lineage.",
+          );
+        }
+        for (const view of multiviewSet.views) {
+          const document = ConceptViewDocumentSchema.parse(
+            this.repository.resolveRevision(view.revision),
+          );
+          const ancestorIds = new Set(
+            document.ancestors.map(({ revisionId }) => revisionId),
+          );
+          if (
+            document.assetId !== input.assetId ||
+            document.guidance.role !== view.role ||
+            document.image.sha256 !== view.image.sha256 ||
+            document.sourceConceptRevisionId !==
+              context.anchorConcept.revisionId ||
+            !document.referenceArtifactHashes.includes(
+              context.anchorDocument.image.sha256,
+            ) ||
+            !ancestorIds.has(input.assetPlan.revisionId) ||
+            !ancestorIds.has(context.conceptSetRevision.revisionId) ||
+            !ancestorIds.has(context.anchorConcept.revisionId)
+          ) {
+            throw new Error(
+              `The ${view.role} concept view has corrupt or stale lineage.`,
+            );
+          }
+        }
+      }
+
+      const profile = resolveAssetGenerationProfile(
+        context.state.assetProvider,
+        context.state.mode,
+      );
+      const adapter = createAssetGenerationAdapter(
+        this.repository,
+        context.state.assetProvider,
+        context.state.mode,
+      );
+      const canUseMultiview =
+        multiviewSet !== undefined &&
+        profile.multiviewImageInput.supported &&
+        multiviewSet.views.length >= profile.multiviewImageInput.minViews &&
+        multiviewSet.views.length <= profile.multiviewImageInput.maxViews;
+      const orderedViews = multiviewSet
+        ? [...multiviewSet.views].sort(
+            (left, right) =>
+              CARDINAL_VIEW_ROLES.indexOf(left.role) -
+              CARDINAL_VIEW_ROLES.indexOf(right.role),
+          )
+        : [];
+      const job: AssetGenerationJob = canUseMultiview
+        ? {
+            projectId: input.projectId,
+            assetId: input.assetId,
+            stage:
+              context.state.assetProvider === "meshy" ? "geometry" : "complete",
+            ...(context.asset.poseMode
+              ? { poseMode: context.asset.poseMode }
+              : {}),
+            qualityTarget: {
+              maxTriangles:
+                DEFAULT_ASSET_POLICIES[context.asset.classification].mesh
+                  .maxTriangles,
+            },
+            ...(input.regeneration
+              ? {
+                  regeneration: {
+                    attemptNumber: input.regeneration.attemptNumber,
+                    strategyRevision: input.regeneration.strategyRevision,
+                    parentAssetRevision: input.regeneration.parentAssetRevision,
+                  },
+                }
+              : {}),
+            imageInput: {
+              kind: "multiview",
+              conceptSet: input.multiviewConceptSet!,
+              anchorConcept: context.anchorConcept,
+              views: orderedViews.map(({ role, revision, image }) => ({
+                role,
+                revision,
+                image,
+              })),
+            },
+          }
+        : {
+            projectId: input.projectId,
+            assetId: input.assetId,
+            stage:
+              context.state.assetProvider === "meshy" ? "geometry" : "complete",
+            ...(context.asset.poseMode
+              ? { poseMode: context.asset.poseMode }
+              : {}),
+            qualityTarget: {
+              maxTriangles:
+                DEFAULT_ASSET_POLICIES[context.asset.classification].mesh
+                  .maxTriangles,
+            },
+            ...(input.regeneration
+              ? {
+                  regeneration: {
+                    attemptNumber: input.regeneration.attemptNumber,
+                    strategyRevision: input.regeneration.strategyRevision,
+                    parentAssetRevision: input.regeneration.parentAssetRevision,
+                  },
+                }
+              : {}),
+            imageInput: {
+              kind: "single",
+              concept: context.anchorConcept,
+              image: context.anchorDocument.image,
+            },
+          };
+      const requestFingerprint = adapter.requestFingerprint(job);
+      const idempotencyKey = m2AssetIdempotencyKey({
+        projectId: input.projectId,
+        mode: context.state.mode,
+        provider: context.state.assetProvider,
+        requestFingerprint,
+      });
+      const prior = this.repository.getSubmissionByKey(idempotencyKey);
+      const decision =
+        prior?.status === "intent-recorded" &&
+        prior.payload.preparationRetryable === true &&
+        typeof prior.payload.providerCallStartedAt !== "string"
+          ? ({ kind: "proceed", submission: prior } as const)
+          : decideDurableSubmission(prior, context.state.mode);
+      if (decision.kind === "ready") {
+        if (!decision.submission.resultRevisionId) {
+          return {
+            status: "failed",
+            requestId: decision.submission.requestId,
+            error: {
+              code: "asset-generation-failed",
+              message: "The ready M2 submission has no asset revision.",
+              recoverable: true,
+              failureKind: "retryable",
+            },
+          };
+        }
+        return {
+          status: "ready",
+          requestId: decision.submission.requestId,
+          value: this.repository.getRevision(
+            decision.submission.resultRevisionId,
+          ),
+        };
+      }
+      if (decision.kind === "terminal-failed") {
+        return {
+          status: "failed",
+          requestId: decision.submission.requestId,
+          error: {
+            code:
+              decision.submission.status === "submission-unknown"
+                ? "submission-unknown"
+                : "asset-generation-failed",
+            message:
+              decision.submission.status === "submission-unknown"
+                ? "The paid asset request may have succeeded; Fulcrum will not submit it again automatically."
+                : "The previous M2 asset job failed.",
+            recoverable: true,
+            failureKind:
+              decision.submission.status === "submission-unknown"
+                ? "user-action-required"
+                : "strategy-changing",
+          },
+        };
+      }
+      if (decision.kind === "unknown-interruption") {
+        this.repository.updateSubmission(decision.submission.requestId, {
+          status: "submission-unknown",
+        });
+        return {
+          status: "failed",
+          requestId: decision.submission.requestId,
+          error: {
+            code: "submission-unknown",
+            message:
+              "The paid asset request may have succeeded; Fulcrum will not submit it again automatically.",
+            recoverable: true,
+            failureKind: "user-action-required",
+          },
+        };
+      }
+
+      const imageEntries =
+        job.imageInput.kind === "multiview"
+          ? job.imageInput.views.map(({ role, image }) => ({ role, image }))
+          : [{ role: "anchor", image: job.imageInput.image }];
+      const endpointKind =
+        context.state.assetProvider === "meshy"
+          ? job.imageInput.kind === "multiview"
+            ? "multi-image-to-3d"
+            : "image-to-3d"
+          : job.imageInput.kind === "multiview"
+            ? "multiview_to_model"
+            : "image_to_model";
+      const submission =
+        "submission" in decision && decision.submission
+          ? decision.submission
+          : this.repository.recordSubmissionIntent({
+              projectId: input.projectId,
+              operation: "m2-image-to-model",
+              provider:
+                context.state.mode === "replay"
+                  ? "fulcrum-replay"
+                  : context.state.assetProvider,
+              idempotencyKey,
+              payload: {
+                assetId: input.assetId,
+                conceptRevisionId: context.anchorConcept.revisionId,
+                ...(canUseMultiview && input.multiviewConceptSet
+                  ? {
+                      multiviewConceptSetRevisionId:
+                        input.multiviewConceptSet.revisionId,
+                    }
+                  : {}),
+                endpointKind,
+                jobKind:
+                  job.imageInput.kind === "multiview"
+                    ? "multi-image"
+                    : "single-image",
+                pipelineStage: job.stage ?? "complete",
+                roleOrder: imageEntries.map(({ role }) => role),
+                imageArtifactIds: imageEntries.map(
+                  ({ image }) => image.artifactId,
+                ),
+                imageHashes: imageEntries.map(({ image }) => image.sha256),
+                modelVersion: profile.modelVersion,
+                requestFingerprint,
+                ...(input.regeneration
+                  ? {
+                      attemptNumber: input.regeneration.attemptNumber,
+                      strategyRevisionId:
+                        input.regeneration.strategyRevision.revisionId,
+                      parentAssetRevisionId:
+                        input.regeneration.parentAssetRevision.revisionId,
+                    }
+                  : {}),
+              },
+            });
+      if (
+        input.regeneration &&
+        !("submission" in decision && decision.submission)
+      ) {
+        appendQualityEvent(this.repository, {
+          projectId: input.projectId,
+          runId: context.state.runId,
+          type: "asset.regeneration-attempt-started",
+          payload: {
+            attemptNumber: input.regeneration.attemptNumber,
+            strategyRevisionId: input.regeneration.strategyRevision.revisionId,
+            parentAssetRevisionId:
+              input.regeneration.parentAssetRevision.revisionId,
+            multiviewConceptSetRevisionId:
+              input.multiviewConceptSet?.revisionId ?? null,
+            requestId: submission.requestId,
+          },
+        });
+      }
+
+      let generated: GeneratedAsset | undefined;
+      if (decision.kind === "inspect") {
+        try {
+          const inspected = await adapter.inspect(
+            adapterJobRefFromSubmissionPayload(
+              decision.submission.externalJobId!,
+              decision.submission.payload,
+            ),
+          );
+          if (inspected.status === "pending") {
+            return {
+              status: "pending",
+              requestId: submission.requestId,
+              resumeAfter: inspected.resumeAfter,
+            };
+          }
+          if (inspected.status === "failed") {
+            const consumedCredits = inspected.providerMetadata?.consumedCredits;
+            let failurePayload = submission.payload;
+            if (
+              context.state.mode === "live" &&
+              context.state.assetProvider === "meshy"
+            ) {
+              const reconciledCredits =
+                typeof consumedCredits === "number" &&
+                Number.isInteger(consumedCredits) &&
+                consumedCredits >= 0
+                  ? consumedCredits
+                  : 0;
+              failurePayload = this.repository.reconcileMeshySubmissionCredits(
+                submission.requestId,
+                reconciledCredits,
+                `Meshy 6 ${endpointKind} geometry`,
+              ).payload;
+              failurePayload = {
+                ...failurePayload,
+                creditReconciliationSource:
+                  reconciledCredits === consumedCredits
+                    ? "provider-reported"
+                    : "documented-terminal-refund",
+              };
+            }
+            this.repository.updateSubmission(submission.requestId, {
+              status: "failed",
+              payload: {
+                ...failurePayload,
+                ...(inspected.providerMetadata ?? {}),
+                providerError: inspected.error,
+              },
+            });
+            return {
+              status: "failed",
+              requestId: submission.requestId,
+              error: {
+                code: `${context.state.assetProvider}-job-failed`,
+                message: inspected.error,
+                recoverable: true,
+                failureKind: "strategy-changing",
+              },
+            };
+          }
+          generated = inspected.asset;
+        } catch (error) {
+          this.repository.updateSubmission(submission.requestId, {
+            status: "pending",
+            payload: {
+              ...submission.payload,
+              lastPollError:
+                error instanceof Error ? error.message : String(error),
+            },
+          });
+          return {
+            status: "pending",
+            requestId: submission.requestId,
+            resumeAfter: new Date(Date.now() + 5_000).toISOString(),
+          };
+        }
+      } else {
+        if (context.state.mode === "live") {
+          const current =
+            this.repository.getSubmissionByKey(idempotencyKey) ?? submission;
+          try {
+            if (context.state.assetProvider === "meshy") {
+              meshyConfiguration();
+              this.repository.reserveMeshySubmissionCredits(
+                submission.requestId,
+                MESHY_GEOMETRY_CREDITS,
+                `Meshy 6 ${endpointKind} geometry`,
+              );
+            } else if (typeof current.payload.budgetReservedUsd !== "number") {
+              const configuration = tripoConfiguration();
+              this.repository.reserveBudget(
+                input.projectId,
+                configuration.reservedCost,
+                `tripo ${endpointKind}`,
+              );
+              this.repository.updateSubmission(submission.requestId, {
+                status: "intent-recorded",
+                payload: {
+                  ...current.payload,
+                  budgetReservedUsd: configuration.reservedCost,
+                },
+              });
+            }
+          } catch (error) {
+            if (isProviderPreflightError(error)) {
+              return this.refuseBeforeProviderCall(submission, error);
+            }
+            throw error;
+          }
+          if (context.state.assetProvider === "meshy") {
+            const currentSubmission =
+              this.repository.getSubmissionByKey(idempotencyKey) ?? submission;
+            this.repository.updateSubmission(submission.requestId, {
+              status: "pending",
+              payload: {
+                ...currentSubmission.payload,
+                providerCallStartedAt: new Date().toISOString(),
+              },
+            });
+          }
+        }
+        let adapterJob;
+        try {
+          adapterJob = await adapter.submit(job, idempotencyKey);
+        } catch (error) {
+          const current =
+            this.repository.getSubmissionByKey(idempotencyKey) ?? submission;
+          if (error instanceof AssetPreparationError) {
+            this.repository.updateSubmission(submission.requestId, {
+              status: "intent-recorded",
+              payload: {
+                ...current.payload,
+                preparationRetryable: true,
+                preparationError: error.message,
+              },
+            });
+            return {
+              status: "failed",
+              requestId: submission.requestId,
+              error: {
+                code: "asset-preparation-retryable",
+                message: error.message,
+                recoverable: true,
+                failureKind: "retryable",
+              },
+            };
+          }
+          const message =
+            error instanceof Error ? error.message : String(error);
+          this.repository.updateSubmission(submission.requestId, {
+            status: "submission-unknown",
+            payload: { ...current.payload, error: message },
+          });
+          return {
+            status: "failed",
+            requestId: submission.requestId,
+            error: {
+              code: "submission-unknown",
+              message,
+              recoverable: true,
+              failureKind: "user-action-required",
+            },
+          };
+        }
+        const current =
+          this.repository.getSubmissionByKey(idempotencyKey) ?? submission;
+        this.repository.updateSubmission(submission.requestId, {
+          status: "pending",
+          externalJobId: adapterJob.taskId,
+          payload: {
+            ...current.payload,
+            jobKind: adapterJob.jobKind,
+            submittedAt: new Date().toISOString(),
+          },
+        });
+        if (context.state.mode === "live") {
+          return {
+            status: "pending",
+            requestId: submission.requestId,
+            resumeAfter: new Date(Date.now() + 5_000).toISOString(),
+          };
+        }
+        const inspected = await adapter.inspect(adapterJob);
+        if (inspected.status !== "ready") {
+          throw new Error(
+            "Replay asset adapter did not complete synchronously.",
+          );
+        }
+        generated = inspected.asset;
+      }
+
+      if (
+        context.state.mode === "live" &&
+        context.state.assetProvider === "meshy"
+      ) {
+        this.repository.reconcileMeshySubmissionCredits(
+          submission.requestId,
+          generated.costCredits ?? MESHY_GEOMETRY_CREDITS,
+          `Meshy 6 ${endpointKind} geometry`,
+        );
+      }
+      const glb = this.repository.putArtifact(
+        input.projectId,
+        generated.bytes,
+        "model/gltf-binary",
+      );
+      const providerEvidence = (generated.supportingArtifacts ?? []).map(
+        ({ role, mediaType, bytes }) => ({
+          role,
+          artifact: this.repository.putArtifact(
+            input.projectId,
+            bytes,
+            mediaType,
+          ),
+        }),
+      );
+      const inputImageHashes = imageEntries.map(({ image }) => image.sha256);
+      const asset = AssetDocumentSchema.parse({
+        assetId: input.assetId,
+        name: context.asset.name,
+        classification: context.asset.classification,
+        glb,
+        provider: generated.provider,
+        model: generated.model,
+        sourceConceptRevisionId: context.anchorConcept.revisionId,
+        ...(canUseMultiview && input.multiviewConceptSet
+          ? {
+              sourceMultiviewConceptSetRevisionId:
+                input.multiviewConceptSet.revisionId,
+            }
+          : {}),
+        sourceImageArtifactHashes: inputImageHashes,
+        sourceConceptRevisionIds: [context.anchorConcept.revisionId],
+        ...(input.regeneration
+          ? {
+              parentAssetRevisionId:
+                input.regeneration.parentAssetRevision.revisionId,
+              regenerationStrategyRevisionId:
+                input.regeneration.strategyRevision.revisionId,
+            }
+          : {}),
+        generationClaims:
+          generated.generationClaims ??
+          (generated.provider === "fulcrum-replay"
+            ? { textured: false, textureChannels: [] }
+            : {
+                textured: true,
+                textureChannels: ["base-color", "metallic-roughness"],
+              }),
+        ...(providerEvidence.length > 0 ? { providerEvidence } : {}),
+        externalJobId: generated.externalJobId,
+        costUsd: generated.costUsd,
+        ...(generated.costCredits !== undefined
+          ? { costCredits: generated.costCredits }
+          : {}),
+      });
+      const revision = this.repository.writeRevision({
+        projectId: input.projectId,
+        entityId: asset.assetId,
+        kind: "asset-document",
+        value: asset,
+        runId: context.state.runId,
+      });
+      const current =
+        this.repository.getSubmissionByKey(idempotencyKey) ?? submission;
+      this.repository.updateSubmission(submission.requestId, {
+        status: "ready",
+        resultRevisionId: revision.revisionId,
+        payload: { ...current.payload, ...(generated.providerMetadata ?? {}) },
+      });
+      this.repository.appendEvent({
+        projectId: input.projectId,
+        runId: context.state.runId,
+        type: "asset.completed",
+        payload: {
+          revisionId: revision.revisionId,
+          glbArtifactId: glb.artifactId,
+          ...(canUseMultiview && input.multiviewConceptSet
+            ? {
+                multiviewConceptSetRevisionId:
+                  input.multiviewConceptSet.revisionId,
+              }
+            : {}),
+          inputImageHashes,
+        },
+      });
+      return {
+        status: "ready",
+        requestId: submission.requestId,
+        value: revision,
+      };
+    } catch (error) {
+      return {
+        status: "failed",
+        requestId: fallbackRequestId,
+        error: {
+          code: isProviderPreflightError(error)
+            ? error.code
+            : "multiview-lineage-invalid",
+          message: error instanceof Error ? error.message : String(error),
+          recoverable: true,
+          failureKind: isProviderPreflightError(error)
+            ? "retryable"
+            : "policy-blocked",
+        },
+      };
+    }
+  }
+
+  private async ensureLegacy(
+    input: Extract<AssetProductionRequest, { concept: RevisionRef }>,
+  ): Promise<ProductionOutcome<RevisionRef>> {
+    if (
+      input.mode === "live" &&
+      (input.regeneration?.additionalConceptViews?.length ?? 0) > 0
+    )
+      return {
+        status: "failed",
+        requestId: `asset-capability-${createHash("sha256")
+          .update(
+            JSON.stringify([
+              input.projectId,
+              input.assetProvider,
+              input.regeneration?.additionalConceptViews?.map(
+                (view) => view.revisionId,
+              ),
+            ]),
+          )
+          .digest("hex")}`,
+        error: {
+          code: "provider-multiview-unsupported",
+          message:
+            "Live multi-image asset submission belongs to the S4 provider adapter.",
+          recoverable: true,
+          failureKind: "strategy-changing",
+        },
+      };
+    let regenerationStrategy: RegenerationStrategy | undefined;
+    if (input.regeneration) {
+      if (
+        !Number.isInteger(input.regeneration.attemptNumber) ||
+        input.regeneration.attemptNumber < 1
+      )
+        return {
+          status: "failed",
+          requestId: `asset-regeneration-invalid-${input.projectId}`,
+          error: {
+            code: "regeneration-attempt-invalid",
+            message: "Regeneration attempt numbers start at one.",
+            recoverable: true,
+            failureKind: "policy-blocked",
+          },
+        };
+      const strategyValue = this.repository.resolveRevision<unknown>(
+        input.regeneration.strategyRevision,
+      );
+      const decisionReport =
+        RegenerationDecisionReportSchema.safeParse(strategyValue);
+      regenerationStrategy = decisionReport.success
+        ? decisionReport.data.strategy
+        : RegenerationStrategySchema.parse(strategyValue);
+    }
+    const regenerationKey = input.regeneration
+      ? `:${input.regeneration.strategyRevision.artifact.sha256}:${input.regeneration.parentAssetRevision.artifact.sha256}:${input.regeneration.attemptNumber}:${(
+          input.regeneration.additionalConceptViews ?? []
+        )
+          .map((view) => view.artifact.sha256)
+          .join(":")}`
+      : "";
+    const idempotencyKey = `asset:${input.projectId}:${input.concept.artifact.sha256}:${input.mode}:${input.assetProvider}${regenerationKey}`;
     const prior = this.repository.getSubmissionByKey(idempotencyKey);
     const decision = decideDurableSubmission(prior, input.mode);
     if (decision.kind === "ready") {
@@ -216,6 +1515,20 @@ export class AssetProduction {
     const concept = this.repository.resolveRevision<ConceptDocument>(
       input.concept,
     );
+    const adapter = createAssetGenerationAdapter(
+      this.repository,
+      input.assetProvider,
+      input.mode,
+    );
+    const legacyJob: AssetGenerationJob = {
+      projectId: input.projectId,
+      assetId: `${input.projectId}:reliquary-asset`,
+      imageInput: {
+        kind: "single",
+        concept: input.concept,
+        image: concept.image,
+      },
+    };
     const submission =
       decision.kind === "inspect"
         ? decision.submission
@@ -229,25 +1542,64 @@ export class AssetProduction {
             payload: {
               conceptRevisionId: input.concept.revisionId,
               imageArtifactId: concept.image.artifactId,
+              ...(input.regeneration
+                ? {
+                    attemptNumber: input.regeneration.attemptNumber,
+                    strategyRevisionId:
+                      input.regeneration.strategyRevision.revisionId,
+                    parentAssetRevisionId:
+                      input.regeneration.parentAssetRevision.revisionId,
+                    additionalConceptViewRevisionIds: (
+                      input.regeneration.additionalConceptViews ?? []
+                    ).map((view) => view.revisionId),
+                  }
+                : {}),
             },
           }));
+    if (
+      decision.kind !== "inspect" &&
+      !decision.submission &&
+      input.regeneration
+    )
+      appendQualityEvent(this.repository, {
+        projectId: input.projectId,
+        runId: input.runId,
+        type: "asset.regeneration-attempt-started",
+        payload: {
+          attemptNumber: input.regeneration.attemptNumber,
+          strategyRevisionId: input.regeneration.strategyRevision.revisionId,
+          parentAssetRevisionId:
+            input.regeneration.parentAssetRevision.revisionId,
+          additionalConceptViewRevisionIds: (
+            input.regeneration.additionalConceptViews ?? []
+          ).map((view) => view.revisionId),
+          requestId: submission.requestId,
+        },
+      });
     try {
       let generated: GeneratedAsset | undefined;
       if (input.mode === "replay") {
+        const rearDefined = regenerationStrategy?.kind === "change-views";
         generated = {
-          bytes: await createReplayReliquary(),
+          bytes: await createReplayReliquary(
+            rearDefined ? "rear-defined" : "baseline",
+          ),
           provider: "fulcrum-replay",
-          model: "parametric-reliquary-v1",
-          externalJobId: `replay-${input.concept.artifact.sha256.slice(0, 12)}`,
+          model: rearDefined
+            ? "parametric-reliquary-rear-defined-v2"
+            : "parametric-reliquary-v1",
+          externalJobId: `replay-${input.concept.artifact.sha256.slice(0, 12)}${input.regeneration ? `-attempt-${input.regeneration.attemptNumber}` : ""}`,
           costUsd: 0,
         };
       } else if (decision.kind === "inspect") {
         let inspected;
         try {
-          inspected =
-            input.assetProvider === "meshy"
-              ? await this.inspectMeshyJob(submission.externalJobId!)
-              : await this.inspectTripoJob(submission.externalJobId!);
+          inspected = await adapter.inspect(
+            adapterJobRefFromSubmissionPayload(
+              submission.externalJobId!,
+              submission.payload,
+            ),
+          );
         } catch (error) {
           this.repository.updateSubmission(submission.requestId, {
             status: "pending",
@@ -302,22 +1654,44 @@ export class AssetProduction {
           error: _preflightError,
           ...intentPayload
         } = submission.payload;
-        this.repository.updateSubmission(submission.requestId, {
-          status: "pending",
-          payload: {
-            ...intentPayload,
-            providerCallStartedAt: new Date().toISOString(),
-          },
-        });
+        if (input.assetProvider === "meshy") {
+          this.repository.updateSubmission(submission.requestId, {
+            status: "pending",
+            payload: {
+              ...intentPayload,
+              providerCallStartedAt: new Date().toISOString(),
+            },
+          });
+        }
         let job;
         try {
-          job =
-            input.assetProvider === "meshy"
-              ? await this.submitMeshyJob(concept)
-              : await this.submitTripoJob(concept);
+          job = await adapter.submit(legacyJob, idempotencyKey);
         } catch (error) {
           const message =
             error instanceof Error ? error.message : String(error);
+          if (error instanceof AssetPreparationError) {
+            const current =
+              this.repository.getSubmissionByKey(idempotencyKey) ?? submission;
+            this.repository.updateSubmission(submission.requestId, {
+              status: "intent-recorded",
+              payload: {
+                ...current.payload,
+                preflightCode: "payload-invalid",
+                preparationRetryable: true,
+                error: message,
+              },
+            });
+            return {
+              status: "failed",
+              requestId: submission.requestId,
+              error: {
+                code: "asset-preparation-retryable",
+                message,
+                recoverable: true,
+                failureKind: "retryable",
+              },
+            };
+          }
           this.repository.updateSubmission(submission.requestId, {
             status: "submission-unknown",
             payload: { ...submission.payload, error: message },
@@ -333,6 +1707,7 @@ export class AssetProduction {
           externalJobId: job.taskId,
           payload: {
             ...submission.payload,
+            jobKind: job.jobKind,
             submittedAt: new Date().toISOString(),
           },
         });
@@ -351,11 +1726,35 @@ export class AssetProduction {
       const asset: AssetDocument = AssetDocumentSchema.parse({
         assetId: `${input.projectId}:reliquary-asset`,
         name: "Ancient Reliquary",
-        classification: "hero",
+        classification:
+          regenerationStrategy?.kind === "reclassify"
+            ? regenerationStrategy.to
+            : "hero",
         glb,
         provider: generated.provider,
         model: generated.model,
         sourceConceptRevisionId: input.concept.revisionId,
+        sourceConceptRevisionIds: [
+          input.concept.revisionId,
+          ...(input.regeneration?.additionalConceptViews ?? []).map(
+            (view) => view.revisionId,
+          ),
+        ],
+        ...(input.regeneration
+          ? {
+              parentAssetRevisionId:
+                input.regeneration.parentAssetRevision.revisionId,
+              regenerationStrategyRevisionId:
+                input.regeneration.strategyRevision.revisionId,
+            }
+          : {}),
+        generationClaims:
+          generated.provider === "fulcrum-replay"
+            ? { textured: false, textureChannels: [] }
+            : {
+                textured: true,
+                textureChannels: ["base-color", "metallic-roughness"],
+              },
         externalJobId: generated.externalJobId,
         costUsd: generated.costUsd,
       });
@@ -432,7 +1831,7 @@ export class AssetProduction {
     assetProvider: AssetProvider,
   ): void {
     if (assetProvider === "meshy") {
-      const { reservedCost } = this.requireMeshyConfiguration();
+      const { reservedCost } = meshyConfiguration();
       this.repository.reserveBudget(
         projectId,
         reservedCost,
@@ -440,301 +1839,691 @@ export class AssetProduction {
       );
       return;
     }
-    const { reservedCost } = this.requireTripoConfiguration();
+    const { reservedCost } = tripoConfiguration();
     this.repository.reserveBudget(
       projectId,
       reservedCost,
       "Tripo image-to-model",
     );
   }
-
-  private requireMeshyConfiguration(): {
-    apiKey: string;
-    model: string;
-    reservedCost: number;
-  } {
-    const apiKey = process.env.MESHY_API_KEY;
-    const model = process.env.FULCRUM_MESHY_MODEL;
-    if (!apiKey || !model) {
-      throw new ProviderPreflightError(
-        "provider-unconfigured",
-        "Live Meshy generation requires MESHY_API_KEY and FULCRUM_MESHY_MODEL.",
-      );
-    }
-    const reservedCost = Number(
-      process.env.FULCRUM_MESHY_RESERVE_USD ?? "0.50",
-    );
-    if (!Number.isFinite(reservedCost) || reservedCost < 0) {
-      throw new ProviderPreflightError(
-        "payload-invalid",
-        "FULCRUM_MESHY_RESERVE_USD must be a finite non-negative number.",
-      );
-    }
-    return { apiKey, model, reservedCost };
-  }
-
-  private requireTripoConfiguration(): {
-    apiKey: string;
-    modelVersion: string;
-    reservedCost: number;
-  } {
-    const apiKey = process.env.TRIPO_API_KEY;
-    const modelVersion = process.env.FULCRUM_TRIPO_MODEL_VERSION;
-    if (!apiKey || !modelVersion) {
-      throw new ProviderPreflightError(
-        "provider-unconfigured",
-        "Live asset generation requires TRIPO_API_KEY and FULCRUM_TRIPO_MODEL_VERSION.",
-      );
-    }
-    const reservedCost = Number(
-      process.env.FULCRUM_TRIPO_RESERVE_USD ?? "0.50",
-    );
-    if (!Number.isFinite(reservedCost) || reservedCost < 0) {
-      throw new ProviderPreflightError(
-        "payload-invalid",
-        "FULCRUM_TRIPO_RESERVE_USD must be a finite non-negative number.",
-      );
-    }
-    return { apiKey, modelVersion, reservedCost };
-  }
-
-  private async submitMeshyJob(
-    concept: ConceptDocument,
-  ): Promise<{ taskId: string }> {
-    const { apiKey, model } = this.requireMeshyConfiguration();
-    const imageBytes = this.repository.readArtifact(concept.image);
-    const imageUrl = `data:${concept.image.mediaType};base64,${Buffer.from(imageBytes).toString("base64")}`;
-    const response = await fetch(
-      "https://api.meshy.ai/openapi/v1/image-to-3d",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          image_url: imageUrl,
-          model_type: "standard",
-          ai_model: model,
-          should_texture: true,
-          enable_pbr: true,
-          texture_resolution: "2k",
-          should_remesh: false,
-          image_enhancement: false,
-          ...(model === "meshy-6" ? { remove_lighting: true } : {}),
-          moderation: true,
-          target_formats: ["glb"],
-        }),
-      },
-    );
-    const body = (await response.json()) as {
-      result?: string;
-      message?: string;
-      detail?: string;
-    };
-    if (!response.ok || !body.result) {
-      throw new Error(
-        body.message ??
-          body.detail ??
-          `Meshy task submission failed (${response.status}).`,
-      );
-    }
-    return { taskId: body.result };
-  }
-
-  private async inspectMeshyJob(
-    taskId: string,
-  ): Promise<
-    | { status: "pending"; resumeAfter: string }
-    | { status: "failed"; error: string }
-    | { status: "ready"; asset: GeneratedAsset }
-  > {
-    const apiKey = process.env.MESHY_API_KEY;
-    const model = process.env.FULCRUM_MESHY_MODEL;
-    if (!apiKey || !model) {
-      throw new Error(
-        "Meshy polling requires MESHY_API_KEY and FULCRUM_MESHY_MODEL.",
-      );
-    }
-    const response = await fetch(
-      `https://api.meshy.ai/openapi/v1/image-to-3d/${encodeURIComponent(taskId)}`,
-      { headers: { Authorization: `Bearer ${apiKey}` } },
-    );
-    const body = (await response.json()) as {
-      status?: string;
-      progress?: number;
-      model_urls?: { glb?: string };
-      task_error?: { message?: string };
-      consumed_credits?: number;
-      message?: string;
-    };
-    if (!response.ok || !body.status) {
-      throw new Error(
-        body.message ?? `Meshy polling failed (${response.status}).`,
-      );
-    }
-    if (["PENDING", "IN_PROGRESS"].includes(body.status)) {
-      return {
-        status: "pending",
-        resumeAfter: new Date(Date.now() + 5_000).toISOString(),
-      };
-    }
-    if (body.status !== "SUCCEEDED") {
-      return {
-        status: "failed",
-        error: `Meshy task ended with status ${body.status}: ${body.task_error?.message || "unknown error"}.`,
-      };
-    }
-    const modelUrl = body.model_urls?.glb;
-    if (!modelUrl) {
-      return {
-        status: "failed",
-        error: "Meshy completed without a downloadable GLB.",
-      };
-    }
-    const modelResponse = await fetch(modelUrl);
-    if (!modelResponse.ok) {
-      return {
-        status: "failed",
-        error: `Meshy GLB download failed (${modelResponse.status}).`,
-      };
-    }
-    return {
-      status: "ready",
-      asset: {
-        bytes: new Uint8Array(await modelResponse.arrayBuffer()),
-        provider: "meshy",
-        model,
-        externalJobId: taskId,
-        costUsd: Number(process.env.FULCRUM_MESHY_RESERVE_USD ?? "0.50"),
-        providerMetadata: {
-          consumedCredits: body.consumed_credits ?? null,
-          providerProgress: body.progress ?? 100,
-        },
-      },
-    };
-  }
-
-  private async submitTripoJob(
-    concept: ConceptDocument,
-  ): Promise<{ taskId: string }> {
-    const { apiKey, modelVersion } = this.requireTripoConfiguration();
-    const imageBytes = this.repository.readArtifact(concept.image);
-    const imageBuffer = new ArrayBuffer(imageBytes.byteLength);
-    new Uint8Array(imageBuffer).set(imageBytes);
-    const form = new FormData();
-    form.append(
-      "file",
-      new Blob([imageBuffer], { type: concept.image.mediaType }),
-      "concept.png",
-    );
-    const uploadResponse = await fetch(
-      "https://api.tripo3d.ai/v2/openapi/upload/sts",
-      {
-        method: "POST",
-        headers: { Authorization: `Bearer ${apiKey}` },
-        body: form,
-      },
-    );
-    const upload = (await uploadResponse.json()) as {
-      data?: { image_token?: string };
-      message?: string;
-    };
-    if (!uploadResponse.ok || !upload.data?.image_token)
-      throw new Error(
-        upload.message ?? `Tripo upload failed (${uploadResponse.status}).`,
-      );
-    const taskResponse = await fetch("https://api.tripo3d.ai/v2/openapi/task", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        type: "image_to_model",
-        model_version: modelVersion,
-        file: { type: "png", file_token: upload.data.image_token },
-      }),
-    });
-    const task = (await taskResponse.json()) as {
-      data?: { task_id?: string };
-      message?: string;
-    };
-    if (!taskResponse.ok || !task.data?.task_id)
-      throw new Error(
-        task.message ??
-          `Tripo task submission failed (${taskResponse.status}).`,
-      );
-    return { taskId: task.data.task_id };
-  }
-
-  private async inspectTripoJob(
-    taskId: string,
-  ): Promise<
-    | { status: "pending"; resumeAfter: string }
-    | { status: "failed"; error: string }
-    | { status: "ready"; asset: GeneratedAsset }
-  > {
-    const apiKey = process.env.TRIPO_API_KEY;
-    const modelVersion = process.env.FULCRUM_TRIPO_MODEL_VERSION;
-    if (!apiKey || !modelVersion)
-      throw new Error("Tripo polling requires its API key and model version.");
-    const response = await fetch(
-      `https://api.tripo3d.ai/v2/openapi/task/${encodeURIComponent(taskId)}`,
-      {
-        headers: { Authorization: `Bearer ${apiKey}` },
-      },
-    );
-    const body = (await response.json()) as {
-      data?: {
-        status?: string;
-        output?: { pbr_model?: string; model?: string };
-        consumed_credit?: number;
-      };
-      message?: string;
-    };
-    if (!response.ok || !body.data?.status)
-      throw new Error(
-        body.message ?? `Tripo polling failed (${response.status}).`,
-      );
-    if (["queued", "running"].includes(body.data.status)) {
-      return {
-        status: "pending",
-        resumeAfter: new Date(Date.now() + 5_000).toISOString(),
-      };
-    }
-    if (body.data.status !== "success")
-      return {
-        status: "failed",
-        error: `Tripo task ended with status ${body.data.status}.`,
-      };
-    const modelUrl = body.data.output?.pbr_model ?? body.data.output?.model;
-    if (!modelUrl)
-      return {
-        status: "failed",
-        error: "Tripo completed without a downloadable model.",
-      };
-    const modelResponse = await fetch(modelUrl);
-    if (!modelResponse.ok)
-      return {
-        status: "failed",
-        error: `Tripo model download failed (${modelResponse.status}).`,
-      };
-    return {
-      status: "ready",
-      asset: {
-        bytes: new Uint8Array(await modelResponse.arrayBuffer()),
-        provider: "tripo",
-        model: modelVersion,
-        externalJobId: taskId,
-        costUsd: Number(process.env.FULCRUM_TRIPO_RESERVE_USD ?? "0.50"),
-      },
-    };
-  }
 }
 
 export class AssetQuality {
-  constructor(private readonly repository: ProjectRepository) {}
+  private readonly visionExecution: StructuredVisionExecution;
+  private readonly replayVisionCatalog: ReplayVisionCatalog;
+  private readonly visionProviderStatuses:
+    ExecutionProviderStatus[] | undefined;
+
+  constructor(
+    private readonly repository: ProjectRepository,
+    options: AssetQualityOptions = {},
+  ) {
+    this.visionExecution = options.visionExecution ?? new ModelExecution();
+    this.replayVisionCatalog = ReplayVisionCatalogSchema.parse(
+      options.replayVisionCatalog ?? REPLAY_VISION_CATALOG,
+    );
+    this.visionProviderStatuses = options.visionProviderStatuses;
+  }
+
+  async inspect(input: InspectAssetRequest): Promise<InspectAssetResult> {
+    const asset = AssetDocumentSchema.parse(
+      this.repository.resolveRevision<AssetDocument>(input.asset),
+    );
+    const policy = AssetPolicySchema.parse(input.policy.value);
+    if (asset.classification !== policy.classification)
+      throw new AssetQualityFailure(
+        "asset-policy-classification-mismatch",
+        `Asset class ${asset.classification} cannot use ${policy.classification} policy.`,
+      );
+    let document: Document;
+    try {
+      document = await new NodeIO().readBinary(
+        this.repository.readArtifact(asset.glb),
+      );
+    } catch (error) {
+      throw new AssetQualityFailure(
+        "asset-glb-unsupported",
+        `Asset GLB could not be parsed without unsupported compression: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const inspection = inspectParsedAsset(document, asset, policy);
+    const reportId = `deterministic-${createHash("sha256")
+      .update(
+        JSON.stringify([
+          input.asset.revisionId,
+          input.policy.revision.revisionId,
+          inspection,
+        ]),
+      )
+      .digest("hex")}`;
+    const report = DeterministicAssetReportSchema.parse({
+      schema: "fulcrum.asset-deterministic-report",
+      version: 1,
+      reportId,
+      assetId: asset.assetId,
+      assetRevisionId: input.asset.revisionId,
+      assetArtifactSha256: asset.glb.sha256,
+      policy: {
+        revisionId: input.policy.revision.revisionId,
+        sha256: input.policy.revision.artifact.sha256,
+      },
+      classification: asset.classification,
+      ...inspection,
+    });
+    const deterministic = this.repository.ensureRevision({
+      projectId: input.projectId,
+      operationKey: `m2.asset-deterministic-quality:${input.asset.revisionId}:${input.policy.revision.revisionId}`,
+      entityId: `${asset.assetId}:deterministic-quality`,
+      kind: "asset-deterministic-report",
+      runId: input.runId,
+      createValue: () => report,
+    });
+    if (deterministic.created)
+      appendQualityEvent(this.repository, {
+        projectId: input.projectId,
+        runId: input.runId,
+        type: "asset.deterministic-quality-completed",
+        payload: {
+          assetId: asset.assetId,
+          assetRevisionId: input.asset.revisionId,
+          reportRevisionId: deterministic.revision.revisionId,
+          passed: deterministic.value.passed,
+        },
+      });
+    if (!deterministic.value.passed)
+      return {
+        deterministicReport: deterministic.revision,
+        report: DeterministicAssetReportSchema.parse(deterministic.value),
+      };
+
+    let rendered;
+    try {
+      rendered = await renderTurntable(document, policy.turntable);
+    } catch (error) {
+      throw new AssetQualityFailure(
+        "asset-turntable-render-failed",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    const frameArtifacts = rendered.map((frame) => ({
+      ...frame,
+      artifact: this.repository.putArtifact(
+        input.projectId,
+        frame.bytes,
+        "image/png",
+      ),
+    }));
+    const manifest = TurntableManifestSchema.parse({
+      schema: "fulcrum.turntable",
+      version: 1,
+      turntableId: `turntable-${createHash("sha256")
+        .update(
+          JSON.stringify([
+            input.asset.revisionId,
+            input.policy.revision.revisionId,
+            frameArtifacts.map(({ artifact }) => artifact.sha256),
+          ]),
+        )
+        .digest("hex")}`,
+      assetId: asset.assetId,
+      assetRevisionId: input.asset.revisionId,
+      sourceArtifactHashes: [asset.glb.sha256],
+      rendererVersion: "software-rasterizer-v3",
+      config: policy.turntable,
+      frames: frameArtifacts.map(
+        ({ frameIndex, yawDegrees, artifact: frameArtifact }) => ({
+          frameIndex,
+          yawDegrees,
+          artifact: frameArtifact,
+        }),
+      ),
+    });
+    const turntable = this.repository.ensureRevision({
+      projectId: input.projectId,
+      operationKey: `m2.asset-turntable:${input.asset.revisionId}:${input.policy.revision.revisionId}:software-rasterizer-v3`,
+      entityId: `${asset.assetId}:turntable`,
+      kind: "turntable-manifest",
+      runId: input.runId,
+      createValue: () => manifest,
+    });
+    if (turntable.created)
+      appendQualityEvent(this.repository, {
+        projectId: input.projectId,
+        runId: input.runId,
+        type: "asset.turntable-rendered",
+        payload: {
+          assetId: asset.assetId,
+          assetRevisionId: input.asset.revisionId,
+          turntableRevisionId: turntable.revision.revisionId,
+          frameCount: turntable.value.frames.length,
+        },
+      });
+    return {
+      deterministicReport: deterministic.revision,
+      turntable: turntable.revision,
+      report: DeterministicAssetReportSchema.parse(deterministic.value),
+      manifest: TurntableManifestSchema.parse(turntable.value),
+    };
+  }
+
+  async ensureSemantic(
+    input: SemanticAssetRequest,
+  ): Promise<
+    ProductionOutcome<{ revision: RevisionRef; report: SemanticAssetReport }>
+  > {
+    const asset = AssetDocumentSchema.parse(
+      this.repository.resolveRevision<AssetDocument>(input.asset),
+    );
+    const policy = AssetPolicySchema.parse(input.policy.value);
+    const deterministic = DeterministicAssetReportSchema.parse(
+      this.repository.resolveRevision(input.deterministicReport),
+    );
+    const manifest = TurntableManifestSchema.parse(
+      this.repository.resolveRevision(input.turntable),
+    );
+    if (
+      deterministic.assetRevisionId !== input.asset.revisionId ||
+      manifest.assetRevisionId !== input.asset.revisionId ||
+      deterministic.policy.revisionId !== input.policy.revision.revisionId
+    )
+      throw new AssetQualityFailure(
+        "asset-quality-lineage-mismatch",
+        "Semantic evaluation inputs do not share exact asset and policy lineage.",
+      );
+    if (!deterministic.passed)
+      return {
+        status: "failed",
+        requestId: `semantic-blocked-${input.asset.revisionId}`,
+        error: {
+          code: "deterministic-quality-failed",
+          message: "Semantic evaluation requires a deterministic pass.",
+          recoverable: true,
+          failureKind: "strategy-changing",
+        },
+      };
+    const rubric =
+      asset.provider === "meshy" && asset.generationClaims?.textured === false
+        ? ASSET_GEOMETRY_VISION_RUBRIC_V1
+        : ASSET_VISION_RUBRIC_V1;
+    const descriptor: VisionRequestDescriptor =
+      VisionRequestDescriptorSchema.parse({
+        assetRevisionId: input.asset.revisionId,
+        assetSha256: asset.glb.sha256,
+        policySha256: input.policy.revision.artifact.sha256,
+        classification: policy.classification,
+        intendedUse: input.context.intendedUse,
+        requiredFeatures: input.context.requiredFeatures,
+        prohibitedFeatures: input.context.prohibitedFeatures,
+        referenceArtifacts: input.context.referenceArtifacts,
+        frames: manifest.frames,
+        rubric,
+      });
+    const requestDigest = visionRequestDigest(descriptor);
+    const scopeHash = visionRequestScopeHash(descriptor);
+    const idempotencyKey = `asset-semantic:${input.projectId}:${asset.assetId}:${input.mode}:${requestDigest}:${scopeHash}`;
+    let submission = this.repository.getSubmissionByKey(idempotencyKey);
+    if (submission?.status === "ready") {
+      if (!submission.resultRevisionId)
+        return {
+          status: "failed",
+          requestId: submission.requestId,
+          error: {
+            code: "semantic-result-missing",
+            message: "Semantic submission is ready without a result revision.",
+            recoverable: true,
+            failureKind: "user-action-required",
+          },
+        };
+      const revision = this.repository.getRevision(submission.resultRevisionId);
+      return {
+        status: "ready",
+        requestId: submission.requestId,
+        value: {
+          revision,
+          report: SemanticAssetReportSchema.parse(
+            this.repository.resolveRevision(revision),
+          ),
+        },
+      };
+    }
+    if (
+      submission?.status === "failed" ||
+      submission?.status === "submission-unknown"
+    )
+      return {
+        status: "failed",
+        requestId: submission.requestId,
+        error: {
+          code:
+            submission.status === "submission-unknown"
+              ? "submission-unknown"
+              : "semantic-evaluation-failed",
+          message:
+            submission.status === "submission-unknown"
+              ? "The semantic provider may have accepted this request; Fulcrum will not risk duplicate spend."
+              : "Semantic evaluation failed and requires a new strategy.",
+          recoverable: true,
+          failureKind:
+            submission.status === "submission-unknown"
+              ? "user-action-required"
+              : "strategy-changing",
+        },
+      };
+    if (input.mode === "live" && submission?.payload.providerCallStartedAt) {
+      submission = this.repository.updateSubmission(submission.requestId, {
+        status: "submission-unknown",
+        payload: submission.payload,
+      });
+      appendQualityEvent(this.repository, {
+        projectId: input.projectId,
+        runId: input.runId,
+        type: "asset.semantic-evaluation-submission-unknown",
+        payload: {
+          assetId: asset.assetId,
+          requestId: submission.requestId,
+          requestDigest,
+        },
+      });
+      return {
+        status: "failed",
+        requestId: submission.requestId,
+        error: {
+          code: "submission-unknown",
+          message:
+            "The semantic provider call started before interruption; Fulcrum will not submit it twice.",
+          recoverable: true,
+          failureKind: "user-action-required",
+        },
+      };
+    }
+
+    let provider: "fulcrum-replay" | "openai" | "openai-api";
+    if (submission) {
+      const parsed = z
+        .enum(["fulcrum-replay", "openai", "openai-api"])
+        .safeParse(submission.provider);
+      if (!parsed.success)
+        throw new AssetQualityFailure(
+          "semantic-provider-invalid",
+          `Recorded semantic provider ${submission.provider} is invalid.`,
+        );
+      provider = parsed.data;
+    } else if (input.mode === "replay") provider = "fulcrum-replay";
+    else {
+      const selected = preferredVisionProvider(
+        this.visionProviderStatuses ?? inspectExecutionProviders(),
+      );
+      if (!selected)
+        return {
+          status: "failed",
+          requestId: `semantic-unavailable-${requestDigest}`,
+          error: {
+            code: "vision-provider-unavailable",
+            message:
+              "Semantic evaluation requires signed-in Codex or a configured OpenAI API key.",
+            recoverable: true,
+            failureKind: "policy-blocked",
+          },
+        };
+      provider = selected;
+    }
+    if (!submission) {
+      submission = this.repository.recordSubmissionIntent({
+        projectId: input.projectId,
+        operation: "asset-semantic-evaluation",
+        provider,
+        idempotencyKey,
+        payload: {
+          assetRevisionId: input.asset.revisionId,
+          deterministicReportRevisionId: input.deterministicReport.revisionId,
+          turntableRevisionId: input.turntable.revisionId,
+          policyRevisionId: input.policy.revision.revisionId,
+          requestDigest,
+          budgetReserved: false,
+        },
+      });
+      appendQualityEvent(this.repository, {
+        projectId: input.projectId,
+        runId: input.runId,
+        type: "asset.semantic-evaluation-submitted",
+        payload: {
+          assetId: asset.assetId,
+          requestId: submission.requestId,
+          requestDigest,
+          provider,
+        },
+      });
+    }
+
+    let reservedCost = 0;
+    if (provider === "openai-api") {
+      reservedCost = Number(
+        process.env.FULCRUM_OPENAI_VISION_RESERVE_USD ?? "0.05",
+      );
+      if (!Number.isFinite(reservedCost) || reservedCost < 0)
+        return {
+          status: "failed",
+          requestId: submission.requestId,
+          error: {
+            code: "payload-invalid",
+            message:
+              "FULCRUM_OPENAI_VISION_RESERVE_USD must be a finite non-negative number.",
+            recoverable: true,
+            failureKind: "policy-blocked",
+          },
+        };
+      if (submission.payload.budgetReserved !== true) {
+        try {
+          this.repository.reserveBudget(
+            input.projectId,
+            reservedCost,
+            "OpenAI asset vision evaluation",
+          );
+        } catch (error) {
+          if (isProviderPreflightError(error))
+            return {
+              status: "failed",
+              requestId: submission.requestId,
+              error: {
+                code: error.code,
+                message: error.message,
+                recoverable: true,
+                failureKind: "policy-blocked",
+              },
+            };
+          throw error;
+        }
+        submission = this.repository.updateSubmission(submission.requestId, {
+          status: "intent-recorded",
+          payload: {
+            ...submission.payload,
+            budgetReserved: true,
+            reservedCostUsd: reservedCost,
+          },
+        });
+      } else if (typeof submission.payload.reservedCostUsd === "number")
+        reservedCost = submission.payload.reservedCostUsd;
+    }
+    submission = this.repository.updateSubmission(submission.requestId, {
+      status: "pending",
+      payload: {
+        ...submission.payload,
+        providerCallStartedAt: new Date().toISOString(),
+      },
+    });
+    const frameBytes = manifest.frames.map((frame) =>
+      this.repository.readArtifact(frame.artifact),
+    );
+    try {
+      const port =
+        provider === "fulcrum-replay"
+          ? new ReplayVisionEvaluationPort(this.replayVisionCatalog)
+          : new LiveVisionEvaluationPort(
+              this.visionExecution,
+              provider,
+              this.repository.workspaceRoot,
+            );
+      const evaluated = await port.evaluate(
+        { ...descriptor, frameBytes },
+        idempotencyKey,
+      );
+      const materialized = materializeVisionReport(
+        descriptor,
+        evaluated.findings,
+      );
+      const allFindings = [...deterministic.findings, ...materialized.findings];
+      const report = SemanticAssetReportSchema.parse({
+        schema: "fulcrum.asset-semantic-report",
+        version: 1,
+        reportId: `semantic-${requestDigest}`,
+        assetId: asset.assetId,
+        assetRevisionId: input.asset.revisionId,
+        turntableRevisionId: input.turntable.revisionId,
+        rubricVersion: rubric.rubricVersion,
+        requestDigest,
+        provider: evaluated.provider,
+        model: evaluated.model,
+        costUsd: evaluated.costUsd || reservedCost,
+        verdict: materialized.verdict,
+        dimensionScores: materialized.dimensionScores,
+        findings: materialized.findings,
+        qualityVector: {
+          hardGateFailures: deterministic.qualityVector.hardGateFailures,
+          criticalFindings: allFindings.filter(
+            (finding) => finding.severity === "critical",
+          ).length,
+          majorFindings: allFindings.filter(
+            (finding) => finding.severity === "major",
+          ).length,
+          minorFindings: allFindings.filter(
+            (finding) => finding.severity === "minor",
+          ).length,
+          semanticVerdict: materialized.verdict,
+        },
+      });
+      const ensured = this.repository.ensureRevision({
+        projectId: input.projectId,
+        operationKey: `m2.asset-semantic:${asset.assetId}:${requestDigest}:${scopeHash}`,
+        entityId: `${asset.assetId}:semantic-quality`,
+        kind: "asset-semantic-report",
+        runId: input.runId,
+        createValue: () => report,
+      });
+      submission = this.repository.updateSubmission(submission.requestId, {
+        status: "ready",
+        resultRevisionId: ensured.revision.revisionId,
+        payload: {
+          ...submission.payload,
+          provider: evaluated.provider,
+          model: evaluated.model,
+          completedAt: new Date().toISOString(),
+        },
+      });
+      if (ensured.created)
+        appendQualityEvent(this.repository, {
+          projectId: input.projectId,
+          runId: input.runId,
+          type: "asset.semantic-evaluation-completed",
+          payload: {
+            assetId: asset.assetId,
+            requestId: submission.requestId,
+            requestDigest,
+            semanticReportRevisionId: ensured.revision.revisionId,
+            verdict: ensured.value.verdict,
+            provider: ensured.value.provider,
+            model: ensured.value.model,
+          },
+        });
+      return {
+        status: "ready",
+        requestId: submission.requestId,
+        value: {
+          revision: ensured.revision,
+          report: SemanticAssetReportSchema.parse(ensured.value),
+        },
+      };
+    } catch (error) {
+      if (
+        provider === "fulcrum-replay" &&
+        error instanceof VisionEvaluationError
+      ) {
+        submission = this.repository.updateSubmission(submission.requestId, {
+          status: "failed",
+          payload: { ...submission.payload, error: error.message },
+        });
+        return {
+          status: "failed",
+          requestId: submission.requestId,
+          error: {
+            code: error.code,
+            message: error.message,
+            recoverable: true,
+            failureKind: error.failureKind,
+          },
+        };
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      submission = this.repository.updateSubmission(submission.requestId, {
+        status: "submission-unknown",
+        payload: { ...submission.payload, error: message },
+      });
+      appendQualityEvent(this.repository, {
+        projectId: input.projectId,
+        runId: input.runId,
+        type: "asset.semantic-evaluation-submission-unknown",
+        payload: {
+          assetId: asset.assetId,
+          requestId: submission.requestId,
+          requestDigest,
+          error: message,
+        },
+      });
+      return {
+        status: "failed",
+        requestId: submission.requestId,
+        error: {
+          code: "submission-unknown",
+          message,
+          recoverable: true,
+          failureKind: "user-action-required",
+        },
+      };
+    }
+  }
+
+  async selectRegeneration(input: SelectRegenerationRequest): Promise<{
+    revision: RevisionRef;
+    decision: RegenerationDecisionReport;
+  }> {
+    const policy = AssetPolicySchema.parse(input.policy);
+    const deterministic = DeterministicAssetReportSchema.parse(
+      this.repository.resolveRevision(input.currentAttempt.deterministicReport),
+    );
+    const semantic = input.currentAttempt.semanticReport
+      ? SemanticAssetReportSchema.parse(
+          this.repository.resolveRevision(input.currentAttempt.semanticReport),
+        )
+      : undefined;
+    const priorStrategies = [
+      ...input.attemptHistory,
+      input.currentAttempt,
+    ].flatMap((attempt) => {
+      if (!attempt.appliedStrategy) return [];
+      const value = this.repository.resolveRevision<unknown>(
+        attempt.appliedStrategy,
+      );
+      const decision = RegenerationDecisionReportSchema.safeParse(value);
+      if (decision.success) return [decision.data.strategy];
+      const strategy = RegenerationStrategySchema.safeParse(value);
+      return strategy.success ? [strategy.data] : [];
+    });
+    const history = input.attemptHistory.filter(
+      (attempt) =>
+        attempt.asset.revisionId !== input.currentAttempt.asset.revisionId,
+    );
+    const attempts = [...history, input.currentAttempt].sort(
+      (left, right) => left.attemptNumber - right.attemptNumber,
+    );
+    const best = bestRegenerationAttempt(attempts);
+    const state = this.repository.getProject(input.projectId);
+    const generationProfile = resolveAssetGenerationProfile(
+      state.assetProvider,
+      state.mode,
+    );
+    const strategy: RegenerationStrategy = decideRegeneration({
+      assetId: input.assetId,
+      currentAttempt: input.currentAttempt,
+      attemptHistory: history,
+      currentFindings: [
+        ...deterministic.findings,
+        ...(semantic?.findings ?? []),
+      ],
+      failedGateIds: deterministic.gates
+        .filter((gate) => !gate.passed)
+        .map((gate) => gate.id),
+      priorStrategies,
+      policy,
+      providerSupportsMultiview:
+        generationProfile.multiviewImageInput.supported,
+      providerSupportsPromptChanges: generationProfile.promptInput.supported,
+      permissibleClassifications: [policy.classification],
+    });
+    const sourceReportRevisionIds = [
+      input.currentAttempt.deterministicReport.revisionId,
+      ...(input.currentAttempt.semanticReport
+        ? [input.currentAttempt.semanticReport.revisionId]
+        : []),
+    ];
+    const decisionId = `decision-${createHash("sha256")
+      .update(
+        JSON.stringify([
+          input.assetId,
+          input.currentAttempt.attemptNumber,
+          sourceReportRevisionIds,
+          best.asset.revisionId,
+          strategy,
+        ]),
+      )
+      .digest("hex")}`;
+    const report = RegenerationDecisionReportSchema.parse({
+      schema: "fulcrum.asset-regeneration-decision",
+      version: 1,
+      decisionId,
+      assetId: input.assetId,
+      sourceReportRevisionIds,
+      bestKnownAssetRevisionId: best.asset.revisionId,
+      strategy,
+    });
+    const ensured = this.repository.ensureRevision({
+      projectId: input.projectId,
+      operationKey: `m2.asset-regeneration-decision:${decisionId}`,
+      entityId: `${input.assetId}:regeneration-decision`,
+      kind: "asset-regeneration-decision",
+      runId: input.runId,
+      createValue: () => report,
+    });
+    if (ensured.created) {
+      appendQualityEvent(this.repository, {
+        projectId: input.projectId,
+        runId: input.runId,
+        type: "asset.regeneration-strategy-selected",
+        payload: {
+          assetId: input.assetId,
+          attemptNumber: input.currentAttempt.attemptNumber,
+          decisionRevisionId: ensured.revision.revisionId,
+          strategyKind: ensured.value.strategy.kind,
+        },
+      });
+      const incumbent = history.length
+        ? bestRegenerationAttempt(history)
+        : input.currentAttempt;
+      const comparison = history.length
+        ? compareQualityVectors(
+            incumbent.qualityVector,
+            input.currentAttempt.qualityVector,
+          )
+        : "candidate-dominates";
+      const result =
+        comparison === "candidate-dominates" ? "updated" : "retained";
+      appendQualityEvent(this.repository, {
+        projectId: input.projectId,
+        runId: input.runId,
+        type: "asset.best-revision-considered",
+        payload: {
+          assetId: input.assetId,
+          result,
+          incumbentAssetRevisionId: incumbent.asset.revisionId,
+          candidateAssetRevisionId: input.currentAttempt.asset.revisionId,
+          bestAssetRevisionId: best.asset.revisionId,
+          decisionRevisionId: ensured.revision.revisionId,
+        },
+      });
+    }
+    return {
+      revision: ensured.revision,
+      decision: RegenerationDecisionReportSchema.parse(ensured.value),
+    };
+  }
 
   async evaluate(input: {
     projectId: string;
@@ -835,23 +2624,25 @@ export class AssetQuality {
       gates,
       evaluatedAt: new Date().toISOString(),
     });
-    const revision = this.repository.writeRevision({
+    const ensured = this.repository.ensureRevision({
       projectId: input.projectId,
+      operationKey: `m0.asset-quality:${input.asset.revisionId}`,
       entityId: `${asset.assetId}:quality`,
       kind: "asset-evaluation",
-      value: evaluation,
       runId: input.runId,
+      createValue: () => evaluation,
     });
-    this.repository.appendEvent({
-      projectId: input.projectId,
-      runId: input.runId,
-      type: "asset.quality-evaluated",
-      payload: {
-        revisionId: revision.revisionId,
-        passed: evaluation.passed,
-        triangleCount,
-      },
-    });
-    return { revision, evaluation };
+    if (ensured.created)
+      this.repository.appendEvent({
+        projectId: input.projectId,
+        runId: input.runId,
+        type: "asset.quality-evaluated",
+        payload: {
+          revisionId: ensured.revision.revisionId,
+          passed: ensured.value.passed,
+          triangleCount: ensured.value.measurements.triangleCount,
+        },
+      });
+    return { revision: ensured.revision, evaluation: ensured.value };
   }
 }

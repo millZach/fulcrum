@@ -75,22 +75,24 @@ export class SceneAuthoring {
         { id: "reliquary-zone", entityId: "hero-reliquary", radius: 2.2 },
       ],
     });
-    const revision = this.repository.writeRevision({
+    const ensured = this.repository.ensureRevision({
       projectId: input.projectId,
+      operationKey: `m0.scene-composition:${input.asset.revisionId}:${input.visualBible.revisionId}`,
       entityId: `${input.projectId}:visual-slice-scene`,
       kind: "fulcrum-scene-v0",
-      value: scene,
       runId: input.runId,
+      createValue: () => scene,
     });
-    this.repository.appendEvent({
-      projectId: input.projectId,
-      runId: input.runId,
-      type: "scene.composed",
-      payload: {
-        revisionId: revision.revisionId,
-        assetRevisionId: input.asset.revisionId,
-      },
-    });
-    return { revision, scene };
+    if (ensured.created)
+      this.repository.appendEvent({
+        projectId: input.projectId,
+        runId: input.runId,
+        type: "scene.composed",
+        payload: {
+          revisionId: ensured.revision.revisionId,
+          assetRevisionId: input.asset.revisionId,
+        },
+      });
+    return { revision: ensured.revision, scene: ensured.value };
   }
 }

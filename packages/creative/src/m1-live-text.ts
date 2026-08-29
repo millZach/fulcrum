@@ -1,11 +1,15 @@
 import { createHash } from "node:crypto";
 
 import {
+  GAME_NAME_CANDIDATE_COUNT,
+  GAME_NAME_MAX_CHARS,
   GameDesignSpecSchema,
   PaletteTokenSchema,
   ProviderPreflightError,
   isProviderUsageError,
   isProviderPreflightError,
+  readsImageAttachments,
+  type ArtifactRef,
   type ExecutionProvider,
   type GameDesignSpec,
   type InterrogationQuestion,
@@ -14,16 +18,22 @@ import {
   type RevisionRef,
   type SubmissionRecord,
 } from "@fulcrum/domain";
-import type { ModelExecution } from "@fulcrum/execution";
+import type { ModelExecution, VisionFrameInput } from "@fulcrum/execution";
 import { ProjectRepository } from "@fulcrum/project";
 import { z } from "zod";
 
 import { subscriptionQuotaError } from "./provider-usage.js";
 
+/** The orchestrator seam. `generateStructuredVision` is optional because only
+ *  two of the five execution providers can read an image, and because most
+ *  test doubles only ever needed the text call. When it is absent the text
+ *  call still runs — the images are simply not delivered, which the caller
+ *  reports rather than hides. */
 export type StructuredModelExecution = Pick<
   ModelExecution,
   "generateStructured"
->;
+> &
+  Partial<Pick<ModelExecution, "generateStructuredVision">>;
 
 export const M1_INTERROGATION_ROUND_CAP = 6;
 
@@ -181,8 +191,36 @@ export type LiveFocusedDirectionOutput = z.infer<
   typeof LiveFocusedDirectionOutputSchema
 >;
 
+/** One batch of proposed titles. Distinctness is enforced here rather than
+ *  left to the prompt: four candidates that repeat a name are three
+ *  candidates, and the naming screen is a choice. */
+export const LiveGameNamesOutputSchema = z
+  .object({
+    candidates: z
+      .array(
+        z.object({
+          name: z.string().trim().min(2).max(GAME_NAME_MAX_CHARS),
+          rationale: z.string().trim().min(8).max(240),
+        }),
+      )
+      .length(GAME_NAME_CANDIDATE_COUNT),
+  })
+  .superRefine((value, context) => {
+    const names = value.candidates.map((candidate) =>
+      candidate.name.trim().toLowerCase(),
+    );
+    if (new Set(names).size !== names.length)
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Every proposed name must be different.",
+        path: ["candidates"],
+      });
+  });
+export type LiveGameNamesOutput = z.infer<typeof LiveGameNamesOutputSchema>;
+
 export const M1_TEXT_OPERATIONS = {
   interrogationRound: "m1-interrogation-round",
+  gameNames: "m1-game-names",
   gameDesign: "m1-game-design",
   gameDesignRevise: "m1-game-design-revise",
   directions: "m1-directions",
@@ -216,16 +254,70 @@ export const interrogationTranscriptKey = (
           recommendation,
         }),
       ),
-      answers: round.answers.map(({ questionId, value }) => ({
+      answers: round.answers.map(({ questionId, value, attachments }) => ({
         questionId,
         value,
+        /* Only when there are images, so every image-free project keeps the
+           idempotency key it already had. The sha256s are the identity: a
+           different picture is a different question to ask the model, the
+           same picture re-pasted is not. */
+        ...(attachments && attachments.length > 0
+          ? { attachments: attachments.map(({ sha256 }) => sha256) }
+          : {}),
       })),
     })),
   });
 
+/** Label a delivered frame so the prompt and the image agree on a name. */
+export const interrogationAttachmentLabel = (
+  answerIndex: number,
+  attachmentIndex: number,
+): string => `A${answerIndex + 1}.${attachmentIndex + 1}`;
+
+/**
+ * The attachments to send with an interrogation call, labeled to match the
+ * transcript. Walks the rounds in exactly the order
+ * `formatInterrogationTranscript` numbers them, which is what keeps "A2.1" in
+ * the prompt pointing at the second frame the provider receives.
+ */
+export const interrogationAttachmentFrameRefs = (
+  rounds: InterrogationState["rounds"],
+  deliveredQuestionIds: ReadonlySet<string>,
+): Array<{ label: string; artifact: ArtifactRef }> => {
+  const refs: Array<{ label: string; artifact: ArtifactRef }> = [];
+  let answerIndex = 0;
+  for (const round of rounds) {
+    for (const question of round.questions) {
+      if (deliveredQuestionIds.has(question.questionId)) {
+        const answer = round.answers.find(
+          (entry) => entry.questionId === question.questionId,
+        );
+        answer?.attachments?.forEach((artifact, position) =>
+          refs.push({
+            label: interrogationAttachmentLabel(answerIndex, position),
+            artifact,
+          }),
+        );
+      }
+      answerIndex += 1;
+    }
+  }
+  return refs;
+};
+
+/**
+ * The interview as one block of text.
+ *
+ * `deliveredQuestionIds` names the answers whose images are being sent with
+ * this very call. An answer's attachments are described either way — the
+ * model should know a picture exists — but only the delivered ones are
+ * introduced by label, because telling a text-only provider to "see A2.1"
+ * would be an instruction it cannot follow.
+ */
 export const formatInterrogationTranscript = (
   brief: string,
   rounds: InterrogationState["rounds"],
+  deliveredQuestionIds: ReadonlySet<string> = new Set(),
 ): string => {
   const answered = rounds.flatMap((round) =>
     round.questions.map((question) => {
@@ -237,9 +329,28 @@ export const formatInterrogationTranscript = (
         prompt: question.prompt,
         recommendation: question.recommendation,
         answer: answer?.value,
+        questionId: question.questionId,
+        attachments: answer?.attachments?.length ?? 0,
       };
     }),
   );
+  const attachmentLine = (
+    entry: (typeof answered)[number],
+    index: number,
+  ): string[] => {
+    if (entry.attachments === 0) return [];
+    const plural = entry.attachments === 1 ? "image" : "images";
+    if (!deliveredQuestionIds.has(entry.questionId))
+      return [
+        `A${index + 1} ${plural}: ${entry.attachments} attached by the user, not available to you on this route.`,
+      ];
+    const labels = Array.from({ length: entry.attachments }, (_, position) =>
+      JSON.stringify(interrogationAttachmentLabel(index, position)),
+    ).join(", ");
+    return [
+      `A${index + 1} ${plural}: ${entry.attachments} attached, supplied to you as ${labels}.`,
+    ];
+  };
   const lines = [
     `Brief:\n${brief}`,
     "",
@@ -252,6 +363,7 @@ export const formatInterrogationTranscript = (
               `Q${index + 1} [${entry.branchId}]: ${entry.prompt}`,
               `Recommendation: ${entry.recommendation}`,
               `A${index + 1}: ${entry.answer ?? "(unanswered)"}`,
+              ...attachmentLine(entry, index),
             ].join("\n"),
           ),
         ].join("\n\n"),
@@ -298,6 +410,7 @@ export const interrogationNextRoundPrompt = (
   brief: string,
   rounds: InterrogationState["rounds"],
   roundIndex: number,
+  deliveredQuestionIds: ReadonlySet<string> = new Set(),
 ): string => {
   const asked = [
     ...new Set(
@@ -307,8 +420,14 @@ export const interrogationNextRoundPrompt = (
     ),
   ];
   return [
-    formatInterrogationTranscript(brief, rounds),
+    formatInterrogationTranscript(brief, rounds, deliveredQuestionIds),
     "",
+    ...(deliveredQuestionIds.size > 0
+      ? [
+          "The attached images are the user's own reference material for the answers they are labeled with. Read them as evidence about this game, and let what you see there steer the next questions.",
+          "",
+        ]
+      : []),
     `This would be round ${roundIndex} of at most ${M1_INTERROGATION_ROUND_CAP}.`,
     `Already asked topic ids: ${asked.join(", ") || "(none)"}`,
     "If shared understanding is genuinely sufficient to write a complete Game Design Spec, set understandingComplete to true.",
@@ -318,13 +437,71 @@ export const interrogationNextRoundPrompt = (
   ].join("\n");
 };
 
+/** The naming conversation. Rejected batches are passed back so a steer is a
+ *  reply and not a reroll: the model sees what it already offered and what the
+ *  user said about it. */
+export const gameNamesPrompt = (input: {
+  brief: string;
+  rounds: InterrogationState["rounds"];
+  feedback?: string;
+  rejected: string[];
+  /** Images the user pasted next to the steer, when this route can carry
+   *  them. Labeled "steer image N" to match the frames. */
+  steerImages?: number;
+}): string =>
+  [
+    formatInterrogationTranscript(input.brief, input.rounds),
+    "",
+    `Propose ${GAME_NAME_CANDIDATE_COUNT} candidate titles for THIS game.`,
+    "A title is identity: it should come from the specifics of this brief and interview, never a generic fantasy or sci-fi noun pair.",
+    `Each title is at most ${GAME_NAME_MAX_CHARS} characters, is not an existing published game, and names no licensed character or brand.`,
+    "Give each one a single-sentence rationale tying it to something the user actually said.",
+    "Vary the shapes across the batch — a compound word, a two-word phrase, a short phrase with an article.",
+    ...(input.rejected.length > 0
+      ? [
+          "",
+          `Already proposed and not chosen: ${input.rejected.join(", ")}.`,
+          "Do not repeat those. Offer materially different titles.",
+        ]
+      : []),
+    ...(input.feedback
+      ? [
+          "",
+          `The user's steer on the last batch:\n${input.feedback}`,
+          "Honor it literally.",
+        ]
+      : []),
+    ...(input.steerImages
+      ? [
+          "",
+          `The user attached ${input.steerImages} image${input.steerImages === 1 ? "" : "s"} to that steer, supplied to you as ${Array.from(
+            { length: input.steerImages },
+            (_, index) => JSON.stringify(gameNameAttachmentLabel(index)),
+          ).join(", ")}.`,
+          "Treat them as tone and identity reference for the titles.",
+        ]
+      : []),
+  ].join("\n");
+
+/** Label a delivered naming-steer frame. */
+export const gameNameAttachmentLabel = (index: number): string =>
+  `steer image ${index + 1}`;
+
 export const gameDesignSpecPrompt = (
   brief: string,
   rounds: InterrogationState["rounds"],
+  gameName?: string,
 ): string =>
   [
     formatInterrogationTranscript(brief, rounds),
     "",
+    ...(gameName
+      ? [
+          `The user has already chosen this game's title: ${gameName}.`,
+          `Use it verbatim as the spec title and write a spec the title fits.`,
+          "",
+        ]
+      : []),
     "Write a complete Game Design Spec for this project.",
     "Every schema field is required, including facts and assumptions with origins.",
     'Every origin.reference is required: cite a brief quote, an answer number, or "fulcrum-assumption".',
@@ -409,6 +586,13 @@ export const interrogationNextRoundSystemPrompt = [
   "[m1-interrogation-next]",
   "You are Fulcrum's interrogation interviewer continuing a recorded interview.",
   "Stop when shared understanding is genuinely sufficient.",
+  "Return only JSON matching the schema.",
+].join("\n");
+
+export const gameNamesSystemPrompt = [
+  "[m1-game-names]",
+  "You name games. The title is the game's identity, so it must come from this specific brief and interview.",
+  "Never propose the title of an existing published game, and never use a licensed character or brand.",
   "Return only JSON matching the schema.",
 ].join("\n");
 
@@ -554,6 +738,10 @@ export const ensureDurableStructured = async <T>(input: {
   schema: z.ZodType<T>;
   systemPrompt: string;
   prompt: string;
+  /** Images the user attached to the text this call is about. Delivered only
+   *  on a live provider that can read them; otherwise the call runs text-only
+   *  and the submission records that they did not reach the model. */
+  frames?: VisionFrameInput[];
   persist: (
     value: T,
     model: string,
@@ -641,19 +829,45 @@ export const ensureDurableStructured = async <T>(input: {
     }
 
     const model = selectedModel(input.provider);
-    const generated = await input.execution
-      .generateStructured({
-        provider: input.provider,
-        ...(model ? { model } : {}),
-        cwd: process.env.FULCRUM_REPOSITORY_ROOT ?? process.cwd(),
-        systemPrompt: input.systemPrompt,
-        prompt: input.prompt,
-        schema: input.schema,
-      })
-      .then(
-        (result) => ({ value: result.value, model: result.model }),
-        (error: unknown) => throwTextProviderError(error, input.provider),
-      );
+    const cwd = process.env.FULCRUM_REPOSITORY_ROOT ?? process.cwd();
+    const visionFrames =
+      input.mode === "live" &&
+      input.frames &&
+      input.frames.length > 0 &&
+      readsImageAttachments(input.provider) &&
+      input.execution.generateStructuredVision
+        ? input.frames
+        : undefined;
+    const call =
+      visionFrames && input.execution.generateStructuredVision
+        ? input.execution.generateStructuredVision({
+            provider: input.provider as "openai" | "openai-api",
+            ...(model ? { model } : {}),
+            cwd,
+            systemPrompt: input.systemPrompt,
+            prompt: input.prompt,
+            frames: visionFrames,
+            schema: input.schema,
+            idempotencyKey: input.idempotencyKey,
+          })
+        : input.execution.generateStructured({
+            provider: input.provider,
+            ...(model ? { model } : {}),
+            cwd,
+            systemPrompt: input.systemPrompt,
+            prompt: input.prompt,
+            schema: input.schema,
+          });
+    const generated = await call.then(
+      (result) => ({ value: result.value, model: result.model }),
+      (error: unknown) => throwTextProviderError(error, input.provider),
+    );
+    const attachmentPayload = input.frames?.length
+      ? {
+          attachmentCount: input.frames.length,
+          attachmentsDelivered: visionFrames !== undefined,
+        }
+      : {};
 
     const persisted = await input.persist(generated.value, generated.model);
     const current =
@@ -665,6 +879,7 @@ export const ensureDurableStructured = async <T>(input: {
         ...current.payload,
         ...(persisted.payload ?? {}),
         model: generated.model,
+        ...attachmentPayload,
       },
     });
     input.repository.appendEvent({
@@ -675,6 +890,7 @@ export const ensureDurableStructured = async <T>(input: {
         requestId: submission.requestId,
         revisionId: persisted.revision.revisionId,
         model: generated.model,
+        ...attachmentPayload,
       },
     });
     return {

@@ -6,6 +6,7 @@ describe("studio routing", () => {
   it.each([
     ["bare root", "", "m1"],
     ["explicit M0", "?studio=m0", "m0"],
+    ["explicit M2", "?studio=m2", "m2"],
     [
       "M1 project deep link",
       "?studio=m1&project=0e291ab1-88da-4be1-9ada-745599f7d18d",

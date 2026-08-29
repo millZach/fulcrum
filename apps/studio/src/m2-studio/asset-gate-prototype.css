@@ -1,0 +1,3219 @@
+/* This prototype used to carry its own near-black, hairline, card surface,
+   grey and teals — a second design system inside the first. The --agp-* names
+   are kept as local aliases, but every one of them now resolves to a shell
+   token declared on .variant-b-voxel, which this host is nested inside. */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp {
+  /* The stage ground stays local: it is the panel's own cream, one step
+     brighter than the shell's --paper it floats on, and the overview's bottom
+     fade is a gradient tuned to this exact value. */
+  --agp-paper: #f4f0e7;
+  --agp-paper-bright: var(--surface);
+  --agp-ink: var(--ink);
+  --agp-muted: var(--muted);
+  --agp-line: var(--ink-22);
+  --agp-teal: var(--accent-fill);
+  --agp-teal-dark: var(--accent-text);
+  --agp-gold: #f1bd59;
+  --agp-red: #b95644;
+  /* Reserved scrollbar width — the inventory scroller and the header above it
+     both subtract this so they share one right edge. */
+  --agp-gutter: 12px;
+  box-sizing: border-box;
+  width: 100%;
+  /* One scroller, not two. The studio shell is a 100vh grid of
+     62px topbar / 1fr stage / 88px hotbar, and the concept stage adds
+     18px of vertical padding on each edge — 186px of chrome in total.
+     Asking for 100vh - 150px made the frame 36px taller than the stage's
+     content box, so the stage grew its own scrollbar behind this one and
+     wheeling handed off from the inventory to the stage with no signal. */
+  min-height: calc(100vh - 186px);
+  height: calc(100vh - 186px);
+  overflow: hidden;
+  border: 2px solid var(--agp-ink);
+  border-radius: 12px;
+  color: var(--agp-ink);
+  background: var(--agp-paper);
+  font-family: "Fulcrum Text", "Segoe UI", system-ui, sans-serif;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-surface {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+/* A focused asset reads like a document: the frame grows with its content and
+   the page itself scrolls, instead of trapping a second scrollbar inside. */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp:has(.agp-focus) {
+  height: auto;
+  overflow: visible;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp *,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp *::before,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp *::after {
+  box-sizing: border-box;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp button,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp textarea,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp input {
+  font: inherit;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp button {
+  color: inherit;
+}
+
+/* Focus rings are not redeclared here. The shell owns one :focus-visible rule
+   (2px solid --teal-deep at a 2px offset, ink at 3px on filled buttons) and it
+   reaches everything in this host, the credit dialog included. */
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp h1,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp h2,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp h3,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp p,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp figure,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp ul,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp dl,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp dd {
+  margin: 0;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp h1,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp h2 {
+  font-family: "Fulcrum Display", "Arial Narrow", ui-sans-serif, sans-serif;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-kicker,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-eyebrow {
+  color: var(--agp-teal-dark);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-kicker {
+  font-size: 14px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-eyebrow {
+  display: block;
+  font-size: 14px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-prototype-mark {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid rgba(185, 86, 68, 0.38);
+  border-radius: 7px;
+  padding: 6px 10px;
+  color: #793529;
+  background: #f8ded6;
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 14px;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-prototype-mark[data-mode="live"] {
+  border-color: var(--agp-ink);
+  color: var(--agp-ink);
+  background: color-mix(in srgb, var(--agp-teal) 22%, var(--agp-paper-bright));
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-prototype-mark strong {
+  border-radius: 4px;
+  padding: 5px 7px;
+  color: white;
+  background: var(--agp-red);
+  font-size: 14px;
+  letter-spacing: 0.1em;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-prototype-mark i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.45;
+}
+
+/* Flex with a fixed-basis track: the bar can never reflow under the label. */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-progress {
+  min-width: 240px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--agp-line);
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: var(--agp-paper-bright);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-progress > span {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-progress strong {
+  font-size: 18px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-progress small {
+  color: var(--agp-muted);
+  font-size: 14px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-progress > i {
+  flex: 0 0 88px;
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #d9ddd6;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-progress > i > b {
+  height: 100%;
+  display: block;
+  border-radius: inherit;
+  background: var(--agp-teal-dark);
+  transition: width 220ms ease;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-head-meta {
+  display: flex;
+  align-items: center;
+  /* chips wrap among themselves rather than compressing each other once the
+     group has a row of its own */
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 14px;
+}
+
+/* Running credit total for the whole plan, beside the progress chip */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-credit-plan {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  border: 1px solid var(--agp-line);
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: var(--agp-paper-bright);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-credit-plan strong {
+  color: var(--agp-ink);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 18px;
+  font-weight: 700;
+  white-space: nowrap;
+  text-transform: uppercase;
+}
+
+/* The staged sentence is longer than the lump-sum one it replaced, so it wraps
+   inside a capped column rather than stretching the chip across the header. */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-credit-plan small {
+  max-width: 27ch;
+  color: var(--agp-muted);
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-credit-plan[data-over="true"] {
+  border-color: rgba(109, 75, 14, 0.42);
+  background: #fbeed2;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-credit-plan[data-over="true"]
+  strong,
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-credit-plan[data-over="true"]
+  small {
+  color: var(--attention);
+}
+
+/* Inventory */
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-overview {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+/* Bottom fade for the one scroller. Painted as an overlay rather than a
+   mask on .agp-inventory so the scrollbar thumb stays crisp: the overlay
+   stops short of the reserved gutter. */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-overview::after {
+  content: "";
+  position: absolute;
+  right: var(--agp-gutter);
+  bottom: 0;
+  left: 0;
+  height: 34px;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    rgba(244, 240, 231, 0),
+    var(--agp-paper)
+  );
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-overview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  /* Three chips want ~1050px at 1536 and the title block ~470px, so they
+     cannot share a 1358px row. Wrapping drops the chip group to a second row
+     instead of letting it shrink the title into a 160px column; the title
+     block then owns the full row, which puts its one sentence on one line. */
+  flex-wrap: wrap;
+  gap: 12px 32px;
+  border-bottom: 1px solid var(--agp-line);
+  /* right pad matches the inventory's padding + reserved scrollbar gutter.
+     The block is deliberately shallow: every pixel it spends is a pixel of
+     asset rows, and this copy is read once. */
+  padding: 18px calc(38px + var(--agp-gutter)) 16px 38px;
+  background: rgba(255, 253, 248, 0.72);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-title-block {
+  /* the basis is the h1's one-line measure: it decides where the chips wrap,
+     and above that point the title still grows into whatever the chips leave */
+  flex: 1 1 470px;
+  min-width: min(100%, 440px);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-title-block h1 {
+  margin-top: 4px;
+  font-size: clamp(30px, 1.9vw, 44px);
+  line-height: 1.02;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-title-block p {
+  /* wide enough for the sentence to sit on one line once the chips wrap */
+  max-width: 840px;
+  margin-top: 7px;
+  color: var(--agp-muted);
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+/* The only scroller on the overview: the frame is exactly the stage's content
+   box (see .agp above), so this list owns every wheel event in the page. */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-inventory {
+  min-height: 0;
+  overflow-y: auto;
+  /* the fade overlay is 34px tall, so the last row clears it */
+  padding: 16px 38px 38px;
+  /* the gutter width is pinned by ::-webkit-scrollbar below, so the header
+     can reserve exactly the same strip; scrollbar-width would override it */
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+  container-type: inline-size;
+  container-name: agp-inventory;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-inventory::-webkit-scrollbar {
+  width: var(--agp-gutter);
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-inventory::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-inventory::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  /* ink, not grey: the thumb is the only thing telling you the list runs on */
+  background: rgba(22, 22, 29, 0.45);
+  background-clip: content-box;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-inventory::-webkit-scrollbar-thumb:hover {
+  background: rgba(22, 22, 29, 0.66);
+  background-clip: content-box;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-group + .agp-group {
+  margin-top: 24px;
+}
+
+/* Group headings pin to the top of the scroller so the organising idea
+   survives scrolling through eleven near-identical cards. */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-group > header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--agp-line);
+  padding: 6px 0 9px;
+  background: var(--agp-paper);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-group-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* one step under the compressed h1, so the page keeps its hierarchy */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-group > header h2 {
+  font-size: 22px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-group > header span {
+  border-radius: 999px;
+  padding: 5px 9px;
+  color: var(--agp-muted);
+  background: rgba(22, 22, 29, 0.07);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 14px;
+  text-transform: uppercase;
+}
+
+/* Section amendments stay in the heading they affect. This is a compact
+   instrument, not another card: one ink outline, one text line, one action. */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-section-chat {
+  width: min(100%, 650px);
+  display: grid;
+  justify-items: end;
+  margin-left: auto;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-section-chat > form {
+  width: 100%;
+  min-height: 38px;
+  display: grid;
+  grid-template-columns: auto minmax(150px, 1fr) auto;
+  align-items: stretch;
+  overflow: hidden;
+  border: 2px solid var(--agp-ink);
+  border-radius: 6px;
+  background: var(--agp-paper-bright);
+  box-shadow: 3px 3px 0 var(--agp-ink);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-section-chat label {
+  display: flex;
+  align-items: center;
+  border-right: 1px solid var(--agp-ink);
+  padding: 0 10px;
+  color: var(--agp-teal-dark);
+  background: color-mix(in srgb, var(--agp-teal) 12%, var(--agp-paper-bright));
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-section-chat input {
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  padding: 8px 11px;
+  color: var(--agp-ink);
+  background: transparent;
+  font-size: 14px;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-section-chat
+  input::placeholder {
+  color: #777a74;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-section-chat button {
+  min-width: 70px;
+  border: 0;
+  border-left: 2px solid var(--agp-ink);
+  padding: 7px 12px;
+  color: var(--agp-ink);
+  background: var(--agp-teal);
+  cursor: pointer;
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  transition: background-color 120ms ease;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-section-chat
+  button:hover:not(:disabled) {
+  background: #3ee0d4;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-section-chat
+  :is(input, button):disabled {
+  color: #535954;
+  background: #e4e2da;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-section-chat > p {
+  max-width: 650px;
+  margin-top: 8px;
+  color: #8a3524;
+  font-size: 13px;
+  line-height: 1.35;
+  text-align: right;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-group-empty {
+  border: 1px dashed rgba(22, 22, 29, 0.34);
+  border-radius: 7px;
+  padding: 14px 16px;
+  color: var(--agp-muted);
+  background: rgba(255, 253, 248, 0.45);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-node-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(330px, 1fr));
+  gap: 12px;
+}
+
+/* A fourth column only once it keeps cards at least as wide as three columns
+   give at 1536 (~444px). Gating this on the viewport made 2560 the worse
+   layout, because the inventory container never grows past ~1636px. */
+@container agp-inventory (min-width: 1812px) {
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-node-grid {
+    grid-template-columns: repeat(4, minmax(444px, 1fr));
+  }
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp .agp-asset-node {
+  min-width: 0;
+  min-height: 126px;
+  display: grid;
+  /* explicit 1fr auto for copy/meta so a wrapped title can never run under
+     the meta badge, and top alignment so pills share a baseline across a row */
+  grid-template-columns: 126px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 17px;
+  overflow: hidden;
+  border: 1px solid var(--agp-line);
+  border-radius: 9px;
+  padding: 8px 16px 8px 8px;
+  background: var(--agp-paper-bright);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp .agp-asset-node:hover {
+  z-index: 1;
+  border-color: rgba(21, 95, 85, 0.68);
+  box-shadow: 0 10px 28px rgba(22, 22, 29, 0.11);
+  transform: translateY(-2px);
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-asset-node[data-status="resolved"] {
+  border-color: rgba(24, 95, 85, 0.32);
+  background: #f7fbf7;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-node-preview,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-empty-thumbnail {
+  width: 126px;
+  height: 108px;
+  display: block;
+  overflow: hidden;
+  border-radius: 6px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-node-preview img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-empty-thumbnail {
+  position: relative;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  color: #75817b;
+  background:
+    linear-gradient(135deg, rgba(22, 22, 29, 0.055) 25%, transparent 25%) 0 0 /
+      18px 18px,
+    linear-gradient(315deg, rgba(22, 22, 29, 0.04) 25%, transparent 25%) 0 0 /
+      18px 18px,
+    #e9e8e0;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-empty-thumbnail i {
+  width: 36px;
+  height: 32px;
+  display: block;
+  border: 2px solid currentColor;
+  border-radius: 4px;
+  opacity: 0.62;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-empty-thumbnail i::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  display: block;
+  margin: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-empty-thumbnail i::after {
+  content: "";
+  width: 24px;
+  height: 12px;
+  display: block;
+  margin: -2px 4px 0;
+  background: currentColor;
+  clip-path: polygon(0 100%, 32% 30%, 48% 62%, 66% 13%, 100% 100%);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-empty-thumbnail small {
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-node-copy {
+  min-width: 0;
+  align-self: start;
+  display: grid;
+  align-content: start;
+  justify-items: start;
+  gap: 8px;
+  padding-top: 6px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-node-copy > strong {
+  min-height: calc(2 * 1.18em); /* reserve two lines so rows stay gridded */
+  font-size: 16px;
+  line-height: 1.18;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-node-copy > small {
+  max-width: 100%;
+  color: var(--agp-muted);
+  font-size: 14px;
+  line-height: 1.3;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--agp-line);
+  border-radius: 999px;
+  padding: 5px 9px;
+  color: #59645f;
+  background: #eeeee8;
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-status i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #8c958f;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-status[data-status="in-progress"],
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-status[data-status="generating"] {
+  border-color: rgba(151, 103, 21, 0.24);
+  color: var(--attention);
+  background: #fbefd5;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-status[data-status="in-progress"]
+  i,
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-status[data-status="generating"]
+  i {
+  background: #da9d32;
+}
+
+/* Broken and ready-to-send are the two states worth telling apart. A refused
+   approval wears the same red as a broken view: both mean nothing was kept. */
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-status[data-status="needs-retry"],
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-status[data-status="not-saved"] {
+  border-color: rgba(185, 86, 68, 0.34);
+  color: #8a3524;
+  background: #fbe6df;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-status[data-status="needs-retry"]
+  i,
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-status[data-status="not-saved"]
+  i {
+  background: var(--agp-red);
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-status[data-status="ready"] {
+  border-color: rgba(24, 95, 85, 0.5);
+  color: #14554c;
+  background: var(--agp-paper-bright);
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-status[data-status="ready"]
+  i {
+  background: var(--agp-teal-dark);
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-status[data-status="resolved"] {
+  border-color: rgba(24, 95, 85, 0.24);
+  color: #165b51;
+  background: #dff1eb;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-status[data-status="resolved"]
+  i {
+  background: #26917f;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-node-meta {
+  align-self: stretch;
+  display: grid;
+  align-content: space-between;
+  justify-items: end;
+  gap: 20px;
+  padding-top: 6px;
+  /* the money signal reads at least as strongly as the title */
+  color: var(--agp-ink);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 14px;
+  font-weight: 700;
+  white-space: nowrap;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-node-meta b {
+  font-weight: inherit;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-node-meta i {
+  color: var(--agp-teal-dark);
+  font-family: sans-serif;
+  font-size: 22px;
+  font-style: normal;
+}
+
+/* Focused asset */
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-focus {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-focus-head {
+  min-height: 108px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 24px;
+  border-bottom: 1px solid var(--agp-line);
+  padding: 18px 28px;
+  background: rgba(255, 253, 248, 0.92);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp .agp-back {
+  min-height: 46px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  border: 1px solid var(--agp-line);
+  border-radius: 7px;
+  padding: 10px 16px;
+  background: transparent;
+  cursor: pointer;
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 16px;
+  font-weight: 700;
+  white-space: nowrap; /* sized to content instead of a fixed 150px column */
+  text-transform: uppercase;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-back:hover {
+  border-color: rgba(22, 22, 29, 0.42);
+  background: rgba(22, 22, 29, 0.05);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-back i {
+  font-family: sans-serif;
+  font-size: 18px;
+  font-style: normal;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-focus-title {
+  min-width: 0;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-focus-title h1 {
+  overflow: hidden;
+  margin-top: 6px;
+  font-size: clamp(31px, 2vw, 45px);
+  line-height: 1.05;
+  text-wrap: balance;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-focus-body {
+  min-height: 0;
+  padding: 28px 32px 44px;
+  container-type: inline-size;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-asset-brief {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(380px, 0.8fr);
+  /* top-aligned so the section collapses to the taller column instead of
+     leaving the reason floating in a stretched, mostly-empty box */
+  align-items: start;
+  gap: 50px;
+  border-bottom: 1px solid var(--agp-line);
+  padding: 0 0 24px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-asset-brief p,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-asset-brief li {
+  color: var(--ink-70);
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-asset-brief p {
+  margin-top: 8px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-asset-brief ul {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+  padding-left: 20px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-path-section,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-procedural-path {
+  margin-top: 25px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-section-heading,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-procedural-path {
+  display: flex;
+  align-items: flex-start;
+  gap: 13px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-step-number {
+  width: 35px;
+  height: 35px;
+  flex: 0 0 35px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: white;
+  background: var(--agp-ink);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-section-heading h2,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-procedural-path strong {
+  font-size: 22px;
+  line-height: 1.1;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-procedural-path strong {
+  display: block;
+  font-family: "Fulcrum Display", sans-serif;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-section-heading p,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-procedural-path p {
+  margin-top: 5px;
+  color: var(--agp-muted);
+  font-size: 16px;
+  line-height: 1.45;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-procedural-path {
+  border: 1px solid rgba(24, 95, 85, 0.22);
+  border-radius: 9px;
+  padding: 16px;
+  background: #e4f2ed;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-path-chooser {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp .agp-path-chooser button {
+  position: relative;
+  min-height: 98px;
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) 20px;
+  align-items: center;
+  gap: 14px;
+  /* border width is reserved at 2px in every state, so selecting a card
+     never reflows its contents by a pixel */
+  border: 2px solid var(--agp-line);
+  border-radius: 9px;
+  padding: 14px 16px;
+  background: var(--agp-paper-bright);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    translate 120ms ease;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp
+  .agp-path-chooser
+  button[aria-pressed="true"] {
+  border-color: var(--agp-teal-dark);
+  background: #eef8f4;
+  box-shadow:
+    inset 0 0 0 1px rgba(24, 95, 85, 0.4),
+    0 5px 16px rgba(24, 95, 85, 0.1);
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-path-chooser
+  button:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+/* The accent tile belongs to the chosen card, not the one you did not pick. */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-path-chooser button > i {
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  color: #5b6661;
+  background: #ebeae2;
+  font-style: normal;
+  font-weight: 700;
+  transition:
+    color 120ms ease,
+    background-color 120ms ease;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-path-chooser
+  button[aria-pressed="true"]
+  > i {
+  color: white;
+  background: var(--agp-teal-dark);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-path-image-icon::before {
+  content: "";
+  width: 23px;
+  height: 19px;
+  border: 2px solid currentColor;
+  border-radius: 2px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-path-image-icon::after {
+  content: "";
+  position: absolute;
+  width: 18px;
+  height: 9px;
+  background: currentColor;
+  clip-path: polygon(0 100%, 34% 22%, 52% 65%, 71% 10%, 100% 100%);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-path-chooser button > span {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-path-chooser button strong {
+  font-size: 16px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-path-chooser button small {
+  max-width: 560px;
+  color: var(--agp-muted);
+  font-size: 16px;
+  line-height: 1.42;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-path-chooser button > b {
+  width: 17px;
+  height: 17px;
+  display: block;
+  border: 2px solid #9ba39f;
+  border-radius: 50%;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-path-chooser
+  button[aria-pressed="true"]
+  > b {
+  border: 5px solid var(--agp-teal-dark);
+}
+
+/* Reference and prompt workspace */
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-reference-workspace {
+  display: grid;
+  /* the reference grid is the dominant column; the compose side is a control
+     panel and is capped so it can never outgrow the images it produces */
+  grid-template-columns: minmax(380px, 0.74fr) minmax(0, 1.26fr);
+  align-items: start;
+  gap: 24px;
+  margin-top: 22px;
+}
+
+/* Stack the workspace before its columns can pinch or spill past the frame */
+@container (max-width: 1080px) {
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-reference-workspace,
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-asset-brief {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-asset-brief {
+    gap: 20px;
+  }
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-compose-panel,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-reference-panel,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-text-workspace {
+  border: 1px solid var(--agp-line);
+  border-radius: 10px;
+  background: var(--agp-paper-bright);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-compose-panel {
+  padding: 20px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-prompt {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-prompt > span {
+  color: var(--agp-teal-dark);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-prompt textarea {
+  width: 100%;
+  min-height: calc(8 * 1.55em + 32px);
+  /* Eleven lines, then scroll. field-sizing grew this box to fit an 1,800
+     character prompt, which made the compose column 586px taller than the
+     reference panel beside it and pushed the grid off screen. */
+  max-height: calc(11 * 1.55em + 32px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(22, 22, 29, 0.45) transparent;
+  field-sizing: content;
+  resize: vertical;
+  border: 1px solid var(--agp-line);
+  border-radius: 7px;
+  padding: 15px 16px;
+  color: var(--agp-ink);
+  background: var(--agp-paper-bright);
+  font-size: 16px;
+  line-height: 1.55;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-prompt textarea:disabled {
+  color: #4f5c57;
+  background: #f0f0ea;
+}
+
+/* The approved Color & Mood rides along with every request but must never
+   compete with the subject the human is editing, so it sits below the
+   textarea as a dashed, collapsed read-only strip. */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-capsule {
+  margin-top: 10px;
+  border: 1px dashed var(--agp-line);
+  border-radius: 7px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-capsule summary {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 12px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--agp-muted);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 13px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-capsule
+  summary::-webkit-details-marker {
+  display: none;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-capsule-name {
+  color: var(--agp-teal-dark);
+  font-weight: 700;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-capsule-state::before {
+  content: "·";
+  margin-right: 9px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-capsule summary > i {
+  width: 0;
+  height: 0;
+  margin-left: auto;
+  border-right: 4px solid transparent;
+  border-left: 4px solid transparent;
+  border-top: 5px solid var(--agp-muted);
+  transition: transform 160ms ease;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-capsule[open] summary > i {
+  transform: rotate(180deg);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-capsule > p {
+  margin: 0;
+  border-top: 1px dashed var(--agp-line);
+  padding: 11px 12px 12px;
+  color: #4f5c57;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-compose-actions {
+  display: flex;
+  gap: 9px;
+  margin-top: 11px;
+}
+
+/* These four carry sentence-case action labels, which is the shell's
+   .vx-primary role: Fulcrum Text 14px/700, 5px radius. They used to be
+   Fulcrum Mono 16px at a 7px radius, which is the chip/kicker voice. */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp .agp-primary,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp .agp-secondary,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp .agp-credit-button,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp .agp-next {
+  min-height: 48px;
+  border-radius: 5px;
+  padding: 11px 17px;
+  cursor: pointer;
+  font-family: "Fulcrum Text", sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+/* The shell's .vx-primary spec, to the pixel: 3px ink border, 5px radius,
+   4px offset shadow, --accent-fill. */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp .agp-primary {
+  border: 3px solid var(--agp-ink);
+  color: var(--agp-ink);
+  background: var(--agp-teal);
+  box-shadow: 4px 4px 0 var(--agp-ink);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp .agp-secondary,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp .agp-next {
+  border: 1px solid var(--agp-line);
+  background: var(--agp-paper-bright);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp button:disabled {
+  cursor: not-allowed !important;
+  box-shadow: none !important;
+}
+
+/* Disabled is its own flat skin, not the enabled skin at 44% — the old
+   opacity trick composited the amber CTA to ~2.2:1. */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp .agp-primary:disabled,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp .agp-secondary:disabled,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp .agp-next:disabled,
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp
+  .agp-credit-button:disabled {
+  border-color: rgba(22, 22, 29, 0.3);
+  color: #46504c;
+  background: #e4e2da;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp
+  .agp-credit-button:disabled
+  > span {
+  border-left-color: rgba(22, 22, 29, 0.3);
+  color: #46504c;
+}
+
+/* Shared hover treatment: subtle lift plus a 1px border darken */
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp
+  .agp-secondary:not(:disabled):hover,
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp
+  .agp-next:not(:disabled):hover,
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp
+  .agp-path-chooser
+  button:not(:disabled):hover {
+  border-color: rgba(22, 22, 29, 0.42);
+  background: #f7f3ea;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp
+  .agp-path-chooser
+  button[aria-pressed="true"]:not(:disabled):hover {
+  border-color: #12483f;
+  background: #e6f4ee;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp
+  .agp-path-chooser
+  button:not(:disabled):active {
+  background: #eeeade;
+  box-shadow: none;
+  translate: 0 1px;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp
+  .agp-primary:not(:disabled):hover {
+  background: #3ee0d4;
+  box-shadow: 6px 6px 0 var(--agp-ink);
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp
+  .agp-credit-button:not(:disabled):hover {
+  border-color: #573b09;
+  background: #f6c86c;
+  box-shadow: 6px 6px 0 #573b09;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-divider {
+  position: relative;
+  display: grid;
+  place-items: center;
+  margin: 22px 0 14px;
+  color: var(--agp-muted);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 14px;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-divider::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--agp-line);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-divider span {
+  z-index: 1;
+  padding: 0 10px;
+  background: var(--agp-paper-bright);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-upload {
+  min-height: 93px;
+  display: grid;
+  grid-template-columns: 43px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 13px;
+  border: 2px dashed rgba(21, 95, 85, 0.42);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: #f3f9f6;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-upload:not([data-disabled="true"]):hover {
+  border-color: rgba(21, 95, 85, 0.68);
+  background: #e9f4ef;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-upload[data-dragging="true"] {
+  border-color: var(--agp-teal-dark);
+  background: #daf0e8;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-upload[data-disabled="true"] {
+  cursor: default;
+  opacity: 0.52;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-upload input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-upload > i {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: white;
+  background: var(--agp-teal-dark);
+  font-size: 22px;
+  font-style: normal;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-upload > span {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-upload > span strong {
+  font-size: 16px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-upload > span small {
+  color: var(--agp-muted);
+  font-size: 16px;
+  line-height: 1.4;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-upload > b {
+  border: 1px solid var(--agp-line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--agp-paper-bright);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 16px;
+  white-space: nowrap;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-upload-error {
+  margin-top: 8px !important;
+  color: #943d31;
+  font-size: 16px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-reference-panel {
+  min-width: 0;
+  padding: 20px;
+  align-self: start;
+  position: sticky;
+  top: 76px; /* clears the fixed studio header while the page scrolls */
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-reference-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 14px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-reference-heading h2 {
+  margin-top: 4px;
+  font-size: 22px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-revision {
+  border-radius: 999px;
+  padding: 7px 10px;
+  color: var(--agp-teal-dark);
+  background: #e1f1ec;
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 14px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-reference-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 11px;
+}
+
+/* One missing image should not claim the space four do */
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-reference-grid[data-count="1"] {
+  grid-template-columns: minmax(0, 420px);
+  justify-content: start;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-reference-alert {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px !important;
+  border: 1px solid rgba(185, 86, 68, 0.36);
+  border-radius: 8px;
+  padding: 11px 13px;
+  color: #7d3122;
+  background: #fbe8e1;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-reference-alert > i {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: white;
+  background: var(--agp-red);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 14px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-reference-alert > strong {
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-reference-alert > small {
+  color: #87473a;
+  font-size: 14px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-reference-grid figure {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--agp-line);
+  border-radius: 8px;
+  background: #e8e7df;
+}
+
+/* The visual owns the tile height, so whichever single state renders inside
+   it (empty | pending | error | filled) fills exactly the same box. */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-slot-visual {
+  position: relative;
+  height: clamp(190px, 16vw, 275px);
+  overflow: hidden;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-reference-grid[data-count="1"]
+  .agp-slot-visual {
+  height: clamp(240px, 20vw, 320px);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-reference-grid img,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-slot-empty {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-reference-grid img {
+  background: #deddd4;
+  object-fit: contain;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-reference-grid
+  figure[data-generation="pending"]
+  img {
+  filter: brightness(0.42) saturate(0.7);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-slot-pending,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-slot-error {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 12px;
+  padding: 18px;
+  text-align: center;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-slot-pending {
+  color: white;
+  background: rgba(12, 37, 32, 0.54);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 14px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-slot-pending > i {
+  width: 34px;
+  height: 34px;
+  border: 3px solid rgba(255, 255, 255, 0.32);
+  border-top-color: var(--agp-teal);
+  border-radius: 50%;
+  animation: agp-slot-spin 900ms linear infinite;
+}
+
+/* One mark, one headline, one detail line, one inline retry */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-slot-error {
+  gap: 9px;
+  color: #67271e;
+  background: #fdf1ec;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-slot-error > i {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: white;
+  background: var(--agp-red);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 18px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-slot-error > strong {
+  font-family: "Fulcrum Display", "Arial Narrow", ui-sans-serif, sans-serif;
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.15;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-slot-error > small {
+  max-width: 34ch;
+  color: #7d4234;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp .agp-slot-retry {
+  min-height: 34px;
+  margin-top: 2px;
+  border: 1px solid rgba(103, 39, 30, 0.5);
+  border-radius: 6px;
+  padding: 6px 15px;
+  color: #67271e;
+  background: var(--agp-paper-bright);
+  cursor: pointer;
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp
+  .agp-slot-retry:not(:disabled):hover {
+  border-color: #67271e;
+  background: #f7e3db;
+}
+
+@keyframes agp-slot-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Mark only — the slot is named once, in the caption below */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-slot-empty {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  color: #5f6a65;
+  background:
+    linear-gradient(135deg, rgba(22, 22, 29, 0.04) 25%, transparent 25%) 0 0 /
+      24px 24px,
+    #ecebe4;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-slot-empty i {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  display: block;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  opacity: 0.45;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-slot-empty i::before,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-slot-empty i::after {
+  content: "";
+  position: absolute;
+  width: 22px;
+  height: 2px;
+  margin: 24px 14px;
+  background: currentColor;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-slot-empty i::after {
+  transform: rotate(90deg);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-reference-grid figcaption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-top: 1px solid var(--agp-line);
+  padding: 10px 12px;
+  background: var(--agp-paper-bright);
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-reference-grid
+  figcaption
+  strong {
+  font-size: 16px;
+}
+
+/* State chip: one label for the slot's state, at ≥4.5:1 in every variant */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-slot-state {
+  flex: 0 0 auto;
+  border: 1px solid rgba(22, 22, 29, 0.14);
+  border-radius: 999px;
+  padding: 4px 9px;
+  color: #3d4844;
+  background: #edece5;
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-slot-state[data-state="pending"] {
+  border-color: rgba(151, 103, 21, 0.26);
+  color: var(--attention);
+  background: #fbefd5;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-slot-state[data-state="error"] {
+  border-color: rgba(185, 86, 68, 0.32);
+  color: #8a3524;
+  background: #fbe6df;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-slot-state[data-state="filled"] {
+  border-color: rgba(24, 95, 85, 0.26);
+  color: #14554c;
+  background: #dff1eb;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-derive-note {
+  margin-top: 12px !important;
+  color: var(--agp-muted);
+  font-size: 16px;
+  line-height: 1.45;
+}
+
+/* Direct text path */
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-text-workspace {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(260px, 0.65fr);
+  gap: 18px 24px;
+  margin-top: 20px;
+  padding: 23px;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-text-workspace
+  > .agp-section-heading,
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-text-workspace
+  > .agp-text-prompt {
+  grid-column: 1;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-text-prompt {
+  margin-top: 0;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-text-prompt textarea {
+  /* ten lines to write in, twelve before it scrolls */
+  min-height: calc(10 * 1.65em + 32px);
+  max-height: calc(12 * 1.65em + 32px);
+  font-size: 16px;
+  line-height: 1.65;
+}
+
+/* The darkest surface on a cream page has to earn every pixel it covers.
+   Stretched to the prompt's height it held three lines of copy over ~400px of
+   solid ink, which made the emptiest shape on screen the loudest one. */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-text-workspace > aside {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: start;
+  display: grid;
+  align-content: start;
+  gap: 11px;
+  border-radius: 8px;
+  padding: 20px 22px;
+  color: white;
+  background: var(--agp-ink);
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-text-workspace
+  > aside
+  span {
+  color: var(--agp-teal);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-text-workspace
+  > aside
+  strong {
+  color: white;
+  font-family: "Fulcrum Display", sans-serif;
+  font-size: 28px;
+  text-transform: capitalize;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-text-workspace > aside p {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 16px;
+  line-height: 1.55;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-text-valid {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--agp-line);
+  padding-top: 16px;
+  color: var(--agp-muted);
+  font-size: 16px;
+}
+
+/* While the CTA is dead, say what is missing instead of reassuring */
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-text-valid[data-requirement="true"] {
+  color: var(--attention);
+  font-weight: 600;
+}
+
+/* Footer — sits in flow at the end of the focus page, closing the frame */
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-focus-footer {
+  border-radius: 0 0 10px 10px;
+  min-height: 78px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  border-top: 1px solid var(--agp-line);
+  padding: 13px 28px;
+  background: rgba(255, 253, 248, 0.97);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-footer-status {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-footer-status > small {
+  overflow: hidden;
+  max-width: 570px;
+  color: var(--agp-muted);
+  font-size: 16px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-footer-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp .agp-next {
+  min-width: 215px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-next i {
+  margin-left: 8px;
+  font-family: sans-serif;
+  font-size: 16px;
+  font-style: normal;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp .agp-credit-button {
+  min-width: 280px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 15px;
+  border: 3px solid #6d4b0e;
+  color: #271b07;
+  background: var(--agp-gold);
+  box-shadow: 4px 4px 0 #6d4b0e;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-credit-button > span {
+  border-left: 1px solid rgba(39, 27, 7, 0.28);
+  padding-left: 15px;
+  font-size: 14px;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-resolved-mark {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid rgba(24, 95, 85, 0.3);
+  border-radius: 7px;
+  padding: 10px 18px;
+  color: var(--agp-teal-dark);
+  background: #dff1eb;
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 16px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-resolved-mark i {
+  width: 23px;
+  height: 23px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: white;
+  background: var(--agp-teal-dark);
+  font-style: normal;
+}
+
+/* Credit confirmation */
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-credit-modal {
+  position: fixed;
+  margin: auto; /* the host reset zeroes margins; restore top-layer centering */
+  width: min(660px, calc(100vw - 60px));
+  max-height: calc(100vh - 60px);
+  overflow-y: auto;
+  border: 2px solid var(--agp-ink);
+  border-radius: 12px;
+  padding: 32px;
+  color: var(--agp-ink);
+  background: var(--agp-paper-bright);
+  box-shadow: 10px 10px 0 rgba(5, 14, 11, 0.32);
+  font-family: "Fulcrum Text", "Segoe UI", system-ui, sans-serif;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-credit-modal::backdrop {
+  background: rgba(10, 18, 16, 0.7);
+  backdrop-filter: blur(5px);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-modal-close {
+  position: absolute;
+  top: 15px;
+  right: 15px;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--agp-line);
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-credit-icon {
+  width: 54px;
+  height: 54px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 18px;
+  border: 2px solid #6d4b0e;
+  border-radius: 50%;
+  color: #6d4b0e;
+  background: var(--agp-gold);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 14px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-credit-modal h2 {
+  max-width: 34ch;
+  margin-top: 9px;
+  font-size: 22px;
+  line-height: 1.15;
+  text-wrap: balance; /* no orphaned "Meshy?" on its own line */
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-credit-modal > p {
+  margin-top: 12px;
+  color: var(--agp-muted);
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-credit-total {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 22px;
+  border-radius: 8px;
+  padding: 17px 19px;
+  color: #382609;
+  background: #f8e4b9;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-credit-total span {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-credit-total strong {
+  font-family: "Fulcrum Display", sans-serif;
+  font-size: 28px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-credit-modal dl {
+  margin-top: 14px;
+  border-top: 1px solid var(--agp-line);
+  border-bottom: 1px solid var(--agp-line);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-credit-modal dl div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 2px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-credit-modal dl div + div {
+  border-top: 1px solid var(--agp-line);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-credit-modal dt,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-credit-modal dd {
+  font-size: 14px;
+}
+
+/* One casing for "credits" across the panel: lowercase everywhere */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-credit-modal dd {
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-weight: 700;
+  text-transform: none;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-credit-modal
+  .agp-model-name {
+  text-transform: capitalize;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-credit-modal > small {
+  display: block;
+  margin-top: 13px;
+  color: var(--agp-muted);
+  font-size: 16px;
+  line-height: 1.45;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-modal-actions {
+  display: grid;
+  grid-template-columns: 0.7fr 1.3fr;
+  align-items: stretch;
+  gap: 10px;
+  margin-top: 22px;
+}
+
+/* Shared min-height + nowrap: the two actions are always the same height */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-modal-actions > button {
+  min-height: 56px;
+  white-space: nowrap;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-modal-actions
+  .agp-credit-button {
+  min-width: 0 !important;
+}
+
+/* Empty plan */
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-empty {
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 13px;
+  text-align: center;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-empty h1 {
+  margin-top: 13px;
+  font-size: 42px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-empty p {
+  color: var(--agp-muted);
+  font-size: 16px;
+}
+
+@media (min-width: 2200px) {
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-overview-head {
+    padding-right: calc(50px + var(--agp-gutter));
+    padding-left: 50px;
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-inventory {
+    padding-right: 50px;
+    padding-left: 50px;
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-focus-body {
+    padding-right: 46px;
+    padding-left: 46px;
+  }
+}
+
+@media (max-width: 1500px) {
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-node-grid {
+    grid-template-columns: repeat(2, minmax(330px, 1fr));
+  }
+
+  .variant-b-voxel.m1-studio
+    .voxel-concept-host
+    .agp-prototype-mark
+    span:last-child,
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-prototype-mark i {
+    display: none;
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-reference-workspace {
+    grid-template-columns: minmax(360px, 0.78fr) minmax(0, 1.22fr);
+  }
+
+  .variant-b-voxel.m1-studio
+    .voxel-concept-host
+    .agp-focus-meta
+    .agp-prototype-mark {
+    display: none;
+  }
+}
+
+@media (max-width: 1120px) {
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp {
+    height: auto;
+    min-height: calc(100vh - 120px);
+    overflow: visible;
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-overview-head,
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-focus-head {
+    align-items: flex-start;
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-overview-head {
+    flex-direction: column;
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-focus-head {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-focus-meta {
+    grid-column: 1 / -1;
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-reference-workspace,
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-asset-brief,
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-text-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-text-workspace > aside,
+  .variant-b-voxel.m1-studio
+    .voxel-concept-host
+    .agp-text-workspace
+    > .agp-section-heading,
+  .variant-b-voxel.m1-studio
+    .voxel-concept-host
+    .agp-text-workspace
+    > .agp-text-prompt {
+    grid-column: 1;
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-text-workspace > aside {
+    grid-row: auto;
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-focus-footer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-footer-actions {
+    width: 100%;
+  }
+}
+
+@media (max-width: 760px) {
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-inventory,
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-focus-body,
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-focus-head,
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-focus-footer {
+    padding-right: 18px;
+    padding-left: 18px;
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-overview-head {
+    padding-right: calc(18px + var(--agp-gutter));
+    padding-left: 18px;
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-head-meta,
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-footer-actions,
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-compose-actions {
+    width: 100%;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-progress {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-node-grid,
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-path-chooser,
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-reference-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-section-chat > form {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-section-chat label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    border: 0;
+    padding: 0;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-focus-head {
+    grid-template-columns: 1fr;
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-focus-title h1 {
+    white-space: normal;
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp .agp-asset-node {
+    grid-template-columns: 92px minmax(0, 1fr);
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-node-preview,
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-empty-thumbnail {
+    width: 92px;
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-node-meta {
+    display: none;
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-upload {
+    grid-template-columns: 43px minmax(0, 1fr);
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-upload > b {
+    display: none;
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-footer-actions > button,
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-resolved-mark {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp *,
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp *::before,
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp *::after {
+    scroll-behavior: auto !important;
+    transition: none !important;
+  }
+
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-slot-pending > i {
+    animation: none !important;
+  }
+
+  /* no motion on hover/press lifts */
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp .agp-asset-node:hover,
+  .variant-b-voxel.m1-studio
+    .voxel-concept-host
+    .agp
+    .agp-path-chooser
+    button:active {
+    transform: none !important;
+    translate: none !important;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   The staged 3D lifecycle: the strip under each gate card, and the review
+   screen it opens. Everything here reads off the shell's tokens, the same way
+   the rest of this prototype does — the viewer is an instrument drawn on the
+   same cream paper, not a dark 3D dashboard dropped into it.
+   --------------------------------------------------------------------------- */
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-node-shell {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+}
+
+/* The strip is the card's own base, so the two share one outline and the card
+   loses the hover lift that would otherwise peel it off the top of the strip. */
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-node-shell:has(.agp-node-stage)
+  .agp-asset-node {
+  border-bottom-right-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp
+  .agp-node-shell
+  .agp-asset-node:hover {
+  transform: none;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-node-stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 14px;
+  border: 1px solid var(--agp-line);
+  border-top: 1px dashed var(--agp-line);
+  border-radius: 0 0 9px 9px;
+  padding: 11px 14px 13px;
+  background: #f6f2e8;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-node-stage-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-node-stage-copy > strong {
+  color: var(--agp-teal-dark);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-node-stage-copy > small {
+  color: var(--agp-muted);
+  font-size: 14px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-rig-eligibility {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px 9px;
+  margin-top: 3px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-rig-eligibility > small {
+  color: var(--agp-muted);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.075em;
+  line-height: 1.25;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-rig-eligibility
+  > small[data-eligible] {
+  color: var(--agp-teal-dark);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-rig-eligibility > button {
+  flex: none;
+  border: 1px solid var(--agp-ink);
+  border-radius: 4px;
+  padding: 3px 7px;
+  background: var(--agp-paper-bright);
+  box-shadow: 2px 2px 0 rgba(22, 22, 29, 0.16);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1.2;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-rig-eligibility
+  > button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--agp-teal) 20%, var(--agp-paper-bright));
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-rig-eligibility
+  > button:disabled {
+  cursor: wait;
+  opacity: 0.5;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-node-stage[data-stage-status="running"] {
+  background: #fbf3e2;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-node-stage[data-stage-status="review"] {
+  background: #e9f6f3;
+}
+
+/* Deferred: the plan is not approved, so the server would refuse this spend.
+   The row says so where the button is, and the button is disabled — the
+   refusal is read before it is earned, not after. */
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-node-stage[data-stage-status="deferred"] {
+  background: #f1eee5;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-node-stage[data-stage-status="deferred"]
+  .agp-node-stage-copy
+  > strong {
+  color: var(--agp-muted);
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-node-stage[data-stage-status="failed"],
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-node-stage[data-stage-status="expired"],
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-node-stage[data-stage-status="scrapped"] {
+  background: #f9ece8;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-node-stage[data-stage-status="failed"]
+  .agp-node-stage-copy
+  > strong,
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-node-stage[data-stage-status="expired"]
+  .agp-node-stage-copy
+  > strong,
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-node-stage[data-stage-status="scrapped"]
+  .agp-node-stage-copy
+  > strong {
+  color: #8c3627;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp .agp-node-generate {
+  min-width: 0;
+  min-height: 42px;
+  padding: 9px 14px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp .agp-node-generate > span {
+  padding-left: 11px;
+  font-size: 13px;
+}
+
+/* ------------------------------- review screen ------------------------------ */
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 14px;
+  padding: 22px 26px 24px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 20px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-head h1 {
+  margin-top: 2px;
+  font-size: clamp(28px, 1.7vw, 38px);
+  line-height: 1.05;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-ledger {
+  display: flex;
+  gap: 10px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-ledger > span {
+  display: grid;
+  gap: 2px;
+  border: 1px solid var(--agp-line);
+  border-radius: 7px;
+  padding: 7px 13px;
+  background: var(--agp-paper-bright);
+  text-align: right;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-ledger small {
+  color: var(--agp-muted);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-ledger strong {
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 16px;
+}
+
+/* The four Meshy stages, as a ruled track rather than a wizard's breadcrumb. */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-ladder {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-ladder li {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  gap: 9px;
+  color: var(--agp-muted);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-ladder li::after {
+  flex: 1 1 auto;
+  height: 2px;
+  background: repeating-linear-gradient(
+    90deg,
+    var(--ink-22) 0 5px,
+    transparent 5px 10px
+  );
+  content: "";
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-staged-ladder
+  li:last-child::after {
+  display: none;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-ladder li > i {
+  width: 13px;
+  height: 13px;
+  border: 2px solid var(--ink-22);
+  border-radius: 50%;
+  background: var(--agp-paper-bright);
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-staged-ladder
+  li[data-reached]
+  > i {
+  border-color: var(--agp-teal-dark);
+  background: var(--agp-teal);
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-staged-ladder
+  li[data-current] {
+  color: var(--agp-ink);
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-staged-ladder
+  li[data-current]
+  > i {
+  box-shadow: 0 0 0 3px rgba(47, 208, 197, 0.35);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-body {
+  min-height: 0;
+  display: grid;
+  align-content: stretch;
+  gap: 16px;
+}
+
+/* The record rail only appears once there is a task to record, and only where
+   there is width to spend on it — under 1200px the viewer keeps the whole row
+   rather than sharing it with a column too narrow to read. */
+@media (min-width: 1200px) {
+  .variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-body[data-rail] {
+    grid-template-columns: minmax(0, 1fr) 300px;
+  }
+}
+
+/* Flex, not grid: the viewer is the one child that should eat the leftover
+   height, and a plaque with three lines in it must never be stretched to 500px
+   of empty colour to fill a row. */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-main {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-main > * {
+  flex: 0 0 auto;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-staged-main
+  > .agp-staged-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* A progress card, or a plaque with nothing to show beside it, is the whole
+   screen: centre it rather than pinning it to the top of an empty page. */
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-staged-main
+  > .agp-staged-progress,
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-staged-main
+  > .agp-staged-plaque[data-solo] {
+  align-self: center;
+  width: min(720px, 100%);
+  margin: auto 0;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-record {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  overflow-y: auto;
+  border: 1px solid var(--agp-line);
+  border-radius: 10px;
+  padding: 15px 16px;
+  background: var(--agp-paper-bright);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-record .agp-eyebrow {
+  margin-bottom: 9px;
+  font-size: 12px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-record ol {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-record li {
+  display: grid;
+  gap: 2px;
+  border-left: 3px solid var(--agp-teal);
+  padding-left: 10px;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-staged-record
+  li[data-status="running"] {
+  border-left-color: var(--agp-gold);
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-staged-record
+  li[data-status="failed"],
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-staged-record
+  li[data-status="expired"] {
+  border-left-color: var(--agp-red);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-record li strong {
+  font-size: 14px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-record li small,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-record p {
+  color: var(--agp-muted);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-staged-record
+  .agp-rig-eligibility {
+  margin: 0 0 8px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-record p {
+  font-family: "Fulcrum Text", sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  text-transform: none;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-staged-record
+  p[data-eligible] {
+  color: var(--agp-teal-dark);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-error {
+  border: 2px solid var(--agp-red);
+  border-radius: 8px;
+  padding: 11px 15px;
+  color: #7d2f22;
+  background: #f9ebe7;
+  font-size: 15px;
+}
+
+/* --------------------------------- progress -------------------------------- */
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-progress {
+  align-self: center;
+  justify-self: center;
+  width: min(720px, 100%);
+  display: grid;
+  gap: 12px;
+  border: 2px solid var(--agp-ink);
+  border-radius: 12px;
+  padding: 34px 38px 30px;
+  background: var(--agp-paper-bright);
+  box-shadow: 6px 6px 0 var(--ink-10);
+  text-align: left;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-progress h2 {
+  font-size: 32px;
+  line-height: 1.1;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-progress > p {
+  max-width: 56ch;
+  color: var(--agp-muted);
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-progress > small {
+  color: var(--agp-muted);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* A gauge on paper: a ruled track, a hard-edged fill, a mono readout. */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-meter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  margin-top: 4px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-meter > i {
+  position: relative;
+  height: 22px;
+  overflow: hidden;
+  border: 2px solid var(--agp-ink);
+  border-radius: 4px;
+  background:
+    repeating-linear-gradient(90deg, var(--ink-10) 0 1px, transparent 1px 10px),
+    var(--agp-paper);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-meter > i > b {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: block;
+  border-right: 2px solid var(--agp-ink);
+  background: var(--agp-teal);
+  transition: width 420ms ease;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-meter > strong {
+  min-width: 62px;
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 24px;
+  text-align: right;
+}
+
+/* ---------------------------------- viewer --------------------------------- */
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-stage {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-viewer {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+/* The paper mat the model stands on: a printed grid, a soft vignette, and the
+   same hard ink frame every instrument in this shell wears. */
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-viewer-mat {
+  position: relative;
+  min-height: 260px;
+  overflow: hidden;
+  border: 2px solid var(--agp-ink);
+  border-radius: 12px;
+  background:
+    radial-gradient(
+      120% 90% at 50% 12%,
+      rgba(255, 255, 255, 0.85) 0%,
+      rgba(255, 255, 255, 0) 62%
+    ),
+    repeating-linear-gradient(
+      90deg,
+      rgba(22, 22, 29, 0.05) 0 1px,
+      transparent 1px 28px
+    ),
+    repeating-linear-gradient(
+      0deg,
+      rgba(22, 22, 29, 0.05) 0 1px,
+      transparent 1px 28px
+    ),
+    var(--agp-paper-bright);
+  box-shadow: inset 0 -30px 46px rgba(22, 22, 29, 0.06);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-viewer-mat canvas {
+  display: block;
+  touch-action: none;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-viewer-loading,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-viewer-failed {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  padding: 0 40px;
+  color: var(--agp-muted);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-viewer-failed {
+  color: #7d2f22;
+  font-family: "Fulcrum Text", sans-serif;
+  font-size: 15px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-viewer figcaption {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-viewer-caption {
+  color: var(--agp-teal-dark);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-viewer figcaption small {
+  color: var(--agp-muted);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-clips {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-clips .agp-eyebrow {
+  margin-right: 4px;
+  font-size: 12px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp .agp-staged-clip {
+  min-height: 34px;
+  border: 1px solid var(--agp-line);
+  border-radius: 999px;
+  padding: 6px 16px;
+  background: var(--agp-paper-bright);
+  cursor: pointer;
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp
+  .agp-staged-clip[data-active] {
+  border-color: var(--agp-ink);
+  color: var(--agp-ink);
+  background: var(--agp-teal);
+}
+
+/* --------------------------------- plaques --------------------------------- */
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-plaque {
+  display: grid;
+  gap: 6px;
+  border: 2px solid var(--agp-ink);
+  border-radius: 10px;
+  padding: 16px 20px;
+  background: var(--agp-paper-bright);
+  box-shadow: 5px 5px 0 var(--ink-10);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-plaque > strong {
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 15px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-plaque > p {
+  max-width: 78ch;
+  color: var(--agp-muted);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-plaque > small {
+  color: var(--agp-muted);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-staged-plaque[data-kind="accepted"] {
+  border-color: #12483f;
+  background: #e6f4ee;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-staged-plaque[data-kind="accepted"]
+  > strong {
+  color: var(--agp-teal-dark);
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-staged-plaque[data-kind="failed"],
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-staged-plaque[data-kind="expired"],
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-staged-plaque[data-kind="scrapped"] {
+  border-color: var(--agp-red);
+  background: #f9ece8;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-staged-plaque[data-kind="failed"]
+  > strong,
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-staged-plaque[data-kind="expired"]
+  > strong,
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-staged-plaque[data-kind="scrapped"]
+  > strong {
+  color: #8c3627;
+}
+
+/* ------------------------------- decision bar ------------------------------ */
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-decisions {
+  display: grid;
+  gap: 9px;
+  border-top: 2px solid var(--ink-22);
+  padding-top: 14px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-offers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: start;
+  gap: 14px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-offer {
+  max-width: 320px;
+  display: grid;
+  gap: 5px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-offer small {
+  max-width: 34ch;
+  color: var(--agp-muted);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-staged-offer
+  small.agp-staged-blocked {
+  color: #7d2f22;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp .agp-staged-cta {
+  min-height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid var(--agp-line);
+  border-radius: 5px;
+  padding: 11px 16px;
+  background: var(--agp-paper-bright);
+  cursor: pointer;
+  font-family: "Fulcrum Text", sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp
+  .agp-staged-cta
+  .agp-staged-price {
+  border-left: 1px solid rgba(22, 22, 29, 0.24);
+  padding-left: 14px;
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp
+  .agp-staged-cta[data-tone="accept"] {
+  border: 3px solid var(--agp-ink);
+  background: var(--agp-teal);
+  box-shadow: 4px 4px 0 var(--agp-ink);
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp
+  .agp-staged-cta[data-tone="spend"] {
+  border: 3px solid #6d4b0e;
+  color: #271b07;
+  background: var(--agp-gold);
+  box-shadow: 4px 4px 0 #6d4b0e;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp
+  .agp-staged-cta[data-tone="spend"]
+  .agp-staged-price {
+  border-left-color: rgba(39, 27, 7, 0.28);
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp
+  .agp-staged-cta[data-tone="scrap"] {
+  border-color: rgba(185, 86, 68, 0.5);
+  color: #7d2f22;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp
+  .agp-staged-cta:not(:disabled):hover {
+  border-color: rgba(22, 22, 29, 0.42);
+  background: #f7f3ea;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp
+  .agp-staged-cta[data-tone="accept"]:not(:disabled):hover {
+  background: #57ddd3;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp
+  .agp-staged-cta[data-tone="spend"]:not(:disabled):hover {
+  background: #f5cc7c;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp .agp-staged-cta:disabled {
+  border-color: rgba(22, 22, 29, 0.3);
+  border-width: 1px;
+  color: #46504c;
+  background: #e4e2da;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp
+  .agp-staged-cta:disabled
+  .agp-staged-price {
+  border-left-color: rgba(22, 22, 29, 0.3);
+  color: #46504c;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-empty {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 16px;
+  height: 100%;
+  color: var(--agp-muted);
+  font-size: 16px;
+}
+
+/* A replay world never reaches Meshy. Say so beside the credit readout rather
+   than letting a consumed-credits figure imply a real bill. */
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-staged-ledger
+  > span.agp-staged-simulated {
+  border-color: rgba(185, 86, 68, 0.38);
+  color: #793529;
+  background: #f8ded6;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-staged-ledger
+  > span.agp-staged-simulated
+  small {
+  color: #8c4536;
+}

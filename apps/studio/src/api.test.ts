@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { api, ApiError, isApiError } from "./api.js";
+import { api, ApiError, fetchArtifactJson, isApiError } from "./api.js";
 import {
+  advanceProject,
   answerFrontier,
   approveConceptSet,
   approveGameDesign,
@@ -11,21 +12,66 @@ import {
   confirmConceptPlan,
   confirmSoundPlan,
   confirmSharedUnderstanding,
+  commitGameName,
+  continueIntoM2,
+  createM2Project,
   createM1Project,
   getProject,
   increaseBudget,
   m1Projects,
+  m2Projects,
   regenerateConcept,
   regenerateSound,
+  reopenApprovalReview,
   replaceDirection,
   reviseGameDesign,
   selectConcept,
+  studioProjects,
+  suggestGameNames,
 } from "./m1-api.js";
 import type { ProjectSnapshot } from "@fulcrum/domain";
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Studio API client", () => {
+  it("posts an empty explicit-advance request", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ state: {} }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await advanceProject("project-1");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/projects/project-1/advance",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("loads artifact JSON through the transport module", async () => {
+    const artifact = { prompt: "Exact identity-preserving prompt" };
+    const fetchMock = vi.fn(async () => Response.json(artifact));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchArtifactJson("/api/artifacts/view-1")).resolves.toEqual(
+      artifact,
+    );
+    expect(fetchMock).toHaveBeenCalledWith("/api/artifacts/view-1");
+  });
+
+  it("preserves the artifact request error shown by the strip", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(null, { status: 404 })),
+    );
+
+    await expect(fetchArtifactJson("/api/artifacts/missing")).rejects.toEqual(
+      expect.objectContaining({
+        name: "ApiError",
+        message: "Artifact request failed with 404.",
+        status: 404,
+      }),
+    );
+  });
+
   it("does not advertise a JSON body for an empty POST", async () => {
     const fetchMock = vi.fn(async (_path: string, options?: RequestInit) => {
       expect(new Headers(options?.headers).has("Content-Type")).toBe(false);
@@ -344,5 +390,148 @@ describe("M1 API client", () => {
         { state: { milestone: "m1" } } as ProjectSnapshot,
       ]),
     ).toHaveLength(1);
+  });
+});
+
+describe("M2 API client", () => {
+  it("creates and filters M2 projects", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string, options?: RequestInit) => {
+        calls.push({
+          path,
+          body: options?.body ? JSON.parse(String(options.body)) : undefined,
+        });
+        return Response.json({ state: { projectId: "p2", milestone: "m2" } });
+      }),
+    );
+
+    await createM2Project({
+      milestone: "m1",
+      brief:
+        "Create a first-person stealth game in a cramped lunar greenhouse.",
+      mode: "replay",
+      budgetUsd: 1,
+      rightsConfirmed: true,
+    });
+    expect(calls).toEqual([
+      {
+        path: "/api/projects",
+        body: expect.objectContaining({ milestone: "m2", mode: "replay" }),
+      },
+    ]);
+  });
+
+  it("posts an empty reopen request for a rejected gate", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ state: {} }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await reopenApprovalReview("p2", "concept-set");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/projects/p2/approvals/concept-set/reopen",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("carries the naming conversation to the game-name routes", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string, options?: RequestInit) => {
+        calls.push({
+          path,
+          body: options?.body ? JSON.parse(String(options.body)) : undefined,
+        });
+        return Response.json({ state: { projectId: "p1" } });
+      }),
+    );
+
+    await suggestGameNames("p1", {
+      gameNameCandidatesRevisionId: "names-1",
+      feedback: "Shorter, and darker.",
+    });
+    await commitGameName("p1", {
+      gameNameCandidatesRevisionId: "names-2",
+      candidateId: "name-abc",
+    });
+    await commitGameName("p1", {
+      gameNameCandidatesRevisionId: "names-2",
+      name: "Saltglass",
+    });
+
+    expect(calls).toEqual([
+      {
+        path: "/api/projects/p1/game-name/suggest",
+        body: {
+          gameNameCandidatesRevisionId: "names-1",
+          feedback: "Shorter, and darker.",
+        },
+      },
+      {
+        path: "/api/projects/p1/game-name/commit",
+        body: {
+          gameNameCandidatesRevisionId: "names-2",
+          candidateId: "name-abc",
+        },
+      },
+      {
+        path: "/api/projects/p1/game-name/commit",
+        body: { gameNameCandidatesRevisionId: "names-2", name: "Saltglass" },
+      },
+    ]);
+  });
+
+  it("continues an M1 world into M2 with and without a credit cap", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string, options?: RequestInit) => {
+        calls.push({
+          path,
+          body: options?.body ? JSON.parse(String(options.body)) : undefined,
+        });
+        return Response.json({ state: { projectId: "p2", milestone: "m2" } });
+      }),
+    );
+
+    await continueIntoM2("p1", { meshyCreditBudget: 300 });
+    await continueIntoM2("p1");
+
+    expect(calls).toEqual([
+      {
+        path: "/api/projects/p1/continue/m2",
+        body: { meshyCreditBudget: 300 },
+      },
+      { path: "/api/projects/p1/continue/m2", body: {} },
+    ]);
+  });
+
+  it("keeps M1 and M2 project lists separate", () => {
+    const projects = [
+      { state: { milestone: "m1", projectId: "p1" } },
+      { state: { milestone: "m2", projectId: "p2" } },
+      { state: { milestone: "m0", projectId: "p0" } },
+    ] as ProjectSnapshot[];
+
+    expect(m1Projects(projects).map(({ state }) => state.projectId)).toEqual([
+      "p1",
+    ]);
+    expect(m2Projects(projects).map(({ state }) => state.projectId)).toEqual([
+      "p2",
+    ]);
+  });
+
+  it("shows M1 and M2 worlds in one studio list, in the order given", () => {
+    const projects = [
+      { state: { milestone: "m0", projectId: "p0" } },
+      { state: { milestone: "m2", projectId: "p2" } },
+      { state: { milestone: "m1", projectId: "p1" } },
+    ] as ProjectSnapshot[];
+
+    expect(
+      studioProjects(projects).map(({ state }) => state.projectId),
+    ).toEqual(["p2", "p1"]);
   });
 });

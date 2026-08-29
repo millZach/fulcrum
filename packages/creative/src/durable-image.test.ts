@@ -211,14 +211,22 @@ describe("ensureDurableSubscriptionImage", () => {
     repository.close();
   });
 
-  it("does not call the provider again after a live restart between intent and confirmed submission", async () => {
+  it("retries an interrupted subscription call when the stored attempt has headroom", async () => {
     const { repository, projectId, runId, idempotencyKey } = openProject(1);
-    repository.recordSubmissionIntent({
+    const intent = repository.recordSubmissionIntent({
       projectId,
       operation: "m1-concept-image",
       provider: "openai-subscription",
       idempotencyKey,
-      payload: { crashFixture: true },
+      payload: {
+        retryLimit: 2,
+        timeoutMs: 360_000,
+        providerAttemptCount: 1,
+        providerCallStartedAt: "2026-08-25T12:00:00.000Z",
+      },
+    });
+    repository.updateSubmission(intent.requestId, {
+      status: "pending",
     });
     const runner = vi.fn(async () => ({
       bytes: PNG_1x1,
@@ -236,15 +244,44 @@ describe("ensureDurableSubscriptionImage", () => {
       mode: "live",
     });
 
-    expect(outcome.status).toBe("failed");
-    if (outcome.status === "failed")
-      expect(outcome.error.code).toBe("submission-unknown");
-    expect(runner).not.toHaveBeenCalled();
-    expect(repository.getSubmissionByKey(idempotencyKey)?.status).toBe(
-      "submission-unknown",
-    );
+    expect(outcome.status).toBe("ready");
+    expect(runner).toHaveBeenCalledTimes(1);
+    expect(repository.getSubmissionByKey(idempotencyKey)).toMatchObject({
+      requestId: intent.requestId,
+      status: "ready",
+      payload: { providerAttemptCount: 2 },
+    });
+    repository.close();
+  });
 
-    const retried = await ensureDurableSubscriptionImage({
+  it("retries a prior submission-unknown row when the stored attempt has headroom", async () => {
+    const { repository, projectId, runId, idempotencyKey } = openProject(1);
+    const intent = repository.recordSubmissionIntent({
+      projectId,
+      operation: "m1-concept-image",
+      provider: "openai-subscription",
+      idempotencyKey,
+      payload: {
+        retryLimit: 2,
+        timeoutMs: 360_000,
+        providerAttemptCount: 1,
+        providerCallStartedAt: "2026-08-25T12:00:00.000Z",
+      },
+    });
+    repository.updateSubmission(intent.requestId, {
+      status: "submission-unknown",
+      payload: {
+        ...intent.payload,
+        error: "codex timed out.",
+      },
+    });
+    const runner = vi.fn(async () => ({
+      bytes: PNG_1x1,
+      model: "gpt-image-2",
+      costUsd: 0,
+    }));
+
+    const outcome = await ensureDurableSubscriptionImage({
       repository,
       runner,
       projectId,
@@ -253,17 +290,26 @@ describe("ensureDurableSubscriptionImage", () => {
       prompt: "A readable greenhouse airlock",
       mode: "live",
     });
-    expect(retried.status).toBe("failed");
-    if (retried.status === "failed")
-      expect(retried.error.code).toBe("submission-unknown");
-    expect(runner).not.toHaveBeenCalled();
+
+    expect(outcome.status).toBe("ready");
+    expect(runner).toHaveBeenCalledTimes(1);
+    expect(repository.getSubmissionByKey(idempotencyKey)).toMatchObject({
+      requestId: intent.requestId,
+      status: "ready",
+      payload: { providerAttemptCount: 2 },
+    });
     repository.close();
   });
 
-  it("marks a provider throw as submission-unknown and does not retry the runner", async () => {
+  it("retries a live timeout in place and succeeds in the same ensure call", async () => {
     const { repository, projectId, runId, idempotencyKey } = openProject(1);
     const runner = vi.fn(async () => {
-      throw new Error("codex exited 1");
+      if (runner.mock.calls.length === 1) throw new Error("codex timed out.");
+      return {
+        bytes: PNG_1x1,
+        model: "gpt-image-2",
+        costUsd: 0,
+      };
     });
 
     const outcome = await ensureDurableSubscriptionImage({
@@ -276,13 +322,48 @@ describe("ensureDurableSubscriptionImage", () => {
       mode: "live",
     });
 
-    expect(outcome.status).toBe("failed");
-    if (outcome.status === "failed")
-      expect(outcome.error.code).toBe("submission-unknown");
-    expect(runner).toHaveBeenCalledTimes(1);
-    expect(repository.getSubmissionByKey(idempotencyKey)?.status).toBe(
-      "submission-unknown",
+    expect(outcome.status).toBe("ready");
+    expect(runner).toHaveBeenCalledTimes(2);
+    expect(repository.getSubmissionByKey(idempotencyKey)).toMatchObject({
+      status: "ready",
+      payload: { providerAttemptCount: 2 },
+    });
+    repository.close();
+  });
+
+  it("parks exhausted subscription failures as spend-safe user action", async () => {
+    const { repository, projectId, runId, idempotencyKey } = openProject(1);
+    const runner = vi.fn(async () => {
+      throw new Error("codex timed out.");
+    });
+
+    const outcome = await ensureDurableSubscriptionImage({
+      repository,
+      runner,
+      projectId,
+      runId,
+      idempotencyKey,
+      prompt: "A readable greenhouse airlock",
+      mode: "live",
+    });
+
+    expect(outcome).toEqual(
+      expect.objectContaining({
+        status: "failed",
+        error: expect.objectContaining({
+          code: "concept-generation-failed",
+          message: expect.stringMatching(
+            /subscription-covered.*\$0.*spend-safe/i,
+          ),
+          failureKind: "user-action-required",
+        }),
+      }),
     );
+    expect(runner).toHaveBeenCalledTimes(2);
+    expect(repository.getSubmissionByKey(idempotencyKey)).toMatchObject({
+      status: "failed",
+      payload: { providerAttemptCount: 2 },
+    });
 
     const retried = await ensureDurableSubscriptionImage({
       repository,
@@ -294,7 +375,52 @@ describe("ensureDurableSubscriptionImage", () => {
       mode: "live",
     });
     expect(retried.status).toBe("failed");
-    expect(runner).toHaveBeenCalledTimes(1);
+    expect(runner).toHaveBeenCalledTimes(2);
+    repository.close();
+  });
+
+  it("refuses an exhausted submission-unknown row without a provider call", async () => {
+    const { repository, projectId, runId, idempotencyKey } = openProject(1);
+    const intent = repository.recordSubmissionIntent({
+      projectId,
+      operation: "m1-concept-image",
+      provider: "openai-subscription",
+      idempotencyKey,
+      payload: {
+        retryLimit: 2,
+        timeoutMs: 360_000,
+        providerAttemptCount: 2,
+        providerCallStartedAt: "2026-08-25T12:00:00.000Z",
+      },
+    });
+    repository.updateSubmission(intent.requestId, {
+      status: "submission-unknown",
+    });
+    const runner = vi.fn(async () => ({
+      bytes: PNG_1x1,
+      model: "gpt-image-2",
+      costUsd: 0,
+    }));
+
+    const outcome = await ensureDurableSubscriptionImage({
+      repository,
+      runner,
+      projectId,
+      runId,
+      idempotencyKey,
+      prompt: "A readable greenhouse airlock",
+      mode: "live",
+    });
+
+    expect(outcome).toEqual(
+      expect.objectContaining({
+        status: "failed",
+        error: expect.objectContaining({
+          message: expect.stringMatching(/retry limit/i),
+        }),
+      }),
+    );
+    expect(runner).not.toHaveBeenCalled();
     repository.close();
   });
 });

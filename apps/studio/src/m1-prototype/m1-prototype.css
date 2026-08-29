@@ -7009,8 +7009,33 @@
   --paper: #f0ecdf;
   --paper-2: #fbf8ef;
   --paper-3: #e5dfcd;
-  --teal: #2fd0c5;
+  /* One card/field surface for the shell and for anything hosted inside it.
+     Twenty-three rules used to paint this by hand as #fffdf7 or #fffdf6, and
+     the M2 prototype carried its own #fffdf8 plus a bare `white`, which read
+     cold against the cream. */
+  --surface: #fffdf7;
+  /* Two teals, one job each. --accent-fill (with --teal-deep) paints fills,
+     underlines and rings; --accent-text is the only teal allowed on paper
+     under 14px, because --teal-deep measures 3.93:1 on the cream ground and
+     every kicker in the shell is 10–11px. --accent-text is 5.1:1.
+     --teal / --teal-text are the shell's older spellings of the same two
+     values, kept as aliases so existing rules keep resolving. */
+  --accent-fill: #2fd0c5;
+  --accent-text: #0a6f67;
+  --teal: var(--accent-fill);
   --teal-deep: #0d8b81;
+  --teal-text: var(--accent-text);
+  /* One alert tone for the whole shell, derived from the stage cube pink so a
+     failure reads as part of the palette: --alert is the 5.6:1 text/border
+     weight, --alert-fill the existing cube pink for marks and fills. */
+  --alert: #b2213f;
+  --alert-fill: #ff7396;
+  --alert-wash: rgba(178, 33, 63, 0.09);
+  /* The third status tone: the run is fine, it is just waiting on the user.
+     Amber at a text weight the cream ground can carry — 5.96:1 on --paper-2,
+     5.36:1 on --paper, i.e. the same order as --alert. */
+  --attention: #8a5300;
+  --attention-wash: rgba(138, 83, 0, 0.1);
   --pink: #ff7396;
   --yellow: #ffc94a;
   --vx-stone: #cdc7b4;
@@ -7019,7 +7044,13 @@
   --vx-glow: #2fd0c5;
   --vx-ground: #e6e0ce;
   --vx-ground-alt: #d6cfba;
-  --m1-accent: #0d8b81;
+  /* The unscoped `.m1-prototype button:focus-visible` rule resolves its ring
+     colour from here, so point it at the same teal the shell's focus rule
+     uses instead of a fourth spelling of it. */
+  --m1-accent: var(--teal-deep);
+  /* Height of the home screen's diorama band. The world list takes whatever is
+     left of the column, and Rusty's home dock is expressed against it. */
+  --vx-home-world-h: clamp(230px, 46vh, 430px);
 
   position: relative;
   display: grid;
@@ -7114,7 +7145,7 @@
   display: inline-flex;
   align-items: center;
   gap: 9px;
-  color: var(--teal-deep);
+  color: var(--teal-text);
   font-family: "Fulcrum Mono", ui-monospace, monospace;
   font-size: 11px;
   font-weight: 700;
@@ -7209,12 +7240,38 @@
   width: 100%;
 }
 
+/* ---------- focus ----------
+   One ring for everything inside the shell, including the M2 asset-gate
+   prototype hosted in it: 2px solid --teal-deep at a 2px offset, no alpha.
+   The `button` selector is here only to out-specify the unscoped
+   `.m1-prototype button:focus-visible` rule at the top of this file. */
+.variant-b-voxel :focus-visible,
+.variant-b-voxel button:focus-visible,
+.variant-b-voxel label:has(input:focus-visible) {
+  outline: 2px solid var(--teal-deep);
+  outline-offset: 2px;
+}
+/* On a teal or amber fill the teal ring lands on the fill itself — #0d8b81 on
+   #2fd0c5 is 2.18:1, i.e. invisible on the second tab stop of a
+   credit-spending action. Filled controls take an ink ring one pixel further
+   out, so the ring sits on the paper. */
+.variant-b-voxel .vx-primary:focus-visible,
+.variant-b-voxel .voxel-concept-host .agp .agp-primary:focus-visible,
+.variant-b-voxel .voxel-concept-host .agp .agp-credit-button:focus-visible,
+.variant-b-voxel
+  .voxel-concept-host
+  .agp-credit-modal
+  .agp-credit-button:focus-visible {
+  outline-color: var(--ink);
+  outline-offset: 3px;
+}
+
 .variant-b-voxel textarea {
   border: 2px solid var(--ink-22);
   border-radius: 4px;
   padding: 12px 14px;
   color: var(--ink);
-  background: #fffdf7;
+  background: var(--surface);
   box-shadow: inset 2px 2px 0 rgba(22, 22, 29, 0.05);
   font-family: "Fulcrum Text", sans-serif;
   font-size: 14px;
@@ -7225,12 +7282,11 @@
     border-color 0.18s ease,
     box-shadow 0.18s ease;
 }
+/* Border darken only. The ring itself comes from the one :focus-visible rule
+   above; this used to set `outline: none` and fake a ring with a 45%-alpha
+   teal box-shadow, which composited well under 3:1. */
 .variant-b-voxel textarea:focus {
   border-color: var(--ink);
-  outline: none;
-  box-shadow:
-    inset 2px 2px 0 rgba(22, 22, 29, 0.05),
-    0 0 0 3px rgba(47, 208, 197, 0.45);
 }
 .variant-b-voxel textarea::placeholder {
   color: rgba(22, 22, 29, 0.32);
@@ -7369,15 +7425,18 @@
     rgba(255, 201, 74, 0) 68%
   );
 }
+/* Near-white on cream is a cloud only if you already know it is there. The
+   body goes to flat white and the underside shade triples, so the shape reads
+   as weather at a glance without becoming something to look at. */
 .variant-b-voxel .vx-cloud {
   position: absolute;
   width: 44px;
   height: 14px;
-  background: rgba(255, 253, 246, 0.95);
+  background: #ffffff;
   box-shadow:
-    16px -14px 0 rgba(255, 253, 246, 0.95),
-    34px 0 0 rgba(255, 253, 246, 0.95),
-    16px 4px 0 4px rgba(22, 22, 29, 0.05);
+    16px -14px 0 #ffffff,
+    34px 0 0 #ffffff,
+    16px 4px 0 4px rgba(22, 22, 29, 0.16);
 }
 .variant-b-voxel .vx-cloud-a {
   left: -90px;
@@ -7388,7 +7447,7 @@
 .variant-b-voxel .vx-cloud-b {
   left: -110px;
   top: 33%;
-  opacity: 0.7;
+  opacity: 0.85;
   animation: vx-cloud-b 92s linear infinite;
   animation-delay: -46s;
 }
@@ -7661,7 +7720,7 @@
   box-shadow: 3px 3px 0 var(--ink-22);
 }
 .variant-b-voxel .vx-world-readout span {
-  color: var(--teal-deep);
+  color: var(--teal-text);
   font-family: "Fulcrum Mono", monospace;
   font-size: 10px;
   font-weight: 700;
@@ -7925,7 +7984,7 @@
   text-align: center;
 }
 .variant-b-voxel .vx-plaque small {
-  color: var(--teal-deep);
+  color: var(--teal-text);
   font-family: "Fulcrum Mono", monospace;
   font-size: 10px;
   font-weight: 700;
@@ -8035,11 +8094,23 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.variant-b-voxel .vx-slot[data-filled="true"] {
-  background: var(--paper-2);
+/* --- rail tiers ------------------------------------------------------------
+   Four states, four unmistakable treatments, declared weakest-first so the
+   cascade resolves them in the order a reader would: locked < done < blocked <
+   current. `:disabled` is deliberately NOT a tier — in the studio every tile is
+   disabled (none of them navigates), so styling the locked state through it
+   stripped the current tile's paper fill and teal ring and flattened all five
+   to the same 2.82:1 grey. Locked is now `[data-locked]`, which the prototype
+   rail already sets too, and the resting status label sits at --ink-70 on an
+   opaque fill (5.7:1) instead of --muted (3.97:1). */
+.variant-b-voxel .vx-slot:disabled {
+  cursor: default;
+}
+.variant-b-voxel .vx-slot-copy small {
+  color: var(--ink-70);
 }
 .variant-b-voxel .vx-slot:not(:disabled):hover {
-  background: #fffdf6;
+  background: var(--surface);
   box-shadow: 0 7px 0 var(--ink);
   transform: translateY(-3px);
 }
@@ -8047,11 +8118,71 @@
   box-shadow: 0 1px 0 var(--ink);
   transform: translateY(3px);
 }
+/* locked — nothing here yet: dashed frame, dimmed, no shadow to lift it. */
+.variant-b-voxel .vx-slot[data-locked="true"] {
+  border-style: dashed;
+  border-color: var(--ink-22);
+  background: rgba(229, 223, 205, 0.45);
+  box-shadow: 0 4px 0 var(--ink-10);
+}
+.variant-b-voxel .vx-slot[data-locked="true"] .vx-slot-copy strong {
+  color: var(--ink-45);
+}
+.variant-b-voxel .vx-slot[data-locked="true"] .vx-slot-copy small {
+  color: var(--ink-45);
+}
+/* done — the cube is filled, so the tile just needs to read as solid paper. */
+.variant-b-voxel .vx-slot[data-filled="true"] {
+  background: var(--paper-2);
+}
+.variant-b-voxel .vx-slot[data-filled="true"] .vx-slot-copy strong {
+  color: var(--ink);
+}
+/* blocked — the one state that has to interrupt a scan. */
+.variant-b-voxel .vx-slot[data-blocked="true"] {
+  border-style: solid;
+  border-color: var(--alert);
+  background: var(--alert-wash);
+  box-shadow: 0 4px 0 var(--alert);
+}
+.variant-b-voxel .vx-slot[data-blocked="true"] .vx-slot-copy strong,
+.variant-b-voxel .vx-slot[data-blocked="true"] .vx-slot-copy small,
+.variant-b-voxel .vx-slot[data-blocked="true"] em {
+  color: var(--alert);
+}
+.variant-b-voxel .vx-slot[data-blocked="true"] .vx-slot-empty {
+  border-style: solid;
+  border-color: var(--alert);
+  background: var(--alert-fill);
+}
+.variant-b-voxel .vx-slot[data-blocked="true"]::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: -3px;
+  height: 3px;
+  background: var(--alert);
+}
+/* current — where you are now. Highest tier: it wins every earlier rule. */
 .variant-b-voxel .vx-slot[data-active="true"] {
-  background: #fffdf6;
+  border-style: solid;
+  border-color: var(--ink);
+  background: var(--surface);
   box-shadow:
     0 4px 0 var(--ink),
     0 0 0 3px rgba(47, 208, 197, 0.55);
+}
+.variant-b-voxel .vx-slot[data-active="true"] .vx-slot-copy strong {
+  color: var(--ink);
+}
+.variant-b-voxel .vx-slot[data-active="true"] .vx-slot-copy small {
+  color: var(--ink-70);
+}
+.variant-b-voxel .vx-slot[data-active="true"] .vx-slot-empty {
+  border-style: solid;
+  border-color: var(--ink);
+  background: var(--teal);
 }
 .variant-b-voxel .vx-slot[data-active="true"]::after {
   content: "";
@@ -8061,16 +8192,6 @@
   bottom: -3px;
   height: 3px;
   background: var(--teal);
-}
-.variant-b-voxel .vx-slot:disabled {
-  border-color: var(--ink-22);
-  color: var(--ink-45);
-  background: rgba(229, 223, 205, 0.5);
-  box-shadow: 0 4px 0 var(--ink-10);
-  cursor: default;
-}
-.variant-b-voxel .vx-slot:disabled .vx-slot-copy small {
-  color: var(--ink-45);
 }
 
 /* ---------- stage shell + entrance ---------- */
@@ -8232,7 +8353,7 @@
 .variant-b-voxel .vx-quests li[data-state="active"] {
   border-color: var(--ink);
   color: var(--ink);
-  background: #fffdf6;
+  background: var(--surface);
   box-shadow: 3px 3px 0 var(--ink-10);
 }
 .variant-b-voxel .vx-quests li[data-state="active"] i {
@@ -8451,7 +8572,7 @@
   padding: 12px 78px 12px 14px;
   text-align: left;
   color: var(--ink);
-  background: #fffdf7;
+  background: var(--surface);
   cursor: pointer;
   transition:
     border-color 0.18s ease,
@@ -8464,7 +8585,7 @@
   transform: translate(-2px, -2px);
 }
 .variant-b-voxel .vx-brief-rows small {
-  color: var(--teal-deep);
+  color: var(--teal-text);
   font-family: "Fulcrum Mono", monospace;
   font-size: 10px;
   font-weight: 700;
@@ -8589,7 +8710,7 @@
   padding-top: 9px;
 }
 .variant-b-voxel .vx-spec dt {
-  color: var(--teal-deep);
+  color: var(--teal-text);
   font-family: "Fulcrum Mono", monospace;
   font-size: 10px;
   font-weight: 700;
@@ -8672,7 +8793,7 @@
 }
 .variant-b-voxel .vx-cartridges button[data-active="true"] {
   border-color: var(--ink);
-  background: #fffdf6;
+  background: var(--surface);
   box-shadow: 5px 5px 0 var(--teal);
 }
 .variant-b-voxel .vx-restyle {
@@ -8847,7 +8968,7 @@
   border-radius: 4px;
   padding: 12px 14px;
   width: 100%;
-  background: #fffdf7;
+  background: var(--surface);
   box-shadow: inset 2px 2px 0 rgba(22, 22, 29, 0.05);
   font-family: "Fulcrum Text", sans-serif;
   font-size: 13px;
@@ -8856,7 +8977,7 @@
   resize: none;
 }
 .variant-b-voxel .voxel-concept-host .m1-kicker {
-  color: var(--teal-deep);
+  color: var(--teal-text);
   font-family: "Fulcrum Mono", monospace;
   font-size: 10.5px;
   font-weight: 700;
@@ -8962,7 +9083,7 @@
   border: 2px solid var(--ink-22);
   border-radius: 6px;
   padding: 14px;
-  background: #fffdf7;
+  background: var(--surface);
 }
 .variant-b-voxel .voxel-concept-host .concept-plan-list article i {
   display: grid;
@@ -8982,7 +9103,7 @@
   gap: 4px;
 }
 .variant-b-voxel .voxel-concept-host .concept-plan-list small {
-  color: var(--teal-deep);
+  color: var(--teal-text);
   font-family: "Fulcrum Mono", monospace;
   font-size: 10px;
   font-weight: 700;
@@ -9104,7 +9225,7 @@
 .variant-b-voxel .voxel-concept-host .review-progress button.active {
   border-color: var(--ink);
   color: var(--ink);
-  background: #fffdf6;
+  background: var(--surface);
   box-shadow: 3px 3px 0 var(--teal);
 }
 .variant-b-voxel .voxel-concept-host .review-progress button.active i {
@@ -9200,7 +9321,7 @@
   gap: 6px;
 }
 .variant-b-voxel .voxel-concept-host .control-label {
-  color: var(--teal-deep);
+  color: var(--teal-text);
   font-family: "Fulcrum Mono", monospace;
   font-size: 10.5px;
   font-weight: 700;
@@ -9246,7 +9367,7 @@
   border-radius: 5px;
   padding: 9px 11px;
   color: var(--ink);
-  background: #fffdf7;
+  background: var(--surface);
   cursor: pointer;
   font-family: "Fulcrum Text", sans-serif;
   font-size: 12.5px;
@@ -9271,7 +9392,7 @@
 }
 .variant-b-voxel .voxel-concept-host .full-revision-history button.active {
   border-color: var(--ink);
-  background: #fffdf6;
+  background: var(--surface);
   box-shadow: 3px 3px 0 var(--teal);
 }
 .variant-b-voxel .voxel-concept-host .image-change-request {
@@ -9279,7 +9400,7 @@
   gap: 6px;
 }
 .variant-b-voxel .voxel-concept-host .image-change-request > span {
-  color: var(--teal-deep);
+  color: var(--teal-text);
   font-family: "Fulcrum Mono", monospace;
   font-size: 10.5px;
   font-weight: 700;
@@ -9353,7 +9474,7 @@
 .variant-b-voxel .voxel-concept-host .review-package-link {
   border: 0;
   padding: 0;
-  color: var(--teal-deep);
+  color: var(--teal-text);
   background: none;
   cursor: pointer;
   font-family: "Fulcrum Mono", monospace;
@@ -9395,19 +9516,33 @@
   background: var(--paper-2);
   box-shadow: 5px 5px 0 var(--ink-10);
 }
+/* Concept renders arrive square (768x768) but this row is a wide 1fr, so
+   `cover` scaled them to the card width and ate ~22% off the top and the same
+   off the bottom — the reason subjects arrived decapitated. `contain` mats the
+   plate instead: the frame keeps the card's full width, the art sits centred
+   and whole, and the card's own paper shows through beside it as a mat. The
+   frame is sized off the art rather than the column so the mat is the card
+   colour, not a white slab inside an ink border. */
+/* The frame keeps the cell it was given and the art is matted inside it. Two
+   sharper-looking alternatives were tried and rejected: sizing the frame off
+   the art needs `width: auto`, which grid resolves to the intrinsic 768px and
+   then clamps only the height, so the mat came back anyway; and pinning
+   `aspect-ratio: 1 / 1` made the square win the row and pushed the approve
+   buttons off the bottom of the screen. */
 .variant-b-voxel .voxel-concept-host .package-summary-grid img {
   width: 100%;
   height: 100%;
   border: 2px solid var(--ink);
   border-radius: 4px;
-  object-fit: cover;
+  background: var(--paper-2);
+  object-fit: contain;
 }
 .variant-b-voxel .voxel-concept-host .package-summary-grid span {
   display: grid;
   gap: 3px;
 }
 .variant-b-voxel .voxel-concept-host .package-summary-grid small {
-  color: var(--teal-deep);
+  color: var(--teal-text);
   font-family: "Fulcrum Mono", monospace;
   font-size: 10px;
   font-weight: 700;
@@ -9430,7 +9565,7 @@
   border-radius: 5px;
   padding: 9px;
   color: var(--ink);
-  background: #fffdf7;
+  background: var(--surface);
   cursor: pointer;
   font-family: "Fulcrum Text", sans-serif;
   font-size: 12.5px;
@@ -9485,6 +9620,123 @@
   font-size: 14px;
   line-height: 1.55;
 }
+/* --- blocked card ----------------------------------------------------------
+   The stage's completion grid reserves a 560px right column for the finished
+   world, which the blocked screen never renders — so a 259px card sat 293px
+   left of the stage centre with 1046px of empty grid beside it. Collapse to one
+   column here and centre a 680px card. Declared after the `:has(.concept-
+   complete)` rule above so it wins at equal specificity. */
+.variant-b-voxel .vx-stage-concepts:has(.vx-blocked-card) {
+  grid-template-columns: minmax(0, 1fr);
+}
+.variant-b-voxel .voxel-concept-host:has(.vx-blocked-card) {
+  justify-items: center;
+}
+.variant-b-voxel .voxel-concept-host .vx-blocked-card {
+  justify-self: center;
+  width: min(680px, 100%);
+  border-color: var(--alert);
+  box-shadow: 7px 7px 0 var(--alert-wash);
+}
+/* One axis, not two: the card is centred, so its paragraph is centred too and
+   capped at ~46ch so the lines break in balance instead of orphaning a word
+   against the left edge of a centred block. */
+.variant-b-voxel .voxel-concept-host .vx-blocked-card > * {
+  text-align: center;
+}
+.variant-b-voxel .voxel-concept-host .vx-blocked-card p {
+  max-width: 46ch;
+  color: var(--ink-70);
+}
+.variant-b-voxel .voxel-concept-host .vx-blocked-eyebrow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+.variant-b-voxel .voxel-concept-host .vx-blocked-eyebrow .m1-kicker {
+  color: var(--alert);
+}
+.variant-b-voxel .voxel-concept-host .vx-blocked-eyebrow code {
+  border: 1.5px solid var(--alert);
+  border-radius: 4px;
+  padding: 2px 7px;
+  color: var(--alert);
+  background: var(--alert-wash);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+.variant-b-voxel .voxel-concept-host .blocked-recovery {
+  display: grid;
+  justify-items: center;
+  gap: 16px;
+  width: min(360px, 100%);
+  padding-top: 4px;
+}
+.variant-b-voxel .voxel-concept-host .blocked-recovery .vx-budget-field {
+  justify-items: start;
+  width: 100%;
+  text-align: left;
+}
+.variant-b-voxel .voxel-concept-host .blocked-recovery .vx-budget-field small {
+  max-width: 34ch;
+}
+@media (max-width: 720px) {
+  .variant-b-voxel
+    .voxel-concept-host
+    .concept-complete:has(.blocked-recovery) {
+    box-sizing: border-box;
+    width: calc(100vw - 52px);
+    padding: 28px 20px;
+  }
+  .variant-b-voxel .voxel-concept-host .blocked-recovery,
+  .variant-b-voxel .voxel-concept-host .blocked-recovery .vx-budget-field {
+    width: 100%;
+  }
+  .variant-b-voxel .voxel-concept-host .blocked-recovery .m1-primary {
+    justify-content: center;
+    width: 100%;
+  }
+}
+/* --- continue into M2 ------------------------------------------------------
+   The finale's last line is a door, not a full-width slab: same centred column
+   as the blocked card's recovery, separated from the record above by a rule so
+   the completed package reads as finished and the next milestone as a choice. */
+.variant-b-voxel .voxel-concept-host .vx-continue-m2 {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  width: min(420px, 100%);
+  margin-top: 4px;
+  border-top: 2px solid var(--ink-10);
+  padding-top: 22px;
+}
+.variant-b-voxel .voxel-concept-host .vx-continue-m2 .vx-budget-field {
+  justify-items: start;
+  width: 100%;
+  text-align: left;
+}
+.variant-b-voxel .voxel-concept-host .vx-continue-m2 .vx-budget-field small {
+  max-width: 34ch;
+}
+/* The card centres its text; the note is a 46ch box inside a centred grid, so
+   it needs the alignment said again to stop reading as a left-hung block. */
+.variant-b-voxel .voxel-concept-host .vx-continue-note {
+  text-align: center;
+}
+@media (max-width: 720px) {
+  .variant-b-voxel .voxel-concept-host .vx-continue-m2,
+  .variant-b-voxel .voxel-concept-host .vx-continue-m2 .vx-budget-field {
+    width: 100%;
+  }
+  .variant-b-voxel .voxel-concept-host .vx-continue-m2 .m1-primary {
+    justify-content: center;
+    width: 100%;
+  }
+}
 .variant-b-voxel .voxel-concept-host .complete-lineage {
   border: 2px solid var(--ink);
   border-radius: 5px;
@@ -9509,8 +9761,11 @@
   transform: none;
   backdrop-filter: none;
 }
+/* Sibling of the shell, so the tokens do not cascade here — these literals are
+   --accent-text / --accent-fill by hand. #0d8b81 is 3.93:1 on this cream and
+   the label is 16px, i.e. small text. */
 .variant-b-voxel + .prototype-switcher button {
-  color: #0d8b81;
+  color: #0a6f67;
   font-size: 16px;
 }
 .variant-b-voxel + .prototype-switcher button:hover {
@@ -11774,33 +12029,95 @@ button.rr-card:hover {
  * Scoped under .variant-b-voxel.m1-studio so prototype screens stay put.
  * =================================================================== */
 
+/* Equal flexible side rails, plaque sized to its own content in the middle:
+   with `240px … auto` the plaque was whatever was left over, so its centre
+   swung 155px between M1 (no credits chip) and M2 (378px chip). Both rails are
+   now the same `1fr`, which is what actually centres the plaque.
+   The `max-content` floor is what keeps the M2 credits chip whole: `minmax(0,
+   1fr)` let a wide middle track shrink the right rail to 329px against a 377px
+   session block, so the chip ellipsised to "…/ 100…". The middle track keeps a
+   `0` minimum, so it is the one that yields and nothing overflows the bar. */
 .variant-b-voxel.m1-studio .vx-topbar {
-  grid-template-columns: 240px minmax(0, 1fr) auto;
+  grid-template-columns:
+    minmax(max-content, 1fr)
+    minmax(0, auto)
+    minmax(max-content, 1fr);
 }
-.variant-b-voxel.m1-studio .vx-plaque small {
-  display: block;
-  width: 100%;
-  overflow: hidden;
+/* The name is line one and the meta row line two, both centred; the plaque is
+   the one track allowed to yield, so it can never eat the rails it is centred
+   against. */
+.variant-b-voxel.m1-studio .vx-plaque {
+  gap: 5px;
   max-width: 100%;
-  white-space: nowrap;
-  text-overflow: ellipsis;
 }
-/* The `.vx-plaque small` display:block above outranks any flex layout on
-   this element, so the route label flows as inline spans and the parent's
-   nowrap + ellipsis handle overflow; JSX trims the whitespace between the
-   spans, so the separator spacing has to come from a margin. */
-.variant-b-voxel.m1-studio .vx-route-label > span + span {
-  margin-inline-start: 0.4ch;
+.variant-b-voxel.m1-studio .vx-plaque strong {
+  font-family: "Fulcrum Display", sans-serif;
+  font-size: 17px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
 }
-@media (max-width: 1365px) {
-  .variant-b-voxel.m1-studio .vx-route-implementation {
-    display: none;
+/* The credits chip is the one number in the bar that is money, so the rail
+   holds its full width and the plaque yields around it. */
+.variant-b-voxel.m1-studio .vx-session {
+  flex: none;
+  min-width: max-content;
+}
+.variant-b-voxel.m1-studio .vx-budget {
+  flex: none;
+}
+
+/* --- restoring -------------------------------------------------------------
+   A `project` URL param is a promise the shell cannot keep for 2–29s while the
+   list loads. Rather than assert a wrong state (WORLD SLOT 01 / Untitled world,
+   an empty ladder, a live "Create world" form), the plaque and the rail run as
+   skeleton bars and the stage says only what is true: it is reading. */
+.variant-b-voxel.m1-studio .vx-plaque-skeleton,
+.variant-b-voxel.m1-studio[data-restoring="true"] .vx-slot-copy strong,
+.variant-b-voxel.m1-studio[data-restoring="true"] .vx-slot-copy small {
+  border-radius: 3px;
+  color: transparent;
+  background: rgba(22, 22, 29, 0.11);
+  animation: vx-skeleton 1.6s ease-in-out infinite;
+}
+/* The meta row's stand-in. It has no content to measure, so it is given the
+   height of the status pill and roughly the width of pill + tag + chip — the
+   bar keeps its two-line shape and nothing jumps when the real row lands. */
+.variant-b-voxel.m1-studio .vx-plaque-meta-skeleton {
+  width: 260px;
+  height: 24px;
+  border-radius: 13px;
+}
+.variant-b-voxel.m1-studio[data-restoring="true"] .vx-slot-empty {
+  border-color: var(--ink-10);
+}
+@keyframes vx-skeleton {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
   }
 }
-@media (max-width: 1080px) {
-  .variant-b-voxel.m1-studio .vx-route-label > span:nth-child(3) {
-    display: none;
-  }
+.variant-b-voxel.m1-studio .vx-restoring {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 12px;
+  min-height: calc(100vh - 194px);
+  text-align: center;
+}
+.variant-b-voxel.m1-studio .vx-restoring strong {
+  font-family: "Fulcrum Display", sans-serif;
+  font-size: 26px;
+  font-weight: 400;
+  letter-spacing: -0.015em;
+}
+.variant-b-voxel.m1-studio .vx-restoring p {
+  max-width: 44ch;
+  color: var(--ink-70);
+  font-size: 14px;
+  line-height: 1.55;
 }
 /* The World Forge shell is 100vh / overflow:hidden. Prototype screens each
    own an inner scroller; studio screens did not, so anything taller than the
@@ -11991,10 +12308,44 @@ button.rr-card:hover {
   }
 }
 
+/* The create card carries six jobs — brief, world mode, sound, routing, the
+   rights confirmation and the CTA — inside one 500px column at 14px of padding
+   and a 10px rhythm, which is what "cramped" was: a textarea clipped mid
+   descender, two choice grids running together, and the footnote wrapping into
+   the button. The card gets a wider column (below), real padding, and a
+   two-step rhythm: 18px between the six sections, tighter inside each one. */
+.variant-b-voxel.m1-studio .vx-composer {
+  gap: 15px;
+  padding: 18px;
+}
+.variant-b-voxel.m1-studio .vx-composer-head {
+  padding-bottom: 2px;
+}
+/* Five whole lines of a 14px/1.5 brief — a typical pitch is read without
+   scrolling, and a long one scrolls from a full line rather than the clipped
+   half-line the old 96px box left behind its scrollbar. */
+.variant-b-voxel.m1-studio .vx-composer textarea {
+  height: 135px;
+  padding: 13px 15px;
+}
+/* A labelled pair of cards: the micro-cap says what the choice is about, and
+   the two buttons under it are the answer. */
+.variant-b-voxel.m1-studio .vx-choice-group {
+  display: grid;
+  gap: 8px;
+}
+.variant-b-voxel.m1-studio .vx-choice-label {
+  color: var(--ink);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
 .variant-b-voxel.m1-studio .vx-mode-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  gap: 10px;
 }
 .variant-b-voxel.m1-studio .vx-mode-row button {
   display: grid;
@@ -12004,7 +12355,7 @@ button.rr-card:hover {
   padding: 10px 12px;
   text-align: left;
   color: var(--ink);
-  background: #fffdf7;
+  background: var(--surface);
   cursor: pointer;
 }
 .variant-b-voxel.m1-studio .vx-mode-row button.selected {
@@ -12058,7 +12409,7 @@ button.rr-card:hover {
   border: 2px solid var(--ink-22);
   border-radius: 5px;
   padding: 9px;
-  background: #fffdf7;
+  background: var(--surface);
 }
 .variant-b-voxel.m1-studio .vx-model-routing select {
   min-width: 0;
@@ -12072,10 +12423,6 @@ button.rr-card:hover {
   font-size: 11px;
   font-weight: 700;
 }
-.variant-b-voxel.m1-studio .vx-model-routing select:focus-visible {
-  outline: 2px solid var(--teal);
-  outline-offset: 1px;
-}
 .variant-b-voxel.m1-studio .vx-model-routing select:disabled {
   border-color: var(--ink-22);
   color: var(--ink-45);
@@ -12083,7 +12430,78 @@ button.rr-card:hover {
   cursor: not-allowed;
 }
 .variant-b-voxel.m1-studio .vx-model-routing label > small.ready {
-  color: var(--teal-deep);
+  color: var(--teal-text);
+}
+/* Three fixed thirds of a 485px create column gave each select ~140px, which
+   is narrower than "OpenAI Subscription" — hence "OpenAI Subsc". In the
+   settings sheet the tracks size to the content instead, and a column only
+   appears if it can hold the longest option whole. */
+.variant-b-voxel.m1-studio .vx-model-routing-wide {
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+  align-self: start;
+  border-top: 0;
+  padding-top: 0;
+}
+.variant-b-voxel.m1-studio .vx-model-routing select {
+  text-overflow: ellipsis;
+}
+/* The stub is not one of the three routes; it gets its own full-width row. */
+.variant-b-voxel.m1-studio .vx-model-routing-wide .vx-routing-stub {
+  grid-column: 1 / -1;
+  grid-template-rows: auto auto auto;
+  border-style: dashed;
+}
+.variant-b-voxel.m1-studio .vx-routing-stub select {
+  max-width: 240px;
+}
+/* Both classes, because `.vx-worlds-dialog`'s own width lands later in the
+   sheet and would otherwise win the tie on source order. Three routes fit one
+   row here; the WORLDS list does not need the extra width. */
+.variant-b-voxel.m1-studio .vx-worlds-dialog.vx-settings-dialog {
+  width: min(780px, calc(100vw - 64px));
+}
+.variant-b-voxel.m1-studio .vx-worlds-sheet.vx-settings-sheet {
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 14px;
+}
+.variant-b-voxel.m1-studio .vx-settings-note {
+  margin: 0;
+  max-width: 62ch;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+/* What the create form keeps of routing: the sentence, and the way back in.
+   Two rows, not one — the heading and the button hold the top line and the
+   sentence gets the card's full width underneath, so a three-route summary
+   never wraps into the button's left edge. */
+.variant-b-voxel.m1-studio .vx-routing-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 14px;
+  border-top: 2px solid var(--ink-22);
+  padding-top: 13px;
+}
+.variant-b-voxel.m1-studio .vx-routing-row-title {
+  color: var(--ink);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.variant-b-voxel.m1-studio .vx-routing-row-summary {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 9.5px;
+  line-height: 1.5;
+}
+.variant-b-voxel.m1-studio .vx-routing-row > button {
+  flex: none;
+  justify-self: end;
 }
 .variant-b-voxel.m1-studio .vx-budget-field,
 .variant-b-voxel.m1-studio .vx-rights {
@@ -12114,7 +12532,7 @@ button.rr-card:hover {
   border: 2px solid var(--ink);
   border-radius: 4px;
   padding: 8px 10px;
-  background: #fffdf7;
+  background: var(--surface);
   font-family: "Fulcrum Mono", monospace;
 }
 .variant-b-voxel.m1-studio .vx-budget-field small {
@@ -12133,13 +12551,45 @@ button.rr-card:hover {
   font-weight: 700;
   letter-spacing: 0.03em;
 }
+/* The last three lines of the card, in the order you read them: what the run
+   will cost you, the thing you have to agree to, and the button. */
+.variant-b-voxel.m1-studio .vx-composer-note {
+  display: block;
+  /* the spend rule above it and this caption are one thought, so they close
+     up rather than take a full section gap between them */
+  margin-top: -10px;
+}
+.variant-b-voxel.m1-studio .vx-composer-note small {
+  display: block;
+  max-width: none;
+  color: var(--muted);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+  line-height: 1.5;
+}
+.variant-b-voxel.m1-studio .vx-composer-foot {
+  align-items: center;
+  gap: 18px;
+  border-top: 2px solid var(--ink-22);
+  padding-top: 15px;
+}
+.variant-b-voxel.m1-studio .vx-composer-foot .vx-rights {
+  min-width: 0;
+}
+.variant-b-voxel.m1-studio .vx-composer-foot .vx-primary {
+  flex: none;
+}
 
+/* The list used to be capped at 240px under a full-height world panel, so nine
+   worlds arrived in a 116px scroller with no scrollbar — one card visible, both
+   edges clipped mid-text. The panel now owns the bottom half of its column and
+   the `ul` is the single, visibly-scrolling track inside it. */
 .variant-b-voxel.m1-studio .vx-project-list {
   display: grid;
-  align-content: start;
+  grid-template-rows: auto minmax(0, 1fr);
+  align-content: stretch;
   gap: 12px;
   min-height: 0;
-  max-height: 240px;
   padding: 16px;
   overflow: hidden;
   border: 3px solid var(--ink);
@@ -12147,18 +12597,39 @@ button.rr-card:hover {
   background: var(--paper-2);
   box-shadow: 6px 6px 0 var(--ink-10);
 }
-.variant-b-voxel.m1-studio .vx-project-list ul {
+.variant-b-voxel.m1-studio .vx-project-list ul,
+.variant-b-voxel.m1-studio .vx-worlds-list {
   display: grid;
+  align-content: start;
   gap: 10px;
   margin: 0;
-  padding: 0;
-  overflow: auto;
+  padding: 2px 8px 2px 2px;
+  min-height: 0;
+  overflow-y: auto;
   list-style: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-22) transparent;
 }
-.variant-b-voxel.m1-studio .vx-project-list button {
+.variant-b-voxel.m1-studio .vx-project-list ul::-webkit-scrollbar,
+.variant-b-voxel.m1-studio .vx-worlds-list::-webkit-scrollbar {
+  width: 8px;
+}
+.variant-b-voxel.m1-studio .vx-project-list ul::-webkit-scrollbar-thumb,
+.variant-b-voxel.m1-studio .vx-worlds-list::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 8px;
+  background: var(--ink-22);
+  background-clip: padding-box;
+}
+.variant-b-voxel.m1-studio .vx-project-list button,
+.variant-b-voxel.m1-studio .vx-worlds-list button {
   display: grid;
+  align-content: center;
   gap: 4px;
   width: 100%;
+  /* Uniform card height: one line of title, one of meta, one of spend. Without
+     it the replay entry's three-line brief made card heights swing 83–125px. */
+  min-height: 84px;
   border: 2px solid var(--ink);
   border-radius: 6px;
   padding: 12px 14px;
@@ -12168,12 +12639,22 @@ button.rr-card:hover {
   box-shadow: 4px 4px 0 var(--ink-10);
   cursor: pointer;
 }
-.variant-b-voxel.m1-studio .vx-project-list button:hover {
+.variant-b-voxel.m1-studio .vx-project-list button strong,
+.variant-b-voxel.m1-studio .vx-worlds-list button strong {
+  overflow: hidden;
+  min-width: 0;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.variant-b-voxel.m1-studio .vx-project-list button:hover,
+.variant-b-voxel.m1-studio .vx-worlds-list button:hover {
   transform: translate(-2px, -2px);
   box-shadow: 6px 6px 0 var(--ink-10);
 }
 .variant-b-voxel.m1-studio .vx-project-list small,
-.variant-b-voxel.m1-studio .vx-project-list i {
+.variant-b-voxel.m1-studio .vx-project-list i,
+.variant-b-voxel.m1-studio .vx-worlds-list small,
+.variant-b-voxel.m1-studio .vx-worlds-list i {
   color: var(--muted);
   font-family: "Fulcrum Mono", monospace;
   font-size: 10px;
@@ -12181,12 +12662,130 @@ button.rr-card:hover {
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
+/* The stage line is the one place a card can report failure, so it carries the
+   shell's alert tone rather than the same grey as everything else. */
+.variant-b-voxel.m1-studio .vx-world-card small[data-alert="true"] {
+  color: var(--alert);
+}
+.variant-b-voxel.m1-studio .vx-world-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+.variant-b-voxel.m1-studio .vx-world-card-meta small {
+  overflow: hidden;
+  min-width: 0;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.variant-b-voxel.m1-studio .vx-world-current {
+  flex: none;
+  padding: 2px 7px;
+  border: 2px solid var(--ink);
+  border-radius: 3px;
+  background: var(--teal);
+  color: var(--ink);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.variant-b-voxel.m1-studio .vx-world-card[data-current="true"] {
+  background: var(--paper);
+}
 .variant-b-voxel.m1-studio .vx-empty-worlds {
   display: grid;
+  align-content: start;
   gap: 8px;
   border: 2px dashed var(--ink-22);
   border-radius: 6px;
   padding: 28px 18px;
+}
+
+/* --- worlds overlay --------------------------------------------------------
+   WORLDS used to unmount the loaded project and drop the user on the new-world
+   landing page. It now opens this sheet over the running studio, which stays
+   mounted and visible through the scrim. A native <dialog> is the only way to
+   do that here: the shell's entrance animation creates a stacking context that
+   paints the hotbar over any z-indexed overlay, and the top layer escapes it. */
+.variant-b-voxel.m1-studio .vx-worlds-dialog {
+  position: fixed;
+  inset: 0;
+  /* The shell zeroes margins; restore the top layer's own centring. */
+  margin: auto;
+  display: grid;
+  width: min(620px, calc(100vw - 64px));
+  max-height: min(660px, calc(100vh - 108px));
+  padding: 0;
+  overflow: hidden;
+  border: 3px solid var(--ink);
+  border-radius: 8px;
+  color: var(--ink);
+  background: var(--paper-2);
+  box-shadow: 10px 10px 0 var(--ink-22);
+}
+.variant-b-voxel.m1-studio .vx-worlds-dialog::backdrop {
+  background: rgba(22, 22, 29, 0.42);
+  backdrop-filter: blur(2px);
+}
+/* The sheet covers the dialog edge to edge on purpose: it makes the dialog
+   itself the click target only for the scrim, which is how the scrim closes. */
+.variant-b-voxel.m1-studio .vx-worlds-sheet {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 16px;
+  min-height: 0;
+  padding: 20px 22px 22px;
+}
+.variant-b-voxel.m1-studio .vx-worlds-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  padding-bottom: 16px;
+  border-bottom: 2px solid var(--ink-10);
+}
+.variant-b-voxel.m1-studio .vx-worlds-heading {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+  min-width: 0;
+}
+.variant-b-voxel.m1-studio .vx-worlds-head h2 {
+  font-size: 24px;
+}
+.variant-b-voxel.m1-studio .vx-worlds-actions {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+}
+.variant-b-voxel.m1-studio .vx-worlds-close {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 2px solid var(--ink);
+  border-radius: 5px;
+  color: var(--ink);
+  background: var(--paper-2);
+  box-shadow: 3px 3px 0 var(--ink);
+  font-family: "Fulcrum Text", sans-serif;
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+}
+.variant-b-voxel.m1-studio .vx-worlds-close:hover {
+  transform: translate(-2px, -2px);
+  box-shadow: 5px 5px 0 var(--ink);
+}
+.variant-b-voxel.m1-studio .vx-worlds-sheet .vx-empty-worlds {
+  align-self: start;
 }
 
 .variant-b-voxel.m1-studio .vx-generating {
@@ -12212,7 +12811,7 @@ button.rr-card:hover {
   border: 2px solid var(--ink-22);
   border-radius: 6px;
   padding: 16px;
-  background: #fffdf7;
+  background: var(--surface);
 }
 .variant-b-voxel.m1-studio .vx-frontier-card h2 {
   font-size: 22px;
@@ -12232,7 +12831,7 @@ button.rr-card:hover {
   border: 2px solid var(--ink-22);
   border-radius: 5px;
   padding: 12px 14px;
-  background: #fffdf7;
+  background: var(--surface);
 }
 
 /* Game Design Spec: a full-screen reading layout. No world panel, no Rusty
@@ -12278,7 +12877,7 @@ button.rr-card:hover {
   margin: 0;
 }
 .variant-b-voxel.m1-studio .vx-gds dt {
-  color: var(--teal-deep);
+  color: var(--teal-text);
   font-family: "Fulcrum Mono", monospace;
   font-size: 10.5px;
   font-weight: 700;
@@ -12296,7 +12895,7 @@ button.rr-card:hover {
   gap: 16px;
 }
 .variant-b-voxel.m1-studio .vx-gds-lists small {
-  color: var(--teal-deep);
+  color: var(--teal-text);
   font-family: "Fulcrum Mono", monospace;
   font-size: 10.5px;
   font-weight: 700;
@@ -12350,6 +12949,577 @@ button.rr-card:hover {
   height: calc(100vh - 194px);
   max-height: calc(100vh - 194px);
 }
+
+/* Color & Mood is a rule sheet, not an art gallery. Keep this studio-only so
+   the older prototype direction screen remains available for comparison. */
+.variant-b-voxel.m1-studio .vx-color-mood {
+  grid-template-columns: minmax(0, 1fr) 336px;
+  grid-template-rows: auto auto auto auto;
+  /* The shared-rules section sits under the card in the reading column, and
+     the decision rail spans both rows so it stays stuck to the top while the
+     rules are read. */
+  grid-template-areas:
+    "head head"
+    "options options"
+    "sheet decision"
+    "shared decision";
+  align-content: start;
+  gap: 22px 24px;
+  height: auto;
+  min-height: calc(100vh - 194px);
+  max-height: none;
+}
+.variant-b-voxel.m1-studio .vx-color-mood .vx-direction-head {
+  grid-area: head;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: end;
+  gap: 4px 20px;
+}
+.variant-b-voxel.m1-studio .vx-color-mood .vx-direction-head .vx-kicker {
+  grid-column: 1 / -1;
+}
+.variant-b-voxel.m1-studio .vx-color-mood .vx-direction-head h1 {
+  font-size: clamp(34px, 3vw, 46px);
+  line-height: 0.96;
+}
+.variant-b-voxel.m1-studio .vx-color-mood .vx-direction-head p {
+  max-width: 48ch;
+  padding-bottom: 3px;
+  font-size: 16px;
+  line-height: 1.4;
+}
+.variant-b-voxel.m1-studio .vx-mood-options {
+  grid-area: options;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+/* Hover and selected used to be near-identical (both gained the full ink
+   border; selection added only a teal underline), and the underline made the
+   selected tab 4px taller so the row's top edge stepped as selection moved.
+   Every tab now reserves the underline band and paints it only when selected,
+   and hover is a plainly lighter treatment: paper tint, half-ink border, 1px
+   lift — no ink border, no underline. */
+.variant-b-voxel.m1-studio .vx-mood-options button {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+  overflow: hidden;
+  border: 2px solid var(--ink-22);
+  border-radius: 7px;
+  padding: 14px 16px 18px;
+  text-align: left;
+  color: var(--ink);
+  background: rgba(251, 248, 239, 0.72);
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    background-color 0.16s ease,
+    transform 0.16s ease;
+}
+.variant-b-voxel.m1-studio .vx-mood-options button::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  background: transparent;
+}
+.variant-b-voxel.m1-studio .vx-mood-options button:hover {
+  border-color: rgba(22, 22, 29, 0.42);
+  background: var(--surface);
+  transform: translateY(-1px);
+}
+.variant-b-voxel.m1-studio .vx-mood-options button[data-active="true"] {
+  border-color: var(--ink);
+  background: var(--paper-2);
+  transform: none;
+}
+.variant-b-voxel.m1-studio .vx-mood-options button[data-active="true"]::after {
+  background: var(--teal);
+}
+.variant-b-voxel.m1-studio .vx-mood-options button > span:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.variant-b-voxel.m1-studio .vx-mood-options small,
+.variant-b-voxel.m1-studio .vx-mood-sheet-head small,
+.variant-b-voxel.m1-studio .vx-mood-pillars small,
+.variant-b-voxel.m1-studio .vx-mood-decision header small {
+  color: var(--teal-text);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.variant-b-voxel.m1-studio .vx-mood-options strong {
+  overflow: hidden;
+  font-size: 16px;
+  line-height: 1.2;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.variant-b-voxel.m1-studio .vx-mood-option-swatches {
+  display: flex;
+  overflow: hidden;
+  width: 104px;
+  height: 30px;
+  border: 2px solid var(--ink);
+  border-radius: 4px;
+}
+.variant-b-voxel.m1-studio .vx-mood-option-swatches i {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.variant-b-voxel.m1-studio .vx-mood-sheet {
+  grid-area: sheet;
+  display: grid;
+  align-content: start;
+  gap: 28px;
+  min-width: 0;
+  border: 3px solid var(--ink);
+  border-radius: 9px;
+  padding: clamp(22px, 2vw, 32px);
+  background: var(--paper-2);
+  box-shadow: 7px 7px 0 var(--ink-10);
+}
+.variant-b-voxel.m1-studio .vx-mood-sheet-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 18px;
+}
+.variant-b-voxel.m1-studio .vx-mood-sheet-head > div {
+  display: grid;
+  gap: 5px;
+}
+.variant-b-voxel.m1-studio .vx-mood-sheet-head h2 {
+  font-size: clamp(30px, 2.3vw, 40px);
+  line-height: 1;
+}
+.variant-b-voxel.m1-studio .vx-mood-sheet-head p {
+  max-width: 72ch;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.55;
+}
+.variant-b-voxel.m1-studio .vx-mood-palette {
+  display: grid;
+  gap: 12px;
+}
+.variant-b-voxel.m1-studio .vx-mood-palette > header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.variant-b-voxel.m1-studio .vx-mood-palette h3,
+.variant-b-voxel.m1-studio .vx-mood-guardrails h3 {
+  font-size: 18px;
+  line-height: 1.2;
+}
+.variant-b-voxel.m1-studio .vx-mood-palette header p {
+  color: var(--muted);
+  font-size: 13px;
+}
+/* Swatch width is the encoding: each item's flex-grow comes from the role the
+   model gave the colour, so "primary mass" occupies the frame and "gameplay
+   focus" is a sliver. min-width keeps the caption legible and lets the row
+   wrap instead of crushing on a narrow stage. */
+.variant-b-voxel.m1-studio .vx-mood-palette ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.variant-b-voxel.m1-studio .vx-mood-palette li {
+  display: grid;
+  flex: 1 1 0;
+  gap: 9px;
+  min-width: 116px;
+}
+.variant-b-voxel.m1-studio .vx-mood-palette li > i {
+  display: block;
+  height: 96px;
+  border: 2px solid var(--ink);
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
+}
+.variant-b-voxel.m1-studio .vx-mood-palette li > span {
+  display: grid;
+  gap: 2px;
+}
+.variant-b-voxel.m1-studio .vx-mood-palette li strong {
+  font-size: 14px;
+}
+/* The role wraps rather than truncates: an accent swatch is deliberately
+   narrow now, and "gameplay focus" clipped to "gameplay…" would lose the one
+   word the caption exists for. */
+.variant-b-voxel.m1-studio .vx-mood-palette li .vx-swatch-role {
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.variant-b-voxel.m1-studio .vx-mood-palette li small {
+  overflow: hidden;
+  color: var(--muted);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+  line-height: 1.35;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.variant-b-voxel.m1-studio .vx-mood-pillars {
+  display: grid;
+  /* auto-fit, because either pillar can move to the shared block when all
+     three directions describe it identically. */
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  border-top: 2px solid var(--ink);
+  border-bottom: 2px solid var(--ink);
+}
+/* Lighting and atmosphere are the two fields you cannot picture from a
+   sentence, so each carries a ramp mixed from this direction's own palette:
+   lighting shadow → key, atmosphere the same colours pushed into haze. */
+.variant-b-voxel.m1-studio .vx-mood-strip {
+  display: block;
+  height: 44px;
+  border: 2px solid var(--ink);
+  border-radius: 5px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
+}
+.variant-b-voxel.m1-studio .vx-mood-pillars section {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding: 20px 24px 20px 0;
+}
+.variant-b-voxel.m1-studio .vx-mood-pillars section + section {
+  border-left: 2px solid var(--ink-10);
+  padding-right: 0;
+  padding-left: 24px;
+}
+/* Caption under the ramp, not the headline it used to be. */
+.variant-b-voxel.m1-studio .vx-mood-pillars p {
+  font-size: 15.5px;
+  line-height: 1.45;
+}
+.variant-b-voxel.m1-studio .vx-mood-rules {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 28px;
+  margin: 0;
+}
+.variant-b-voxel.m1-studio .vx-mood-rules > div {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  border-top: 2px solid var(--ink-10);
+  padding: 14px 0 16px;
+}
+.variant-b-voxel.m1-studio .vx-mood-rules dt {
+  color: var(--teal-text);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.variant-b-voxel.m1-studio .vx-mood-rules dd {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+}
+/* Materials and shape language carry a mark, so they take the full width of
+   the two-column rule grid. */
+.variant-b-voxel.m1-studio .vx-mood-rules > div.vx-mood-wide {
+  grid-column: 1 / -1;
+}
+/* Materials were a comma list. One chip per material, washed with the palette
+   colour it maps to — same chip geometry as the pins in the decision rail. */
+.variant-b-voxel.m1-studio .vx-mood-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.variant-b-voxel.m1-studio .vx-mood-chips li {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  border: 2px solid var(--ink-22);
+  border-radius: 5px;
+  padding: 0 11px;
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+/* Shape language as a diagram: three forms on one ground line, wearing the
+   palette in coverage order. The sentence stays as the caption. */
+.variant-b-voxel.m1-studio .vx-mood-shape {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+}
+.variant-b-voxel.m1-studio .vx-mood-shapes {
+  width: 202px;
+  max-width: 100%;
+  height: 104px;
+  margin-top: 4px;
+  overflow: visible;
+}
+.variant-b-voxel.m1-studio .vx-mood-shapes path {
+  stroke: var(--ink);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+.variant-b-voxel.m1-studio .vx-mood-shapes .vx-mood-ground {
+  stroke: var(--ink-22);
+  stroke-width: 2;
+}
+.variant-b-voxel.m1-studio .vx-mood-guardrails {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 28px;
+  border-top: 2px solid var(--ink);
+  padding-top: 20px;
+}
+.variant-b-voxel.m1-studio .vx-mood-guardrails section {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+.variant-b-voxel.m1-studio .vx-mood-guardrails ul {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding-left: 18px;
+}
+.variant-b-voxel.m1-studio .vx-mood-guardrails li,
+.variant-b-voxel.m1-studio .vx-mood-guardrails p {
+  color: var(--ink-70);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+/* --- rules every direction shares -----------------------------------------
+   Constant text used to be repeated inside each tab, so two of the three
+   screenfuls behind a tab were identical. It lives here instead: same
+   vocabulary as the card, one weight down — flat paper, thinner border, no
+   offset shadow — so it reads as the footnote to the choice above it. */
+.variant-b-voxel.m1-studio .vx-mood-shared {
+  grid-area: shared;
+  display: grid;
+  align-content: start;
+  gap: 20px;
+  min-width: 0;
+  border: 2px solid var(--ink);
+  border-radius: 9px;
+  padding: clamp(20px, 1.8vw, 28px);
+  background: rgba(229, 223, 205, 0.45);
+}
+.variant-b-voxel.m1-studio .vx-mood-shared > header {
+  display: grid;
+  gap: 6px;
+}
+.variant-b-voxel.m1-studio .vx-mood-shared h2 {
+  font-size: 22px;
+  line-height: 1.15;
+}
+.variant-b-voxel.m1-studio .vx-mood-shared > header p {
+  max-width: 72ch;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.variant-b-voxel.m1-studio .vx-mood-shared .vx-mood-guardrails {
+  border-top-color: var(--ink-22);
+  padding-top: 18px;
+}
+.variant-b-voxel.m1-studio .vx-mood-shared .vx-mood-rules > div {
+  border-top-color: var(--ink-22);
+}
+/* Sticky and self-scrolling: the card is pinned to the top of the stage, so a
+   revealed panel taller than the viewport would otherwise be unreachable — its
+   own scroller is also what `scrollIntoView` walks up to when a panel opens. */
+.variant-b-voxel.m1-studio .vx-mood-decision {
+  position: sticky;
+  top: 0;
+  grid-area: decision;
+  display: grid;
+  /* The rail spans the card row and the shared-rules row; hold it to its own
+     content height so sticky has somewhere to travel. */
+  align-self: start;
+  align-content: start;
+  gap: 18px;
+  min-width: 0;
+  max-height: calc(100vh - 194px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  padding: 22px;
+  background: rgba(251, 248, 239, 0.92);
+  box-shadow: 5px 5px 0 var(--ink-10);
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-22) transparent;
+}
+.variant-b-voxel.m1-studio .vx-mood-decision > header {
+  display: grid;
+  gap: 4px;
+  border-bottom: 2px solid var(--ink-10);
+  padding-bottom: 16px;
+}
+.variant-b-voxel.m1-studio .vx-mood-decision header strong {
+  font-size: 20px;
+  line-height: 1.25;
+}
+.variant-b-voxel.m1-studio .vx-mood-decision .vx-answer textarea {
+  min-height: 120px;
+  /* The system's border is solid ink. At --ink-22 this field read as disabled
+     next to the buttons stacked above it. */
+  border-color: var(--ink);
+  font-size: 14px;
+  line-height: 1.45;
+}
+.variant-b-voxel.m1-studio .vx-mood-actions {
+  display: grid;
+  gap: 9px;
+}
+/* --- revealed decision panel ----------------------------------------------
+   Opening change/replace used to render above the buttons, moving "Use these
+   rules" 292px down and pushing Reject off a 830px viewport. The panel now
+   lives below the stack, so nothing above it ever moves. */
+.variant-b-voxel.m1-studio .vx-mood-panel {
+  display: grid;
+  gap: 12px;
+  border-top: 2px solid var(--ink-10);
+  padding-top: 18px;
+}
+/* One eyebrow treatment per card: "FOCUSED CHANGE" was grey 12px under a teal
+   "DECISION". */
+.variant-b-voxel.m1-studio .vx-mood-panel .vx-answer > span {
+  color: var(--teal-text);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+}
+/* Pins as selectable chips in one flowing row — no two-column grid to orphan
+   "Pin atmosphere", no native OS checkbox in a hard-bordered shell. */
+.variant-b-voxel.m1-studio .vx-mood-decision .vx-pins {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.variant-b-voxel.m1-studio .vx-pins label {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  border: 2px solid var(--ink-22);
+  border-radius: 5px;
+  padding: 0 11px;
+  color: var(--ink-70);
+  background: rgba(251, 248, 239, 0.72);
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    border-color 0.14s ease,
+    background-color 0.14s ease;
+}
+.variant-b-voxel.m1-studio .vx-pins label:hover {
+  border-color: var(--ink);
+  background: var(--surface);
+}
+.variant-b-voxel.m1-studio .vx-pins label[data-pinned="true"] {
+  border-color: var(--ink);
+  color: var(--ink);
+  background: var(--paper-2);
+  box-shadow: 2px 2px 0 var(--ink-10);
+}
+.variant-b-voxel.m1-studio .vx-pins label input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.variant-b-voxel.m1-studio .vx-pins label i {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--ink);
+  border-radius: 3px;
+  background: var(--surface);
+}
+.variant-b-voxel.m1-studio .vx-pins label[data-pinned="true"] i {
+  background: var(--teal);
+}
+.variant-b-voxel.m1-studio .vx-pins label[data-pinned="true"] i::after {
+  content: "";
+  width: 4px;
+  height: 8px;
+  border: solid var(--ink);
+  border-width: 0 2px 2px 0;
+  transform: translateY(-1px) rotate(45deg);
+}
+.variant-b-voxel.m1-studio:has(.vx-color-mood)
+  .vx-mascot[data-screen="direction"] {
+  display: none;
+}
+@media (max-width: 1180px) {
+  .variant-b-voxel.m1-studio .vx-color-mood {
+    grid-template-columns: minmax(0, 1fr) 300px;
+  }
+  .variant-b-voxel.m1-studio .vx-mood-option-swatches {
+    width: 76px;
+  }
+}
+@media (max-width: 900px) {
+  .variant-b-voxel.m1-studio .vx-color-mood {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "head"
+      "options"
+      "sheet"
+      "decision"
+      "shared";
+  }
+  .variant-b-voxel.m1-studio .vx-mood-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .variant-b-voxel.m1-studio .vx-mood-decision {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+}
+@media (max-width: 620px) {
+  .variant-b-voxel.m1-studio .vx-color-mood .vx-direction-head,
+  .variant-b-voxel.m1-studio .vx-mood-sheet-head,
+  .variant-b-voxel.m1-studio .vx-mood-pillars,
+  .variant-b-voxel.m1-studio .vx-mood-rules,
+  .variant-b-voxel.m1-studio .vx-mood-guardrails {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .variant-b-voxel.m1-studio .vx-mood-pillars section + section {
+    border-top: 2px solid var(--ink-10);
+    border-left: 0;
+    padding-left: 0;
+  }
+}
 .variant-b-voxel.m1-studio .voxel-concept-host .concept-plan-list,
 .variant-b-voxel.m1-studio .voxel-concept-host .package-summary-grid {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -12400,7 +13570,8 @@ button.rr-card:hover {
    Studio screens dock him to a scene wherever one exists:
    - interrogation → the build log's capture window (data-mascot-frame on
      .vx-rail-world), scaled to the diorama's own block unit;
-   - visual-direction → the "your world in …" shelf (.vx-restyle);
+   - visual-direction → hidden on Color & Mood because that screen has no
+     literal-world preview to dock to;
    - complete → the finished world (.vx-finale), where he plants the flag;
    - concept-plan / sound-plan / package / sound-review → a .vx-mascot-perch
      box hung in the card's header band, so he sits with the card at every
@@ -12433,23 +13604,75 @@ button.rr-card:hover {
     --vx-gutter: max(26px, calc((100vw - 1640px) / 2));
   }
 }
+/* The create column is the studio's densest card and the prototype's is a
+   pitch box with three controls in it, so the studio buys the card width the
+   prototype does not need. Each step keeps the diorama column wider than the
+   board it draws (7 units at --u 64/78/90 ≈ 450/550/635px), so widening the
+   form never crowds the world panel. */
 .variant-b-voxel.m1-studio .vx-start {
   align-items: start;
+  grid-template-columns: minmax(0, 552px) minmax(0, 1fr);
+}
+@media (min-width: 1500px) {
+  .variant-b-voxel.m1-studio .vx-start {
+    grid-template-columns: minmax(0, 580px) minmax(0, 1fr);
+  }
+}
+@media (min-width: 1800px) {
+  .variant-b-voxel.m1-studio .vx-start {
+    grid-template-columns: minmax(0, 620px) minmax(0, 1fr);
+  }
+}
+@media (max-width: 1180px) {
+  .variant-b-voxel.m1-studio .vx-start {
+    grid-template-columns: minmax(0, 470px) minmax(0, 1fr);
+  }
+}
+@media (max-width: 980px) {
+  .variant-b-voxel.m1-studio .vx-start {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 .variant-b-voxel.m1-studio .vx-start-copy {
   align-content: center;
   min-width: 0;
   min-height: calc(100vh - 194px);
 }
+/* The world panel used to take the whole right column, pushing the world list
+   ~600px below the fold. Split the column: the diorama keeps a generous fixed
+   band, the list takes the rest and scrolls. --vx-home-world-h is declared on
+   the shell so Rusty's dock below can stay tied to the same number. */
 .variant-b-voxel.m1-studio .vx-home-side {
   display: grid;
-  grid-template-rows: auto auto;
-  align-content: start;
+  grid-template-rows: var(--vx-home-world-h) minmax(0, 1fr);
+  align-content: stretch;
   gap: 14px;
   min-width: 0;
   min-height: 0;
+  height: calc(100vh - 194px);
 }
-.variant-b-voxel.m1-studio .vx-home-side .vx-start-world,
+.variant-b-voxel.m1-studio .vx-home-side .vx-start-world {
+  min-height: 0;
+  height: auto;
+}
+/* …and because the band is short, the shared unit ramp (64/78/90px, tuned for
+   the prototype's full-height panel) filled it corner to corner: the slab's
+   front point sat a few pixels off the frame. The home board is a vignette, so
+   the studio takes the ramp down ~16% and keeps paper on every side. Only the
+   home board moves — every other diorama still reads off the shared rule. */
+.variant-b-voxel.m1-studio .vx-home-side .vx-start-world .vx-world {
+  --u: 54px;
+}
+@media (min-width: 1500px) {
+  .variant-b-voxel.m1-studio .vx-home-side .vx-start-world .vx-world {
+    --u: 66px;
+  }
+}
+@media (min-width: 1800px) {
+  .variant-b-voxel.m1-studio .vx-home-side .vx-start-world .vx-world {
+    --u: 76px;
+  }
+}
 .variant-b-voxel.m1-studio .vx-signoff-world {
   height: calc(100vh - 194px);
   min-height: calc(100vh - 194px);
@@ -12457,11 +13680,17 @@ button.rr-card:hover {
 /* Home: the big workshop composed over the world panel, exactly the pitch
    composition — restated stage-relative (heights are % of the stage box, which
    is ~84% of the viewport, hence 55% ≈ the prototype's 46%). */
+/* Rusty stands in the diorama band, which no longer runs to the bottom of the
+   stage — the world list does. Hold him against the band's own floor. */
+/* The 186px used to leave his box hanging 14px past the panel's floor, which
+   was invisible while the workshop was centred in it. It is not invisible now
+   that the workshop is parked against the box's own bottom-right corner — that
+   corner has to *be* the panel's corner — so the box closes onto the floor. */
 .variant-b-voxel.m1-studio .vx-mascot[data-screen="start"] {
   right: calc(var(--vx-gutter) + 6px);
-  bottom: 8px;
-  width: min(36vw, 560px);
-  height: min(55%, 452px);
+  bottom: calc(100vh - 172px - var(--vx-home-world-h));
+  width: min(30vw, 460px);
+  height: calc(var(--vx-home-world-h) * 0.7);
 }
 /* Sign-off / game-design: composed over the left world panel. */
 .variant-b-voxel.m1-studio .vx-mascot[data-screen="signoff"] {
@@ -12557,8 +13786,10 @@ button.rr-card:hover {
 }
 
 @media (max-width: 1599px) {
-  .variant-b-voxel.m1-studio .vx-project-list {
-    max-height: 180px;
+  /* Shorter viewport, shorter diorama — the list keeps whatever is left rather
+     than being clipped to a fixed 180px. */
+  .variant-b-voxel.m1-studio {
+    --vx-home-world-h: clamp(200px, 40vh, 340px);
   }
   .variant-b-voxel.m1-studio .vx-mascot[data-screen="question"] {
     width: min(16vw, 200px);
@@ -12648,9 +13879,8 @@ button.rr-card:hover {
   overflow-wrap: anywhere;
   word-break: break-word;
 }
+/* Border darken only; the ring comes from the shell's one :focus-visible rule. */
 .variant-b-voxel.m1-studio .voxel-concept-host .slot-prompt textarea:focus {
-  outline: 2px solid var(--teal);
-  outline-offset: 1px;
   border-color: var(--ink);
 }
 .variant-b-voxel.m1-studio .voxel-concept-host .slot-prompt-reset {
@@ -12675,11 +13905,11 @@ button.rr-card:hover {
   border: 2px solid var(--ink-22);
   border-radius: 5px;
   padding: 8px 10px;
-  background: #fffdf7;
+  background: var(--surface);
 }
 .variant-b-voxel.m1-studio .voxel-concept-host .exact-prompt-sent summary {
   cursor: pointer;
-  color: var(--teal-deep);
+  color: var(--teal-text);
   font-family: "Fulcrum Mono", monospace;
   font-size: 10.5px;
   font-weight: 700;
@@ -12714,18 +13944,37 @@ button.rr-card:hover {
 }
 
 /* Task M — sound palette stage. Studio-only; prototype screens stay untouched. */
+/* The rail divides the full width equally, so at 2560 each tile inflated to
+   ~500px around ~130px of content. Cap the tile and centre the group instead:
+   past ~1750px the rail becomes a centred band rather than five stretched
+   text-input lookalikes. */
 .variant-b-voxel.m1-studio .vx-hotbar {
-  gap: 6px;
+  justify-content: center;
+  gap: 8px;
   padding: 0 16px;
 }
 .variant-b-voxel.m1-studio .vx-slot {
+  align-content: center;
   width: 132px;
   min-width: 108px;
+  max-width: 340px;
   flex: 1 1 0;
-  padding: 0 8px 0 2px;
+  padding: 0 10px 0 4px;
 }
+.variant-b-voxel.m1-studio .vx-slot-item {
+  align-self: center;
+  height: auto;
+}
+.variant-b-voxel.m1-studio .vx-slot[data-stage="style"] .vx-slot-copy strong {
+  font-size: 10px;
+  line-height: 1.05;
+  letter-spacing: 0.06em;
+  white-space: normal;
+}
+/* The sound pair used to hang 8px under the mode pair as the only thing
+   separating them; it has its own labelled group now. */
 .variant-b-voxel.m1-studio .vx-sound-provider-row {
-  margin-top: 8px;
+  margin-top: 0;
 }
 .variant-b-voxel.m1-studio .voxel-concept-host:has(.sound-plan-review),
 .variant-b-voxel.m1-studio .voxel-concept-host:has(.sound-playback-review) {
@@ -12767,7 +14016,7 @@ button.rr-card:hover {
 }
 .variant-b-voxel.m1-studio .sound-playback-review > header .m1-kicker,
 .variant-b-voxel.m1-studio .sound-plan-review > header .m1-kicker {
-  color: var(--teal-deep);
+  color: var(--teal-text);
 }
 .variant-b-voxel.m1-studio .sound-playback-review > header h1 {
   margin: 4px 0 6px;
@@ -12798,10 +14047,10 @@ button.rr-card:hover {
   border: 2px solid var(--ink-22);
   border-radius: 6px;
   padding: 10px 12px;
-  background: #fffdf7;
+  background: var(--surface);
 }
 .variant-b-voxel.m1-studio .sound-playback-list article i {
-  color: var(--teal-deep);
+  color: var(--teal-text);
   font-family: "Fulcrum Mono", monospace;
   font-size: 13px;
   font-weight: 700;
@@ -12917,8 +14166,8 @@ button.rr-card:hover {
   border: 2px solid var(--ink-22);
   border-radius: 5px;
   padding: 7px 12px;
-  color: var(--teal-deep);
-  background: #fffdf7;
+  color: var(--teal-text);
+  background: var(--surface);
   font-family: "Fulcrum Mono", monospace;
   font-size: 17px;
   font-weight: 700;
@@ -12968,4 +14217,1016 @@ button.rr-card:hover {
 }
 .variant-b-voxel.m1-studio .vx-rail-world .vx-scene {
   top: calc(10px + 3.8 * var(--u));
+}
+
+/* ============================================================================
+   STUDIO TOPBAR — the plaque's meta row
+   ----------------------------------------------------------------------------
+   Status pill, LIVE/REPLAY tag and route chip, which together replaced the
+   routing strip that used to outrank the world's name (#11), hide the status as
+   a raw lowercase enum (#11), and truncate the spend-relevant route mid-word
+   from 1440 down (#22).
+   ========================================================================== */
+
+/* ---------- the status pill ----------
+   One pill, three tones: teal is the forge working, amber is the forge waiting
+   on you, alert red is a stop. The tone word ("NEEDS YOU") is a separate <em>
+   so the compact direction can drop it and keep the same component. */
+.variant-b-voxel.m1-studio .vx-status-pill {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 7px;
+  min-height: 24px;
+  padding: 0 11px 0 9px;
+  border: 2px solid var(--tone-ink, var(--teal-text));
+  border-radius: 13px;
+  color: var(--tone-ink, var(--teal-text));
+  background: var(--tone-wash, rgba(10, 111, 103, 0.09));
+  white-space: nowrap;
+}
+.variant-b-voxel.m1-studio .vx-status-pill[data-tone="running"] {
+  --tone-ink: var(--teal-text);
+  --tone-wash: rgba(10, 111, 103, 0.09);
+}
+.variant-b-voxel.m1-studio .vx-status-pill[data-tone="attention"] {
+  --tone-ink: var(--attention);
+  --tone-wash: var(--attention-wash);
+}
+.variant-b-voxel.m1-studio .vx-status-pill[data-tone="blocked"] {
+  --tone-ink: var(--alert);
+  --tone-wash: var(--alert-wash);
+}
+.variant-b-voxel.m1-studio .vx-status-pill[data-tone="done"] {
+  --tone-ink: var(--ink-70);
+  --tone-wash: rgba(22, 22, 29, 0.06);
+}
+.variant-b-voxel.m1-studio .vx-status-pill i {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--tone-ink);
+}
+/* Only a live run pulses. A pill that breathes while the forge is blocked or
+   waiting on the user is a lie told 20 times a minute. */
+.variant-b-voxel.m1-studio .vx-status-pill[data-tone="running"] i {
+  animation: vx-pulse 3s ease-in-out infinite;
+}
+.variant-b-voxel.m1-studio .vx-status-pill em {
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 9.5px;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.variant-b-voxel.m1-studio .vx-status-pill b {
+  font-family: "Fulcrum Text", sans-serif;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+/* ---------- LIVE / REPLAY ----------
+   Kept because it is the one field in the old strip that changes what a click
+   costs. Everything else about the run's plumbing moved into the chip. */
+.variant-b-voxel.m1-studio .vx-mode-tag {
+  flex: none;
+  color: var(--muted);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.19em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* ---------- the route chip ----------
+   Three routes collapse to one vendor when they agree; when they disagree the
+   vendors go inline in priority order (image, orchestrator, implementation).
+   The chip is `flex: none` and `nowrap` at every size — it shortens by dropping
+   whole words, never by ellipsising one. */
+.variant-b-voxel.m1-studio .vx-route-chip {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+}
+.variant-b-voxel.m1-studio .vx-route-chip-face {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 0 9px;
+  border: 2px solid var(--ink-22);
+  border-radius: 4px;
+  color: var(--teal-text);
+  background: transparent;
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    background 0.16s ease;
+}
+.variant-b-voxel.m1-studio .vx-route-chip-face:hover,
+.variant-b-voxel.m1-studio .vx-route-chip:focus-within .vx-route-chip-face {
+  border-color: var(--ink);
+  background: var(--paper-2);
+}
+.variant-b-voxel.m1-studio .vx-route-chip-face b {
+  font-weight: 700;
+}
+.variant-b-voxel.m1-studio .vx-route-chip-detail::before,
+.variant-b-voxel.m1-studio .vx-route-chip-part + .vx-route-chip-part::before {
+  margin-right: 6px;
+  content: "·";
+  color: var(--ink-22);
+}
+.variant-b-voxel.m1-studio .vx-route-chip-detail {
+  color: var(--muted);
+  font-weight: 600;
+}
+.variant-b-voxel.m1-studio .vx-route-chip-part em {
+  margin-right: 5px;
+  color: var(--muted);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 700;
+}
+/* The caret: a marker that there is more, drawn rather than typed so it keeps
+   the mono rhythm instead of inheriting a glyph's baseline. */
+.variant-b-voxel.m1-studio .vx-route-chip-face i {
+  width: 0;
+  height: 0;
+  flex: none;
+  border-top: 4px solid currentColor;
+  border-right: 3.5px solid transparent;
+  border-left: 3.5px solid transparent;
+  opacity: 0.55;
+}
+.variant-b-voxel.m1-studio .vx-route-pop {
+  position: absolute;
+  z-index: 8;
+  top: calc(100% + 9px);
+  /* Centred on the chip, because the chip itself is centred in the plaque —
+     right-anchoring it here hung the card off the middle of the bar. */
+  left: 50%;
+  display: grid;
+  gap: 8px;
+  /* Wide enough for the longest label ("IMPLEMENTATION", ~97px of 9.5px mono
+     at 0.14em) beside the longest value ("OpenAI API (GPT Image 2)", ~155px)
+     without either wrapping. An 84px label column collided the two. */
+  min-width: 306px;
+  padding: 12px 14px 13px;
+  border: 2px solid var(--ink);
+  border-radius: 6px;
+  background: var(--paper-2);
+  box-shadow: 5px 5px 0 var(--ink-10);
+  opacity: 0;
+  visibility: hidden;
+  translate: -50% -4px;
+  transition:
+    opacity 0.16s ease,
+    translate 0.16s ease,
+    visibility 0s linear 0.16s;
+  pointer-events: none;
+}
+.variant-b-voxel.m1-studio .vx-route-chip:hover .vx-route-pop,
+.variant-b-voxel.m1-studio .vx-route-chip:focus-within .vx-route-pop {
+  opacity: 1;
+  visibility: visible;
+  translate: -50% 0;
+  transition-delay: 0s;
+}
+.variant-b-voxel.m1-studio .vx-route-pop small {
+  color: var(--teal-text);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.19em;
+  text-transform: uppercase;
+}
+/* The label column measures itself, and it is the <dl> that measures it. A
+   fixed 84px track could not know the last row's label is 65% longer than the
+   first's, so "IMPLEMENTATION" ran into its own value; a per-row track would
+   fix the collision but start the three values at three different x positions.
+   `display: contents` on the row wrappers puts all six cells in one grid, so a
+   single self-sizing column serves every row. */
+.variant-b-voxel.m1-studio .vx-route-pop dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 14px;
+  row-gap: 8px;
+  margin: 0;
+}
+.variant-b-voxel.m1-studio .vx-route-pop dl > div {
+  display: contents;
+}
+.variant-b-voxel.m1-studio .vx-route-pop dt {
+  margin: 0;
+  color: var(--muted);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+/* One route, one line. The popover is shrink-to-fit above its 306px floor, so
+   a value that needs more room widens the card instead of folding onto a
+   second line under its own label. */
+.variant-b-voxel.m1-studio .vx-route-pop dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+@media (prefers-reduced-motion: reduce) {
+  .variant-b-voxel.m1-studio .vx-route-pop {
+    transition-duration: 0.01s;
+  }
+  .variant-b-voxel.m1-studio .vx-status-pill i {
+    animation: none;
+  }
+}
+
+/* ---------- what must never be cut ----------
+   Width relief, in the review's priority order and by dropping whole words:
+   the chip's trailing "all routes" goes first, then the pill's tone word. The
+   vendor, the status label and the credits never shorten. */
+@media (max-width: 1500px) {
+  .variant-b-voxel.m1-studio .vx-route-chip-detail {
+    display: none;
+  }
+}
+@media (max-width: 1400px) {
+  .variant-b-voxel.m1-studio .vx-status-pill em {
+    display: none;
+  }
+}
+
+/* ---------- the meta row ---------- */
+.variant-b-voxel.m1-studio .vx-plaque-meta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: nowrap;
+  gap: 10px;
+  max-width: 100%;
+}
+
+/* ==========================================================================
+   THE SPEND METER
+   --------------------------------------------------------------------------
+   A cap drawn instead of spelled. The header used to carry
+   "MESHY 20 USED + 20 RESERVED / 100 CREDITS" — nine tokens of mono caps that
+   had to be read and subtracted before they answered the only live question,
+   and wide enough that the plaque had to yield around it.
+
+   Three runs on one track: solid is billed, hatched is reserved but not yet
+   spent, the rest is yours. One number in words — what is left — because that
+   is the number a decision is made on. The full accounting rides in the
+   `aria-label` on the `role="img"` wrapper, so nothing is lost to a reader
+   that cannot see the track.
+
+   Widths are fixed, not fluid: 132px of track in the header and 120px on a
+   world card, `flex: none` and `white-space: nowrap` throughout, so the
+   header's right rail measures the same from 1366 to 2560 and the plaque
+   never has to reflow around a number that grew a digit.
+   ========================================================================== */
+.variant-b-voxel.m1-studio .vx-meter-bar {
+  --meter-ink: var(--ink);
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  /* Grid blockifies an inline-flex child and stretches it, which would leave
+     the label marooned at the far end of a world card. */
+  justify-self: start;
+  gap: 9px;
+  white-space: nowrap;
+}
+/* Committed past three quarters of the cap, then past nine tenths: the same
+   two steps and the same two tokens the status pill uses. */
+.variant-b-voxel.m1-studio .vx-meter-bar[data-tone="attention"] {
+  --meter-ink: var(--attention);
+}
+.variant-b-voxel.m1-studio .vx-meter-bar[data-tone="alert"] {
+  --meter-ink: var(--alert);
+}
+.variant-b-voxel.m1-studio .vx-meter-track {
+  position: relative;
+  display: flex;
+  overflow: hidden;
+  flex: none;
+  width: 132px;
+  height: 10px;
+  border: 2px solid var(--ink);
+  border-radius: 3px;
+  background: var(--paper-3, rgba(22, 22, 29, 0.05));
+}
+.variant-b-voxel.m1-studio .vx-meter-bar[data-compact="false"] .vx-meter-track {
+  width: 120px;
+}
+/* Billed. Solid ink at rest so the meter reads as a mark and not as a status
+   light; it takes the tone only once the cap is close. */
+.variant-b-voxel.m1-studio .vx-meter-used {
+  height: 100%;
+  background: var(--meter-ink);
+  transition: width 0.28s ease;
+}
+/* Reserved: committed, not yet billed. Hatched rather than a second flat
+   colour — a stripe reads as "provisional" without needing a legend, and it
+   survives a greyscale print and the two common red/green confusions. */
+.variant-b-voxel.m1-studio .vx-meter-reserved {
+  height: 100%;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    var(--meter-ink) 0 2px,
+    transparent 2px 4px
+  );
+  transition: width 0.28s ease;
+}
+.variant-b-voxel.m1-studio .vx-meter-bar b {
+  flex: none;
+  color: var(--meter-ink);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+/* The world card lays its meter on the card's own spend line, so it inherits
+   that row's muted weight until a tone claims it. */
+.variant-b-voxel.m1-studio .vx-world-card .vx-meter-bar[data-tone="steady"] b {
+  color: var(--muted);
+}
+@media (prefers-reduced-motion: reduce) {
+  .variant-b-voxel.m1-studio .vx-meter-used,
+  .variant-b-voxel.m1-studio .vx-meter-reserved {
+    transition: none;
+  }
+}
+
+/* --- the rail's shared tone ------------------------------------------------
+   The current tile carries `studioStatus`'s tone in its pill and its label,
+   and nowhere else. It used to swap its teal ring for an amber one on the
+   "needs you" tone, which read as a warning drawn around the tile the user was
+   standing on rather than as a state of the tile — so the ring is the standard
+   ink/teal treatment for every tone now, and the tone lives in the words. */
+
+/* --- the rail as a navigation ----------------------------------------------
+   A completed tile opens that stage's record, read-only. Only navigable tiles
+   are enabled, so the pointer and the keyboard agree with the CSS about what
+   is clickable, and the tile whose record is on the stage wears the ring so
+   "where am I" is answerable at a glance. */
+.variant-b-voxel.m1-studio .vx-slot:not(:disabled) {
+  cursor: pointer;
+}
+.variant-b-voxel.m1-studio .vx-slot:not(:disabled):focus-visible {
+  outline: 3px solid var(--teal);
+  outline-offset: 3px;
+}
+.variant-b-voxel.m1-studio .vx-slot[data-viewing="true"] {
+  border-color: var(--ink);
+  background: var(--paper-2);
+  box-shadow:
+    0 4px 0 var(--ink),
+    0 0 0 3px rgba(47, 208, 197, 0.55);
+}
+.variant-b-voxel.m1-studio .vx-slot[data-viewing="true"] .vx-slot-copy small {
+  color: var(--teal-text);
+  font-weight: 700;
+}
+
+/* --- viewing a completed stage --------------------------------------------
+   The banner is the only live control on the screen; everything under it is
+   inside one disabled fieldset, so the record cannot approve, reject or
+   regenerate anything. The fieldset itself is `display: contents` so the
+   record's own screen stays a direct child of the stage grid and keeps the
+   layout it has when it is live. */
+.variant-b-voxel.m1-studio .vx-history-banner {
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 2px solid var(--ink);
+  border-radius: 6px;
+  padding: 10px 12px 10px 16px;
+  background: var(--paper-2);
+  box-shadow: 4px 4px 0 var(--ink-10);
+}
+.variant-b-voxel.m1-studio .vx-history-banner > span {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+.variant-b-voxel.m1-studio .vx-history-banner em {
+  color: var(--muted);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.variant-b-voxel.m1-studio .vx-history-banner strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+/* --- reviewing the M2 asset plan over the gate -----------------------------
+   Same band as the history banner, and for the same reason: you have stepped
+   off the screen the world is on, and one control puts you back. This one is
+   live, not a record, so it wears the accent edge instead of the muted one and
+   nothing beneath it is disabled — the whole point of the trip is to decide. */
+.variant-b-voxel.m1-studio .vx-review-banner {
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 2px solid var(--ink);
+  border-left: 6px solid var(--accent-fill);
+  border-radius: 6px;
+  padding: 10px 12px 10px 16px;
+  background: var(--paper-2);
+  box-shadow: 4px 4px 0 var(--ink-10);
+}
+.variant-b-voxel.m1-studio .vx-review-banner > span {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+.variant-b-voxel.m1-studio .vx-review-banner em {
+  color: var(--muted);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.variant-b-voxel.m1-studio .vx-review-banner strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+/* The concept host is one 1fr row. Two children without this and the banner
+   claims the row while the plan is pushed into an implicit auto one.
+
+   The height is pinned the same way the asset gate pins its own (62px topbar
+   + 88px hotbar + 36px stage padding): the studio stage sizes its rows to
+   content, so the banner's 78px would otherwise push the plan's footer — the
+   approve, request-changes and reject buttons — below the fold, and a decision
+   screen whose decision is off-screen is the defect all over again. */
+.variant-b-voxel.m1-studio .voxel-concept-host:has(.vx-review-banner) {
+  gap: 14px;
+  height: calc(100vh - 186px);
+  grid-template-rows: max-content minmax(0, 1fr);
+}
+
+.variant-b-voxel.m1-studio .vx-history-frame {
+  display: contents;
+  min-width: 0;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+/* The stage is a two-column grid for the live screens that sit beside the
+   diorama. A `display: contents` fieldset promotes the record to a grid item,
+   so without this the banner claimed the wide column and the record was
+   squeezed into the narrow one. History is one column, two rows: banner, then
+   record. `>` walks the DOM and not the box tree, so the record is reached
+   through the fieldset. */
+/* `:has(.vx-history-banner)` is not decoration: the finale rule at
+   `.vx-stage-concepts:has(.concept-complete)` is five classes deep and stretches
+   every row to 1fr, which turned the banner into a half-height slab. This
+   matches it and lands later in the sheet. */
+.variant-b-voxel.m1-studio[data-history="true"]
+  .vx-stage:has(.vx-history-banner) {
+  align-content: start;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: max-content minmax(0, 1fr);
+  grid-auto-rows: minmax(0, 1fr);
+}
+.variant-b-voxel.m1-studio[data-history="true"] .vx-stage > .vx-mascot {
+  display: none;
+}
+.variant-b-voxel.m1-studio .vx-stage > .vx-history-frame > * {
+  grid-column: 1 / -1;
+  min-width: 0;
+  min-height: 0;
+}
+/* A disabled record must still be readable: the controls go quiet, the copy
+   does not. */
+.variant-b-voxel.m1-studio[data-history="true"] .vx-stage button:disabled,
+.variant-b-voxel.m1-studio[data-history="true"] .vx-stage select:disabled,
+.variant-b-voxel.m1-studio[data-history="true"] .vx-stage textarea:disabled,
+.variant-b-voxel.m1-studio[data-history="true"] .vx-stage input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.variant-b-voxel.m1-studio[data-history="true"]
+  .vx-history-banner
+  button:disabled {
+  opacity: 1;
+  cursor: pointer;
+}
+.variant-b-voxel.m1-studio .vx-stage-record {
+  align-self: center;
+  justify-self: center;
+  gap: 14px;
+  width: min(760px, 100%);
+  margin-inline: auto;
+}
+/* `.concept-complete` centres its children as flex items, so a block that
+   wants the card's full width has to say so. */
+.variant-b-voxel.m1-studio .vx-stage-record-brief,
+.variant-b-voxel.m1-studio .vx-stage-record-rows {
+  align-self: stretch;
+}
+.variant-b-voxel.m1-studio .vx-stage-record-brief {
+  margin: 0;
+  border-left: 3px solid var(--teal);
+  padding: 4px 0 4px 14px;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.6;
+  text-align: left;
+}
+.variant-b-voxel.m1-studio .vx-stage-record-rows {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  margin: 0;
+  text-align: left;
+}
+.variant-b-voxel.m1-studio .vx-stage-record-rows dt {
+  color: var(--muted);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.variant-b-voxel.m1-studio .vx-stage-record-rows dd {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* --- a rejection reads as a paused decision --------------------------------
+   The reopen button is the only thing to do here, so it gets the primary
+   weight and the no-spend promise sits directly under it. */
+.variant-b-voxel.m1-studio .vx-blocked-review .blocked-recovery {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+}
+/* ---------- the game name decider ------------------------------------------
+   A reading column, not a dashboard. Four proposals as equal cards, then the
+   two ways to disagree with them side by side, then one commit. The card
+   treatment is the mood picker's, because it is the same act: choosing one of
+   several things Fulcrum offered. */
+.variant-b-voxel.m1-studio .vx-naming {
+  display: grid;
+  align-content: start;
+  justify-self: center;
+  gap: 22px;
+  width: min(880px, 100%);
+}
+.variant-b-voxel.m1-studio .vx-naming-head {
+  display: grid;
+  gap: 10px;
+}
+.variant-b-voxel.m1-studio .vx-naming-head h1 {
+  font-size: 34px;
+}
+.variant-b-voxel.m1-studio .vx-naming-head p {
+  max-width: 62ch;
+  color: var(--ink-70);
+  font-size: 14px;
+  line-height: 1.55;
+}
+.variant-b-voxel.m1-studio .vx-name-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.variant-b-voxel.m1-studio .vx-name-options button {
+  position: relative;
+  display: grid;
+  gap: 7px;
+  overflow: hidden;
+  border: 2px solid var(--ink-22);
+  border-radius: 7px;
+  padding: 17px 18px 21px;
+  text-align: left;
+  color: var(--ink);
+  background: rgba(251, 248, 239, 0.72);
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    background-color 0.16s ease,
+    transform 0.16s ease;
+}
+.variant-b-voxel.m1-studio .vx-name-options button::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 4px;
+  background: transparent;
+}
+.variant-b-voxel.m1-studio .vx-name-options button:hover {
+  border-color: rgba(22, 22, 29, 0.42);
+  background: var(--surface);
+  transform: translateY(-1px);
+}
+.variant-b-voxel.m1-studio .vx-name-options button[data-active="true"] {
+  border-color: var(--ink);
+  background: var(--paper-2);
+  transform: none;
+}
+.variant-b-voxel.m1-studio .vx-name-options button[data-active="true"]::after {
+  background: var(--teal);
+}
+.variant-b-voxel.m1-studio .vx-name-options strong {
+  font-size: 21px;
+  letter-spacing: -0.01em;
+}
+.variant-b-voxel.m1-studio .vx-name-options small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.variant-b-voxel.m1-studio .vx-name-panels {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 14px;
+}
+.variant-b-voxel.m1-studio .vx-name-panel {
+  display: grid;
+  gap: 12px;
+  border: 2px solid var(--ink-22);
+  border-radius: 7px;
+  padding: 16px 18px;
+  background: var(--paper-2);
+}
+.variant-b-voxel.m1-studio .vx-name-panel .vx-answer textarea {
+  height: 76px;
+}
+/* The one single-line text field in the shell, so it borrows the textarea's
+   box rather than inventing a second input treatment. */
+.variant-b-voxel.m1-studio .vx-name-panel .vx-answer input {
+  border: 2px solid var(--ink-22);
+  border-radius: 4px;
+  padding: 12px 14px;
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: inset 2px 2px 0 rgba(22, 22, 29, 0.05);
+  font-family: "Fulcrum Text", sans-serif;
+  font-size: 17px;
+  font-weight: 600;
+  transition: border-color 0.18s ease;
+}
+.variant-b-voxel.m1-studio .vx-name-panel .vx-answer input:focus {
+  border-color: var(--ink);
+}
+.variant-b-voxel.m1-studio .vx-name-panel .vx-answer input::placeholder {
+  color: rgba(22, 22, 29, 0.32);
+  font-weight: 500;
+}
+.variant-b-voxel.m1-studio .vx-name-note {
+  color: var(--muted);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+  line-height: 1.5;
+}
+@media (max-width: 860px) {
+  .variant-b-voxel.m1-studio .vx-name-options,
+  .variant-b-voxel.m1-studio .vx-name-panels {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.variant-b-voxel.m1-studio .vx-blocked-nospend,
+.variant-b-voxel.m1-studio .vx-continue-note {
+  max-width: 46ch;
+  color: var(--muted);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+/* ---------- pasted image attachments ----------
+
+   The chip is the shell's paper-mat treatment shrunk to a thumbnail: cream
+   surface, hard ink border, offset ink shadow, and `contain` so a wide
+   screenshot letterboxes instead of cropping to something the user did not
+   paste. The strip sits under the box it belongs to and carries one mono
+   line saying where those images go, because on a replay world or a
+   text-only orchestrator route the picture is kept but never read. */
+.variant-b-voxel .vx-attach {
+  display: grid;
+  gap: 10px;
+}
+/* The remove button hangs 9px past the mat on two sides, so the strip pays for
+   that overhang itself: `padding-top` keeps it off the box above (it was
+   sitting on the textarea's focus ring), and an 18px gap keeps one chip's
+   button clear of the next chip instead of 3px short of touching it. */
+.variant-b-voxel .vx-attach-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin: 0;
+  padding: 11px 11px 0 0;
+  list-style: none;
+}
+.variant-b-voxel .vx-attach-strip li {
+  position: relative;
+  width: 76px;
+  height: 76px;
+  border: 2px solid var(--ink);
+  border-radius: 5px;
+  background: var(--surface);
+  box-shadow: 3px 3px 0 var(--ink-22);
+}
+.variant-b-voxel .vx-attach-strip img {
+  position: absolute;
+  inset: 3px;
+  width: calc(100% - 6px);
+  height: calc(100% - 6px);
+  object-fit: contain;
+}
+/* Hangs off the corner rather than sitting inside the mat, so it never covers
+   the part of the image the user is checking. */
+.variant-b-voxel .vx-attach-strip button {
+  position: absolute;
+  top: -9px;
+  right: -9px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--ink);
+  border-radius: 50%;
+  padding: 0;
+  color: var(--ink);
+  background: var(--paper-2);
+  box-shadow: 1px 1px 0 var(--ink);
+  font-family: "Fulcrum Text", sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background 0.16s ease,
+    transform 0.16s ease;
+}
+.variant-b-voxel .vx-attach-strip button:hover:not(:disabled) {
+  background: var(--alert-fill);
+  transform: translate(1px, 1px);
+}
+.variant-b-voxel .vx-attach-strip button:disabled {
+  border-color: var(--ink-22);
+  color: var(--ink-45);
+  box-shadow: 1px 1px 0 var(--ink-10);
+  cursor: not-allowed;
+}
+.variant-b-voxel .vx-attach-note {
+  color: var(--muted);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  line-height: 1.5;
+}
+/* Recorded answers are read-only, so the thumbnails lose the shadow and shrink
+   to a caption weight — they are evidence on a transcript row, not a control. */
+.variant-b-voxel .vx-attach-strip-recorded {
+  gap: 8px;
+  margin-top: 8px;
+  padding: 0;
+}
+.variant-b-voxel .vx-attach-strip-recorded li {
+  width: 56px;
+  height: 56px;
+  border-color: var(--ink-22);
+  box-shadow: none;
+}
+
+/* ---------------------------------------------------------------------------
+   Settings → Meshy configuration (M2 worlds only)
+
+   Every row is a control plus one tooltip that explains what the setting does
+   and when you would change it. No tooltip quotes a price: costs belong in the
+   layout at the point of spend, where someone about to spend can read them
+   without hovering anything.
+   --------------------------------------------------------------------------- */
+
+/* Only an M2 world grows this section, so only an M2 world pays for the extra
+   room and the sheet's own scroller. */
+.variant-b-voxel.m1-studio
+  .vx-worlds-dialog.vx-settings-dialog:has(.vx-meshy-settings) {
+  width: min(880px, calc(100vw - 64px));
+  max-height: min(880px, calc(100vh - 56px));
+}
+.variant-b-voxel.m1-studio
+  .vx-worlds-sheet.vx-settings-sheet:has(.vx-meshy-settings) {
+  grid-template-rows: auto auto auto auto;
+  align-content: start;
+  overflow-y: auto;
+}
+.variant-b-voxel.m1-studio .vx-meshy-settings {
+  display: grid;
+  gap: 12px;
+  border-top: 2px solid var(--ink-22);
+  padding-top: 14px;
+}
+.variant-b-voxel.m1-studio .vx-meshy-head {
+  display: grid;
+  gap: 5px;
+}
+.variant-b-voxel.m1-studio .vx-meshy-head small {
+  color: var(--muted);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 9.5px;
+  line-height: 1.5;
+}
+.variant-b-voxel.m1-studio .vx-meshy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  align-items: start;
+  gap: 10px;
+}
+.variant-b-voxel.m1-studio .vx-meshy-row {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  border: 2px solid var(--ink-22);
+  border-radius: 5px;
+  padding: 9px;
+  background: var(--surface);
+}
+.variant-b-voxel.m1-studio .vx-meshy-row[data-open] {
+  border-color: var(--teal-deep);
+}
+.variant-b-voxel.m1-studio .vx-meshy-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.variant-b-voxel.m1-studio .vx-meshy-label > span {
+  color: var(--ink);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.variant-b-voxel.m1-studio .vx-meshy-info {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border: 2px solid var(--ink-22);
+  border-radius: 50%;
+  color: var(--muted);
+  background: var(--paper-2);
+  cursor: pointer;
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+.variant-b-voxel.m1-studio .vx-meshy-info:hover,
+.variant-b-voxel.m1-studio .vx-meshy-info[aria-expanded="true"] {
+  border-color: var(--teal-deep);
+  color: var(--ink);
+  background: var(--accent-fill);
+}
+.variant-b-voxel.m1-studio .vx-meshy-control > select,
+.variant-b-voxel.m1-studio .vx-meshy-control > input {
+  width: 100%;
+  min-width: 0;
+  border: 2px solid var(--ink);
+  border-radius: 4px;
+  padding: 7px 8px;
+  color: var(--ink);
+  background: var(--paper-2);
+  font-family: "Fulcrum Text", sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+}
+.variant-b-voxel.m1-studio .vx-meshy-control > select:disabled,
+.variant-b-voxel.m1-studio .vx-meshy-control > input:disabled,
+.variant-b-voxel.m1-studio .vx-meshy-toggle:disabled {
+  border-color: var(--ink-22);
+  color: var(--ink-45);
+  background: var(--paper-3);
+  cursor: not-allowed;
+}
+/* Pinned values are shown, not offered: the schema allows exactly one. */
+.variant-b-voxel.m1-studio .vx-meshy-static {
+  display: block;
+  border: 2px dashed var(--ink-22);
+  border-radius: 4px;
+  padding: 7px 8px;
+  color: var(--ink-70);
+  background: var(--paper-3);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 11px;
+  font-weight: 700;
+}
+.variant-b-voxel.m1-studio .vx-meshy-toggle {
+  width: 100%;
+  border: 2px solid var(--ink);
+  border-radius: 4px;
+  padding: 7px 8px;
+  color: var(--ink);
+  background: var(--paper-2);
+  cursor: pointer;
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-align: left;
+  text-transform: uppercase;
+}
+.variant-b-voxel.m1-studio .vx-meshy-toggle[aria-pressed="true"] {
+  background: var(--accent-fill);
+}
+/* A locked toggle keeps saying what it is set to, but stops advertising
+   itself as pressable — the accent fill would otherwise be the brightest
+   thing on a sheet where nothing can be changed. */
+.variant-b-voxel.m1-studio .vx-meshy-toggle[aria-pressed="true"]:disabled {
+  border-color: var(--ink-22);
+  color: var(--ink-45);
+  background: var(--paper-3);
+}
+.variant-b-voxel.m1-studio .vx-meshy-detail {
+  color: var(--muted);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 9px;
+  line-height: 1.4;
+}
+.variant-b-voxel.m1-studio .vx-meshy-tooltip {
+  margin: 2px 0 0;
+  border: 2px solid var(--ink);
+  border-left: 5px solid var(--accent-fill);
+  border-radius: 4px;
+  padding: 9px 10px;
+  color: var(--ink);
+  background: var(--paper-2);
+  box-shadow: 3px 3px 0 var(--ink-22);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.variant-b-voxel.m1-studio .vx-meshy-message {
+  margin: 0;
+  border: 2px solid var(--ink-22);
+  border-radius: 4px;
+  padding: 8px 10px;
+  color: var(--muted);
+  background: var(--paper-2);
+  font-family: "Fulcrum Mono", monospace;
+  font-size: 10px;
+  line-height: 1.5;
+}
+.variant-b-voxel.m1-studio .vx-meshy-message[data-tone="saved"] {
+  border-color: var(--teal-deep);
+  color: var(--accent-text);
+}
+.variant-b-voxel.m1-studio .vx-meshy-message[data-tone="refused"] {
+  border-color: var(--alert);
+  color: var(--alert);
+  background: var(--alert-wash);
 }

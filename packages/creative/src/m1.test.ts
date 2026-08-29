@@ -5,14 +5,17 @@ import path from "node:path";
 import {
   ConceptSetSchema,
   GameDesignSpecSchema,
+  GameNameCandidateSetSchema,
   InterrogationStateSchema,
   M1ConceptDocumentSchema,
   ProviderPreflightError,
   ProviderUsageError,
   VisualDirectionSetSchema,
   type GameDesignSpec,
+  type GameNameCandidateSet,
   type InterrogationState,
   type RevisionRef,
+  type VisualToken,
 } from "@fulcrum/domain";
 import { ProjectRepository } from "@fulcrum/project";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -24,6 +27,7 @@ import {
   m1TextIdempotencyKey,
 } from "./m1-live-text.js";
 import {
+  buildConceptStyleCapsule,
   fitConceptPrompt,
   M1CreativeDevelopment,
   M1_INTERROGATION_ROUND_CAP,
@@ -333,6 +337,36 @@ describe("M1CreativeDevelopment interrogation", () => {
 });
 
 describe("M1CreativeDevelopment visual direction", () => {
+  it("renders identical replay previews for identical intent in fresh projects", async () => {
+    const renderFreshPreviews = async () => {
+      const { repository, creative, context } = createHarness();
+      const intent = await createApprovedIntent(
+        repository,
+        creative,
+        context,
+        CONSTRAINT_BRIEF,
+      );
+      const directionSet = await creative.generateVisualDirections({
+        ...context,
+        gameDesignSpec: intent.gameDesignSpec,
+      });
+      return VisualDirectionSetSchema.parse(
+        repository.resolveRevision(directionSet),
+      ).directions.map(({ preview }) => ({
+        sha256: preview.artifact.sha256,
+        bytes: repository.readArtifact(preview.artifact),
+      }));
+    };
+
+    const first = await renderFreshPreviews();
+    const second = await renderFreshPreviews();
+
+    expect(second.map(({ sha256 }) => sha256)).toEqual(
+      first.map(({ sha256 }) => sha256),
+    );
+    expect(second).toEqual(first);
+  });
+
   it("treats pin ordering, whitespace, and casing as non-material", () => {
     const beforePalette = JSON.stringify([
       { name: "Deep Pine", hex: "#173B36", role: "primary mass" },
@@ -1103,6 +1137,49 @@ describe("M1CreativeDevelopment correctness cluster", () => {
     expect(prompt).not.toMatch(/lighting: Soft overcast fill/);
   });
 
+  it("carries a focused change the capsule has no clause for into the prompt", async () => {
+    const { repository, creative, context } = createHarness();
+    const intent = await createApprovedIntent(
+      repository,
+      creative,
+      context,
+      CONSTRAINT_BRIEF,
+    );
+    const directionSet = await creative.generateVisualDirections({
+      ...context,
+      gameDesignSpec: intent.gameDesignSpec,
+    });
+    const selected = VisualDirectionSetSchema.parse(
+      repository.resolveRevision(directionSet),
+    ).directions[0]!;
+    const change = "Rebuild the hull material in hammered bronze";
+    const focused = await creative.makeFocusedDirectionChange({
+      ...context,
+      gameDesignSpec: intent.gameDesignSpec,
+      directionSet,
+      directionRevisionId: selected.revisionId,
+      change,
+      pinnedAspects: ["palette", "lighting"],
+    });
+    const changed = VisualDirectionSetSchema.parse(
+      repository.resolveRevision(focused.directionSet),
+    ).directions[0]!;
+    const planRevision = creative.planConcepts({
+      ...context,
+      brief: CONSTRAINT_BRIEF,
+      gameDesignSpec: intent.gameDesignSpec,
+      directionSet: focused.directionSet,
+      selectedDirectionRevisionId: changed.revisionId,
+    });
+    const prompt =
+      repository.resolveRevision<ConceptPlan>(planRevision).slots[0]!.prompt!;
+    /* Materials lost their own clause when the prompt got short; an explicit
+       user ask must not disappear with them. */
+    expect(prompt).toContain(
+      "Approved material: Rebuild the hull material in hammered bronze.",
+    );
+  });
+
   it("compiles camera tokens from the approved spec instead of a three-quarter default", async () => {
     const { repository, creative, context } = createHarness();
     const intent = await createApprovedIntent(
@@ -1404,12 +1481,12 @@ describe("M1CreativeDevelopment plan-time concept prompts", () => {
         regenerated.slots[0]!.revisions[1]!.revision,
       ),
     );
-    expect(latest.prompt).toContain(
-      "Focused alternate request: Widen the door.",
-    );
-    expect(latest.prompt).toMatch(
-      /Focused alternate request: Widen the door\. No text, UI, logos/,
-    );
+    expect(latest.prompt).toContain("No text, UI, logos");
+    /* The user's ask lands last on both assembly paths, so the model reads it
+       after the subject, the guard, and the style capsule. */
+    expect(
+      latest.prompt.endsWith("Focused alternate request: Widen the door."),
+    ).toBe(true);
     expect(latest.basePrompt).toBe(original.prompt);
   });
 
@@ -2500,5 +2577,220 @@ describe("fitConceptPrompt", () => {
     const prompt = fitConceptPrompt(["x".repeat(6000)], guard);
     expect(prompt.length).toBeLessThanOrEqual(4000);
     expect(prompt.endsWith(guard)).toBe(true);
+  });
+});
+
+describe("buildConceptStyleCapsule", () => {
+  const token = (
+    category: VisualToken["category"],
+    value: string,
+    role?: string,
+  ): VisualToken => ({
+    tokenId: `${category}:${value.slice(0, 8)}`,
+    category,
+    value,
+    ...(role ? { role } : {}),
+  });
+
+  const verboseTokens: VisualToken[] = [
+    token(
+      "style",
+      "Painterly folkcraft with hand-carved forms. This direction was chosen because the interview surfaced a preference for warmth over spectacle, and it carries through every prop.",
+    ),
+    token("palette", "Deep pine #173B36", "primary mass"),
+    token("palette", "Clay #B76647", "warm accent"),
+    token("palette", "Bone #E8E1D2", "edge separation"),
+    token("gameplay-color", "Lantern #F6D36B", "gameplay focus"),
+    token("lighting", "Soft overcast fill with a warm objective glow."),
+    token("atmosphere", "Quiet drifting pollen and shallow teal haze."),
+    token("shape", "Rounded stacked masses cut by one clear gesture."),
+    token("prohibited-style", "photoreal noise, decorative clutter."),
+    token("material", "painted timber"),
+    token("material", "matte stone"),
+    token("surface", "Broad brush planes with visible carved edges."),
+    token("scale", "Human-scale reference stays beside the objective."),
+  ];
+
+  it("condenses a verbose direction into one short capsule", () => {
+    const capsule = buildConceptStyleCapsule(verboseTokens);
+    expect(capsule).toBe(
+      "Style: Painterly folkcraft with hand-carved forms. " +
+        "Palette: Deep pine #173B36, Clay #B76647; gameplay focus Lantern #F6D36B. " +
+        "Light: Soft overcast fill with a warm objective glow. " +
+        "Air: Quiet drifting pollen and shallow teal haze. " +
+        "Forms: Rounded stacked masses cut by one clear gesture. " +
+        "Avoid: photoreal noise, decorative clutter.",
+    );
+    expect(capsule.length).toBeLessThanOrEqual(400);
+    expect(capsule).not.toContain("the interview surfaced");
+    expect(capsule).not.toContain("Bone #E8E1D2");
+    expect(capsule).not.toContain("painted timber");
+    expect(capsule).not.toContain("Human-scale reference");
+  });
+
+  it("never overruns its budget on paragraph-length live values", () => {
+    const capsule = buildConceptStyleCapsule([
+      token("style", "hand-painted stylization ".repeat(60)),
+      token("palette", `Storm ${"#33475B ".repeat(40)}`, "primary mass"),
+      token("lighting", "low golden break ".repeat(60)),
+    ]);
+    expect(capsule.length).toBeLessThanOrEqual(400);
+  });
+});
+
+describe("M1 concept prompt budget", () => {
+  it("keeps every planned prompt near a thousand characters", async () => {
+    const planned = await planApprovedConcepts();
+    for (const slot of planned.plan.slots) {
+      expect(slot.prompt!.length).toBeLessThanOrEqual(1_010);
+      const [subject, capsule] = slot.prompt!.split("\n\n");
+      expect(
+        subject!.endsWith("No text, UI, logos, or unrelated project history."),
+      ).toBe(true);
+      expect(capsule!.startsWith("Style: ")).toBe(true);
+      /* The capsule is the only place art direction enters the prompt. */
+      expect(subject).not.toContain("#");
+      expect(subject).not.toContain("Palette");
+    }
+  });
+});
+
+describe("M1 game name decider", () => {
+  const reachSignoff = async () => {
+    const harness = createHarness();
+    const started = await harness.creative.beginInterrogation({
+      ...harness.context,
+      brief: CONSTRAINT_BRIEF,
+    });
+    const interrogation = await resolveInterrogation(
+      harness.repository,
+      harness.creative,
+      harness.context,
+      CONSTRAINT_BRIEF,
+      started.interrogation,
+    );
+    return { ...harness, interrogation };
+  };
+
+  const resolveSet = (
+    repository: ProjectRepository,
+    revision: RevisionRef,
+  ): GameNameCandidateSet =>
+    GameNameCandidateSetSchema.parse(repository.resolveRevision(revision));
+
+  it("proposes a batch of distinct names drawn from the brief", async () => {
+    const { repository, creative, context, interrogation } =
+      await reachSignoff();
+    const revision = await creative.proposeGameNames({
+      ...context,
+      brief: CONSTRAINT_BRIEF,
+      interrogation,
+    });
+    const set = resolveSet(repository, revision);
+    expect(set.round).toBe(1);
+    expect(set.provider).toBe("replay");
+    expect(set.feedback).toBeUndefined();
+    expect(set.sourceInterrogationRevisionId).toBe(interrogation.revisionId);
+    expect(set.candidates).toHaveLength(4);
+    expect(new Set(set.candidates.map(({ name }) => name)).size).toBe(4);
+    expect(set.candidates.every(({ rationale }) => rationale.length > 8)).toBe(
+      true,
+    );
+    /* The words are the user's, not a stock fantasy vocabulary. */
+    const words = set.candidates
+      .flatMap(({ name }) => name.toLowerCase().split(/\s+/))
+      .filter((word) => word.length > 3);
+    expect(
+      words.some((word) => CONSTRAINT_BRIEF.toLowerCase().includes(word)),
+    ).toBe(true);
+  });
+
+  it("refuses to name a game whose interview is unresolved", async () => {
+    const { creative, context } = createHarness();
+    const started = await creative.beginInterrogation({
+      ...context,
+      brief: CONSTRAINT_BRIEF,
+    });
+    await expect(
+      creative.proposeGameNames({
+        ...context,
+        brief: CONSTRAINT_BRIEF,
+        interrogation: started.interrogation,
+      }),
+    ).rejects.toThrow(/frontier is unresolved/);
+  });
+
+  it("returns a different batch when the user steers, and never repeats a name", async () => {
+    const { repository, creative, context, interrogation } =
+      await reachSignoff();
+    const first = await creative.proposeGameNames({
+      ...context,
+      brief: CONSTRAINT_BRIEF,
+      interrogation,
+    });
+    const second = await creative.proposeGameNames({
+      ...context,
+      brief: CONSTRAINT_BRIEF,
+      interrogation,
+      previous: first,
+      feedback: "Shorter, and darker.",
+    });
+    const third = await creative.proposeGameNames({
+      ...context,
+      brief: CONSTRAINT_BRIEF,
+      interrogation,
+      previous: second,
+      feedback: "Now lose the article.",
+    });
+    const batches = [first, second, third].map((revision) =>
+      resolveSet(repository, revision),
+    );
+    expect(batches.map(({ round }) => round)).toEqual([1, 2, 3]);
+    expect(batches[1]!.feedback).toBe("Shorter, and darker.");
+    expect(batches[1]!.previousCandidateSetRevisionId).toBe(first.revisionId);
+    expect(batches[2]!.previousCandidateSetRevisionId).toBe(second.revisionId);
+    const names = batches.flatMap((set) =>
+      set.candidates.map(({ name }) => name),
+    );
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it("derives the same batch twice for the same interview and steer", async () => {
+    const one = await reachSignoff();
+    const two = await reachSignoff();
+    const left = resolveSet(
+      one.repository,
+      await one.creative.proposeGameNames({
+        ...one.context,
+        brief: CONSTRAINT_BRIEF,
+        interrogation: one.interrogation,
+      }),
+    );
+    const right = resolveSet(
+      two.repository,
+      await two.creative.proposeGameNames({
+        ...two.context,
+        brief: CONSTRAINT_BRIEF,
+        interrogation: two.interrogation,
+      }),
+    );
+    expect(right.candidates).toEqual(left.candidates);
+    expect(right.candidateSetId).toBe(left.candidateSetId);
+  });
+
+  it("titles the Game Design Spec with the decided name", async () => {
+    const { repository, creative, context, interrogation } =
+      await reachSignoff();
+    const artifacts = await creative.confirmSharedUnderstanding({
+      ...context,
+      brief: CONSTRAINT_BRIEF,
+      interrogation,
+      confirmedBy: "Zach",
+      gameName: "Beaconfall",
+    });
+    const spec = GameDesignSpecSchema.parse(
+      repository.resolveRevision(artifacts.gameDesignSpec),
+    );
+    expect(spec.title).toBe("Beaconfall");
   });
 });

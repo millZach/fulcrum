@@ -51,7 +51,7 @@ importers:
         specifier: workspace:*
         version: link:../../packages/scene
       '@mastra/core':
-        specifier: latest
+        specifier: 1.59.0
         version: 1.59.0(rxjs@7.8.2)(supports-color@10.2.2)(zod@4.4.3)
       dotenv:
         specifier: latest
@@ -141,18 +141,33 @@ importers:
 
   packages/production:
     dependencies:
+      '@fulcrum/creative':
+        specifier: workspace:*
+        version: link:../creative
       '@fulcrum/domain':
         specifier: workspace:*
         version: link:../domain
+      '@fulcrum/execution':
+        specifier: workspace:*
+        version: link:../execution
       '@fulcrum/project':
         specifier: workspace:*
         version: link:../project
       '@gltf-transform/core':
         specifier: latest
         version: 4.4.2
+      fflate:
+        specifier: ^0.8.3
+        version: 0.8.3
+      sharp:
+        specifier: latest
+        version: 0.35.3(@types/node@26.2.0)
       three:
         specifier: latest
         version: 0.185.1
+      zod:
+        specifier: latest
+        version: 4.4.3
     devDependencies:
       '@types/three':
         specifier: latest

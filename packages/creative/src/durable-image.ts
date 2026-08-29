@@ -14,6 +14,7 @@ import {
 import type { SubscriptionImageRunner } from "@fulcrum/execution";
 import { ProjectRepository } from "@fulcrum/project";
 import sharp from "sharp";
+import { z } from "zod";
 
 import { subscriptionQuotaError } from "./provider-usage.js";
 
@@ -23,6 +24,22 @@ export const M1_IMAGE_TIMEOUT_MS_ENV = "FULCRUM_M1_IMAGE_TIMEOUT_MS";
 
 const DEFAULT_RETRY_LIMIT = 2;
 const DEFAULT_TIMEOUT_MS = 360_000;
+const LIVE_TIMEOUT_BACKSTOP_GRACE_MS = 1_000;
+
+const DurableImageJobSchema = z.object({
+  projectId: z.string().min(1),
+  runId: z.string().min(1),
+  idempotencyKey: z.string().min(1),
+  prompt: z.string().min(1),
+  mode: z.enum(["replay", "live"]),
+  provider: z.string().min(1).default("openai-subscription"),
+  operation: z
+    .enum(["m1-concept-image", "m2-concept-view"])
+    .default("m1-concept-image"),
+  referenceImages: z.array(ArtifactRefSchema).max(4).default([]),
+});
+
+type DurableImageJobInput = z.input<typeof DurableImageJobSchema>;
 
 export type DurableImageResult = {
   bytes: Uint8Array;
@@ -128,18 +145,20 @@ const retryableSubscriptionQuota = (
   submission?.status === "failed" &&
   submission.payload.usageCode === "subscription-quota";
 
-export const ensureDurableSubscriptionImage = async (input: {
-  repository: ProjectRepository;
-  runner: SubscriptionImageRunner;
-  projectId: string;
-  runId: string;
-  idempotencyKey: string;
-  prompt: string;
-  mode: ProviderMode;
-  provider?: string;
-}): Promise<ProductionOutcome<DurableImageResult>> => {
-  const provider = input.provider ?? "openai-subscription";
-  const prior = input.repository.getSubmissionByKey(input.idempotencyKey);
+const retryableSubscriptionUnknown = (
+  submission: SubmissionRecord | undefined,
+): submission is SubmissionRecord =>
+  submission?.status === "submission-unknown";
+
+export const ensureDurableSubscriptionImage = async (
+  input: {
+    repository: ProjectRepository;
+    runner: SubscriptionImageRunner;
+  } & DurableImageJobInput,
+): Promise<ProductionOutcome<DurableImageResult>> => {
+  const job = DurableImageJobSchema.parse(input);
+  const provider = job.provider;
+  const prior = input.repository.getSubmissionByKey(job.idempotencyKey);
   if (prior?.status === "ready") {
     const artifact = imageArtifactFromPayload(prior.payload);
     const model =
@@ -172,9 +191,14 @@ export const ensureDurableSubscriptionImage = async (input: {
     };
   }
 
-  const decision = retryableSubscriptionQuota(prior)
-    ? ({ kind: "proceed", submission: prior } as const)
-    : decideDurableSubmission(prior, input.mode);
+  const durableDecision =
+    retryableSubscriptionQuota(prior) || retryableSubscriptionUnknown(prior)
+      ? ({ kind: "proceed", submission: prior } as const)
+      : decideDurableSubmission(prior, job.mode);
+  const decision =
+    durableDecision.kind === "unknown-interruption"
+      ? ({ kind: "proceed", submission: durableDecision.submission } as const)
+      : durableDecision;
   if (decision.kind === "ready") {
     return {
       status: "failed",
@@ -201,21 +225,9 @@ export const ensureDurableSubscriptionImage = async (input: {
             ? "The live concept request may have reached OpenAI before interruption; Fulcrum will not spend again automatically."
             : "The previous concept image job failed and requires user-directed regeneration.",
         recoverable: true,
-      },
-    };
-  }
-  if (decision.kind === "unknown-interruption") {
-    input.repository.updateSubmission(decision.submission.requestId, {
-      status: "submission-unknown",
-    });
-    return {
-      status: "failed",
-      requestId: decision.submission.requestId,
-      error: {
-        code: "submission-unknown",
-        message:
-          "The live concept request may have reached OpenAI before interruption; Fulcrum will not spend again automatically.",
-        recoverable: true,
+        ...(decision.submission.status === "failed"
+          ? { failureKind: "user-action-required" as const }
+          : {}),
       },
     };
   }
@@ -235,12 +247,20 @@ export const ensureDurableSubscriptionImage = async (input: {
   const submission =
     decision.submission ??
     input.repository.recordSubmissionIntent({
-      projectId: input.projectId,
-      operation: "m1-concept-image",
+      projectId: job.projectId,
+      operation: job.operation,
       provider,
-      idempotencyKey: input.idempotencyKey,
+      idempotencyKey: job.idempotencyKey,
       payload: {
-        prompt: input.prompt,
+        prompt: job.prompt,
+        operation: job.operation,
+        referenceImages: job.referenceImages.map(
+          ({ artifactId, sha256, mediaType }) => ({
+            artifactId,
+            sha256,
+            mediaType,
+          }),
+        ),
       },
     });
 
@@ -263,75 +283,143 @@ export const ensureDurableSubscriptionImage = async (input: {
         `ImageGen retry limit of ${storedRetryLimit} has been reached for this idempotency key.`,
       );
     }
-    const {
-      preflightCode: _preflightCode,
-      error: _preflightError,
-      usageCode: _usageCode,
-      ...intentPayload
-    } = submission.payload;
-    const storedTimeoutMs = Number(intentPayload.timeoutMs ?? timeoutMs);
-    input.repository.updateSubmission(submission.requestId, {
-      status: "pending",
-      payload: {
-        ...intentPayload,
-        retryLimit: storedRetryLimit,
-        timeoutMs: Number.isFinite(storedTimeoutMs)
-          ? storedTimeoutMs
-          : timeoutMs,
-        providerAttemptCount: attempts + 1,
-        providerCallStartedAt: new Date().toISOString(),
-      },
+    const storedTimeoutMs = Number(submission.payload.timeoutMs ?? timeoutMs);
+    const resolvedTimeoutMs =
+      Number.isFinite(storedTimeoutMs) && storedTimeoutMs > 0
+        ? storedTimeoutMs
+        : timeoutMs;
+
+    const referenceImages: Array<{
+      bytes: Uint8Array;
+      mediaType: "image/png" | "image/jpeg" | "image/webp";
+    }> = job.referenceImages.map((reference) => {
+      const mediaType = reference.mediaType;
+      if (
+        mediaType !== "image/png" &&
+        mediaType !== "image/jpeg" &&
+        mediaType !== "image/webp"
+      ) {
+        throw new ProviderPreflightError(
+          "payload-invalid",
+          `Reference artifact ${reference.artifactId} has unsupported media type ${reference.mediaType}.`,
+        );
+      }
+      return {
+        bytes: input.repository.readArtifact(reference),
+        mediaType,
+      };
     });
 
-    let generated;
-    try {
-      generated = await withElapsedLimit(
-        input.runner({ prompt: input.prompt }),
-        Number.isFinite(storedTimeoutMs) ? storedTimeoutMs : timeoutMs,
-      );
-    } catch (error) {
-      const quota = subscriptionQuotaError(error, "OpenAI");
+    let generated: Awaited<ReturnType<SubscriptionImageRunner>>;
+    while (true) {
       const current =
-        input.repository.getSubmissionByKey(input.idempotencyKey) ?? submission;
-      if (quota) {
+        input.repository.getSubmissionByKey(job.idempotencyKey) ?? submission;
+      const currentAttempts = Number(current.payload.providerAttemptCount ?? 0);
+      if (currentAttempts >= storedRetryLimit) {
+        throw new ProviderPreflightError(
+          "payload-invalid",
+          `ImageGen retry limit of ${storedRetryLimit} has been reached for this idempotency key.`,
+        );
+      }
+      const {
+        preflightCode: _preflightCode,
+        error: _preflightError,
+        usageCode: _usageCode,
+        ...intentPayload
+      } = current.payload;
+      input.repository.updateSubmission(submission.requestId, {
+        status: "pending",
+        payload: {
+          ...intentPayload,
+          retryLimit: storedRetryLimit,
+          timeoutMs: resolvedTimeoutMs,
+          providerAttemptCount: currentAttempts + 1,
+          providerCallStartedAt: new Date().toISOString(),
+        },
+      });
+
+      try {
+        generated = await withElapsedLimit(
+          input.runner({
+            prompt: job.prompt,
+            ...(job.mode === "live" ? { timeoutMs: resolvedTimeoutMs } : {}),
+            ...(referenceImages.length > 0 ? { referenceImages } : {}),
+          }),
+          resolvedTimeoutMs +
+            (job.mode === "live" ? LIVE_TIMEOUT_BACKSTOP_GRACE_MS : 0),
+        );
+        break;
+      } catch (error) {
+        const quota = subscriptionQuotaError(error, "OpenAI");
+        const failedAttempt =
+          input.repository.getSubmissionByKey(job.idempotencyKey) ?? submission;
+        if (quota) {
+          input.repository.updateSubmission(submission.requestId, {
+            status: "failed",
+            payload: {
+              ...failedAttempt.payload,
+              usageCode: quota.code,
+              error: quota.message,
+            },
+          });
+          return {
+            status: "failed",
+            requestId: submission.requestId,
+            error: {
+              code: quota.code,
+              message: quota.message,
+              recoverable: true,
+            },
+          };
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        if (job.mode === "replay") {
+          input.repository.updateSubmission(submission.requestId, {
+            status: "intent-recorded",
+            payload: { ...failedAttempt.payload, error: message },
+          });
+          return {
+            status: "failed",
+            requestId: submission.requestId,
+            error: {
+              code: "concept-generation-failed",
+              message,
+              recoverable: true,
+              failureKind: "retryable",
+            },
+          };
+        }
+        const failedAttempts = Number(
+          failedAttempt.payload.providerAttemptCount ?? currentAttempts + 1,
+        );
+        if (failedAttempts < storedRetryLimit) continue;
+
+        const exhaustedMessage = `Subscription-covered ($0) ImageGen failed after ${failedAttempts} attempts. Automatic attempts are exhausted; a user-directed retry is spend-safe. Last error: ${message}`;
         input.repository.updateSubmission(submission.requestId, {
           status: "failed",
-          payload: {
-            ...current.payload,
-            usageCode: quota.code,
-            error: quota.message,
-          },
+          payload: { ...failedAttempt.payload, error: exhaustedMessage },
         });
         return {
           status: "failed",
           requestId: submission.requestId,
           error: {
-            code: quota.code,
-            message: quota.message,
+            code: "concept-generation-failed",
+            message: exhaustedMessage,
             recoverable: true,
+            failureKind: "user-action-required",
           },
         };
       }
-      const message = error instanceof Error ? error.message : String(error);
-      input.repository.updateSubmission(submission.requestId, {
-        status: "submission-unknown",
-        payload: { ...current.payload, error: message },
-      });
-      return {
-        status: "failed",
-        requestId: submission.requestId,
-        error: { code: "submission-unknown", message, recoverable: true },
-      };
     }
 
     const png = await sharp(generated.bytes).png().toBuffer();
     const artifact = input.repository.putArtifact(
-      input.projectId,
+      job.projectId,
       png,
       "image/png",
     );
     const current =
-      input.repository.getSubmissionByKey(input.idempotencyKey) ?? submission;
+      input.repository.getSubmissionByKey(job.idempotencyKey) ?? submission;
     input.repository.updateSubmission(submission.requestId, {
       status: "ready",
       payload: {
@@ -342,12 +430,22 @@ export const ensureDurableSubscriptionImage = async (input: {
       },
     });
     input.repository.appendEvent({
-      projectId: input.projectId,
-      runId: input.runId,
-      type: "concept.image-completed",
+      projectId: job.projectId,
+      runId: job.runId,
+      type:
+        job.operation === "m2-concept-view"
+          ? "concept-view.image-completed"
+          : "concept.image-completed",
       payload: {
         requestId: submission.requestId,
         imageArtifactId: artifact.artifactId,
+        ...(job.operation === "m2-concept-view"
+          ? {
+              referenceArtifactHashes: job.referenceImages.map(
+                ({ sha256 }) => sha256,
+              ),
+            }
+          : {}),
         costUsd: 0,
       },
     });

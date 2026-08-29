@@ -1,0 +1,556 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fulcrum · Meshy integration audit</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0c0e12;
+        --panel: #13171d;
+        --line: #2a3039;
+        --ink: #f1eee6;
+        --muted: #a8afb8;
+        --coral: #ff8068;
+        --gold: #d5ae5c;
+        --green: #7fc69b;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family:
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        line-height: 1.55;
+      }
+
+      main {
+        width: min(1440px, calc(100% - 40px));
+        margin: 0 auto;
+      }
+
+      header {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 330px;
+        gap: 64px;
+        align-items: end;
+        padding: 88px 0 64px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .eyebrow,
+      .label {
+        margin: 0 0 14px;
+        color: var(--coral);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        max-width: 900px;
+        margin: 0;
+        font-size: clamp(48px, 7vw, 96px);
+        line-height: 0.94;
+        letter-spacing: -0.055em;
+      }
+
+      .lede {
+        margin: 0;
+        color: var(--muted);
+        font-size: 18px;
+      }
+      .lede strong {
+        color: var(--ink);
+      }
+
+      section {
+        padding: 64px 0;
+        border-bottom: 1px solid var(--line);
+      }
+      h2 {
+        margin: 0 0 16px;
+        font-size: clamp(30px, 4vw, 54px);
+        line-height: 1;
+        letter-spacing: -0.035em;
+      }
+      h3 {
+        margin: 0 0 8px;
+        font-size: 18px;
+      }
+      p {
+        margin: 0;
+      }
+
+      .answer {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 32px;
+      }
+
+      .answer > div {
+        padding-left: 22px;
+        border-left: 3px solid var(--green);
+      }
+      .answer > div:last-child {
+        border-color: var(--coral);
+      }
+      .answer p {
+        color: var(--muted);
+        font-size: 19px;
+      }
+      .answer strong {
+        color: var(--ink);
+      }
+
+      .strip-heading {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(280px, 520px);
+        gap: 48px;
+        align-items: end;
+        margin-bottom: 28px;
+      }
+
+      .strip-heading > p {
+        color: var(--muted);
+        font-size: 17px;
+      }
+      .image-strip {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 10px;
+      }
+      figure {
+        margin: 0;
+        min-width: 0;
+      }
+      figure img {
+        display: block;
+        width: 100%;
+        aspect-ratio: 1;
+        object-fit: cover;
+        background: #e7e2d8;
+      }
+      figcaption {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        padding-top: 9px;
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+
+      .failure {
+        margin-top: 24px;
+        padding: 18px 22px;
+        border-left: 3px solid var(--coral);
+        background: color-mix(in srgb, var(--coral) 7%, transparent);
+      }
+      .failure strong {
+        display: block;
+        margin-bottom: 3px;
+        color: var(--coral);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+      }
+      .failure p {
+        max-width: 980px;
+        color: #d6d9dd;
+      }
+
+      .ledger {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(360px, 0.7fr);
+        gap: 64px;
+      }
+      .ledger-copy > p {
+        max-width: 760px;
+        color: var(--muted);
+        font-size: 18px;
+      }
+      .numbers {
+        border-top: 1px solid var(--line);
+      }
+      .number {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 20px;
+        padding: 14px 0;
+        border-bottom: 1px solid var(--line);
+        color: var(--muted);
+      }
+      .number strong {
+        color: var(--ink);
+        font-size: 28px;
+      }
+      .number.bad strong {
+        color: var(--coral);
+      }
+      .number.good strong {
+        color: var(--green);
+      }
+
+      .flow {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 0;
+        margin-top: 34px;
+        border: 1px solid var(--line);
+      }
+      .step {
+        min-height: 184px;
+        padding: 22px;
+        border-right: 1px solid var(--line);
+      }
+      .step:last-child {
+        border-right: 0;
+      }
+      .step span {
+        display: block;
+        margin-bottom: 28px;
+        color: var(--gold);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+      }
+      .step p {
+        color: var(--muted);
+      }
+      .step strong {
+        color: var(--ink);
+      }
+
+      .links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        padding: 40px 0 72px;
+      }
+      a {
+        color: var(--ink);
+      }
+      .button {
+        padding: 12px 16px;
+        border: 1px solid var(--line);
+        text-decoration: none;
+      }
+      .button:hover {
+        border-color: var(--gold);
+      }
+
+      @media (max-width: 900px) {
+        header,
+        .answer,
+        .strip-heading,
+        .ledger {
+          grid-template-columns: 1fr;
+          gap: 28px;
+        }
+        .image-strip {
+          grid-template-columns: 1fr 1fr;
+        }
+        .flow {
+          grid-template-columns: 1fr 1fr;
+        }
+        .step:nth-child(2) {
+          border-right: 0;
+        }
+        .step:nth-child(-n + 2) {
+          border-bottom: 1px solid var(--line);
+        }
+      }
+
+      @media (max-width: 520px) {
+        main {
+          width: min(100% - 24px, 1440px);
+        }
+        header {
+          padding-top: 48px;
+        }
+        section {
+          padding: 44px 0;
+        }
+        .image-strip,
+        .flow {
+          grid-template-columns: 1fr;
+        }
+        .step {
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p class="eyebrow">Fulcrum · Meshy audit · 25 August 2026</p>
+          <h1>Meshy rebuilt what Fulcrum showed it.</h1>
+        </div>
+        <p class="lede">
+          <strong>No prompt was sent to Meshy.</strong> M2 sent four generated
+          reference images per hero. The weak link was reference preparation,
+          followed by wasteful 30-credit all-at-once generation.
+        </p>
+      </header>
+
+      <section class="answer">
+        <div>
+          <p class="label">What was sent</p>
+          <p>
+            <strong>Four PNG references</strong> ordered front, left, back,
+            right through Multi-Image to 3D using Meshy 6.
+          </p>
+        </div>
+        <div>
+          <p class="label">What was not sent</p>
+          <p>
+            No Meshy text prompt, no bridge acceptance criteria, no
+            texture-specific references, and no geometry-only approval stage.
+          </p>
+        </div>
+      </section>
+
+      <section>
+        <div class="strip-heading">
+          <div>
+            <p class="label">Keeper · exact Meshy inputs</p>
+            <h2>Coherent shape, noisy surface direction.</h2>
+          </div>
+          <p>
+            The four views describe the same character well. They also ask for
+            dense patina, cloth fibers, tiny dark mechanisms, and low value
+            separation—then Fulcrum immediately bakes a 2K texture before QA.
+          </p>
+        </div>
+        <div class="image-strip">
+          <figure>
+            <img
+              src="../workspace/projects/9ad44a5e-4268-4e53-9b67-8c326f6407d9/artifacts/20186c8122cc2087d4f860b4f9d58981efc2a2a8a4252eec4d0c978e1b436772.png"
+              alt="Keeper front reference"
+            />
+            <figcaption><span>Front</span><span>0°</span></figcaption>
+          </figure>
+          <figure>
+            <img
+              src="../workspace/projects/9ad44a5e-4268-4e53-9b67-8c326f6407d9/artifacts/6c56aa686af7e00f936d14367a6ac327c9de5778a70a10a3ed7798ebb3aba5ac.png"
+              alt="Keeper left reference"
+            />
+            <figcaption><span>Left</span><span>90°</span></figcaption>
+          </figure>
+          <figure>
+            <img
+              src="../workspace/projects/9ad44a5e-4268-4e53-9b67-8c326f6407d9/artifacts/2ca04b29266cfb51a904ab584f7cd434fac5fa5df4849a46820d67e0aa768526.png"
+              alt="Keeper back reference"
+            />
+            <figcaption><span>Back</span><span>180°</span></figcaption>
+          </figure>
+          <figure>
+            <img
+              src="../workspace/projects/9ad44a5e-4268-4e53-9b67-8c326f6407d9/artifacts/22a7c5225b18f641ca3214abe2bb4b9b5b0537e65a4a2aafed5bce5e27c2a577.png"
+              alt="Keeper right reference"
+            />
+            <figcaption><span>Right</span><span>270°</span></figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <section>
+        <div class="strip-heading">
+          <div>
+            <p class="label">Bridge · original exact inputs</p>
+            <h2>The bridge was already missing.</h2>
+          </div>
+          <p>
+            Three images show hoists. The back image shows a different circular
+            optical mechanism. None has a traversable span, approach, or
+            keeper-scale bridge controls.
+          </p>
+        </div>
+        <div class="image-strip">
+          <figure>
+            <img
+              src="../workspace/projects/9ad44a5e-4268-4e53-9b67-8c326f6407d9/artifacts/97df052673cf921ca5664269210d7a9f34a4df126aaf7c0575b082f83a055b12.png"
+              alt="Original bridge front reference"
+            />
+            <figcaption><span>Front</span><span>Hoist</span></figcaption>
+          </figure>
+          <figure>
+            <img
+              src="../workspace/projects/9ad44a5e-4268-4e53-9b67-8c326f6407d9/artifacts/22b92b5fdace90e16a02c8e2e98afaa5ff1006e6c3511b8929c6cb14203ca5f0.png"
+              alt="Original bridge left reference"
+            />
+            <figcaption><span>Left</span><span>Two hoists</span></figcaption>
+          </figure>
+          <figure>
+            <img
+              src="../workspace/projects/9ad44a5e-4268-4e53-9b67-8c326f6407d9/artifacts/0ab46f2f6666465f88dcf2cbaf16566f8534f07bb1d16d5df459cf8e378423c5.png"
+              alt="Original bridge back reference"
+            />
+            <figcaption>
+              <span>Back</span><span>Different object</span>
+            </figcaption>
+          </figure>
+          <figure>
+            <img
+              src="../workspace/projects/9ad44a5e-4268-4e53-9b67-8c326f6407d9/artifacts/c9b971f9e7a61efada877babffd29335d5dc9b76ae20cc8524b92c662904e445.png"
+              alt="Original bridge right reference"
+            />
+            <figcaption><span>Right</span><span>Hoist</span></figcaption>
+          </figure>
+        </div>
+        <div class="failure">
+          <strong>Root cause</strong>
+          <p>
+            The asset plan contained the right bridge criteria, but the
+            concept-view compiler accepts only the asset name and global visual
+            tokens. It spent 3,995 characters on world lore and never told the
+            image model it needed a deck.
+          </p>
+        </div>
+      </section>
+
+      <section>
+        <div class="strip-heading">
+          <div>
+            <p class="label">Bridge · regenerated inputs</p>
+            <h2>More consistent. Still not a bridge.</h2>
+          </div>
+          <p>
+            Fulcrum kept the original front and replaced three views. QA's
+            critical missing-deck finding lost priority to a major
+            side-silhouette finding. The selected correction was then truncated
+            from the 4,000-character image prompt.
+          </p>
+        </div>
+        <div class="image-strip">
+          <figure>
+            <img
+              src="../workspace/projects/9ad44a5e-4268-4e53-9b67-8c326f6407d9/artifacts/97df052673cf921ca5664269210d7a9f34a4df126aaf7c0575b082f83a055b12.png"
+              alt="Regenerated bridge front reference"
+            />
+            <figcaption><span>Front</span><span>Reused</span></figcaption>
+          </figure>
+          <figure>
+            <img
+              src="../workspace/projects/9ad44a5e-4268-4e53-9b67-8c326f6407d9/artifacts/4dfe49afe2e19aedd995411b0ab9b20bf1659a62dc4deb42fe6427bd6cd44904.png"
+              alt="Regenerated bridge left reference"
+            />
+            <figcaption><span>Left</span><span>New</span></figcaption>
+          </figure>
+          <figure>
+            <img
+              src="../workspace/projects/9ad44a5e-4268-4e53-9b67-8c326f6407d9/artifacts/44481cdbac78c14db320d6c44c0ec25d33a68007d01e262852018bc8d247d9bd.png"
+              alt="Regenerated bridge back reference"
+            />
+            <figcaption><span>Back</span><span>New</span></figcaption>
+          </figure>
+          <figure>
+            <img
+              src="../workspace/projects/9ad44a5e-4268-4e53-9b67-8c326f6407d9/artifacts/b30d3e45cd25ca14d56fabcc70a950ac4dc9e3be6d51a1b37f316ccdfdcf8dd9.png"
+              alt="Regenerated bridge right reference"
+            />
+            <figcaption><span>Right</span><span>New</span></figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <section class="ledger">
+        <div class="ledger-copy">
+          <p class="label">Credit audit</p>
+          <h2>The $12 report is fiction.</h2>
+          <p>
+            Fulcrum reads Meshy's real <code>consumed_credits</code>, then
+            leaves it in metadata while authorizing calls with an invented USD
+            reservation. Nineteen completed tasks report 570 credits. One task
+            is still pending.
+          </p>
+        </div>
+        <div class="numbers">
+          <div class="number bad">
+            <span>Report's claimed spend</span><strong>$12</strong>
+          </div>
+          <div class="number bad">
+            <span>Completed Meshy work</span><strong>570 cr</strong>
+          </div>
+          <div class="number">
+            <span>If pending task costs 30</span><strong>600 cr</strong>
+          </div>
+          <div class="number good">
+            <span>Ten first-pass assets</span><strong>300 cr</strong>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <p class="label">Recommended 30-credit path</p>
+        <h2>Pay for certainty in stages.</h2>
+        <div class="flow">
+          <div class="step">
+            <span>01 · FREE GATE</span>
+            <h3>Approve references</h3>
+            <p>
+              Reject inconsistent views or missing semantic parts
+              <strong>before Meshy</strong>.
+            </p>
+          </div>
+          <div class="step">
+            <span>02 · 20 CREDITS</span>
+            <h3>Geometry only</h3>
+            <p>
+              Meshy 7 multiview, no texture, preserve high-detail geometry for
+              QA.
+            </p>
+          </div>
+          <div class="step">
+            <span>03 · QA GATE</span>
+            <h3>Grade the mesh</h3>
+            <p>
+              Cardinal thumbnails, local turntable, semantic and geometry
+              checks.
+            </p>
+          </div>
+          <div class="step">
+            <span>04 · 10 CREDITS</span>
+            <h3>4K PBR texture</h3>
+            <p>
+              Retexture only accepted geometry using approved references. 4K
+              costs the same as 2K.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <nav class="links" aria-label="Related reports">
+        <a class="button" href="./m2-live-qa.html">Original M2 QA report</a>
+        <a class="button" href="../research/fulcrum-meshy-audit.md"
+          >Full technical audit</a
+        >
+        <a class="button" href="../research/meshcaster-meshy-review.md"
+          >Meshcaster review</a
+        >
+        <a class="button" href="../research/meshy-api-review.md"
+          >Official Meshy API review</a
+        >
+      </nav>
+    </main>
+  </body>
+</html>

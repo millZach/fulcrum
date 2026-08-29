@@ -42,3 +42,6 @@ Thumbs.db
 # Local handoff documents
 **/HANDOFF.md
 docs/SESSION_CONTEXT.md
+
+# Local workspace backups
+workspace-backup-*.tar

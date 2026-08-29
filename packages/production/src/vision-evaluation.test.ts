@@ -1,0 +1,1051 @@
+import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+import {
+  AssetDocumentSchema,
+  TurntableManifestSchema,
+  type ArtifactRef,
+  type RevisionRef,
+} from "@fulcrum/domain";
+import {
+  assertStrictCompatibleJsonSchema,
+  type ExecutionProviderStatus,
+  type StructuredVisionExecution,
+  type VisionFrameInput,
+} from "@fulcrum/execution";
+import { ProjectRepository } from "@fulcrum/project";
+import { NodeIO } from "@gltf-transform/core";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
+
+import { DEFAULT_ASSET_POLICIES } from "./deterministic-quality.js";
+import { AssetQuality, createReplayReliquary } from "./index.js";
+import { renderTurntable } from "./turntable.js";
+import {
+  ASSET_VISION_RUBRIC_V1,
+  BipedDetectionVerdictSchema,
+  LiveBipedDetectionPort,
+  REPLAY_VISION_CATALOG,
+  ReplayBipedDetectionPort,
+  ReplayVisionEvaluationPort,
+  VisionEvaluationError,
+  VisionFindingsWireSchema,
+  mapVisionFindingsWire,
+  materializeVisionReport,
+  visionRequestDigest,
+  visionRequestScopeHash,
+  type VisionFindings,
+  type VisionFindingsWire,
+  type VisionRequestDescriptor,
+} from "./vision-evaluation.js";
+
+const roots: string[] = [];
+
+afterEach(() => {
+  delete process.env.OPENAI_API_KEY;
+  delete process.env.FULCRUM_OPENAI_VISION_RESERVE_USD;
+  for (const root of roots.splice(0))
+    rmSync(root, { recursive: true, force: true });
+});
+
+const artifact = (
+  artifactId: string,
+  sha256 = createHash("sha256").update(artifactId).digest("hex"),
+): ArtifactRef => ({
+  artifactId,
+  sha256,
+  mediaType: "image/png",
+  byteLength: 16,
+  uri: `/api/artifacts/${artifactId}`,
+});
+
+const descriptor = (
+  overrides: Partial<VisionRequestDescriptor> = {},
+): VisionRequestDescriptor => ({
+  assetRevisionId: "asset-revision-1",
+  assetSha256: "a".repeat(64),
+  policySha256: "b".repeat(64),
+  classification: "hero",
+  intendedUse: "Readable hero prop at the center of the arena.",
+  requiredFeatures: ["cyan crystal core", "bronze binding rings"],
+  prohibitedFeatures: ["photorealism"],
+  referenceArtifacts: [],
+  frames: Array.from({ length: 8 }, (_, frameIndex) => ({
+    frameIndex,
+    yawDegrees: frameIndex * 45,
+    artifact: artifact(`frame-${frameIndex}`),
+  })),
+  rubric: ASSET_VISION_RUBRIC_V1,
+  ...overrides,
+});
+
+const rearFinding = (): VisionFindings => ({
+  verdict: "revise",
+  dimensionScores: {
+    "silhouette-readability": 0.42,
+    "view-consistency": 0.76,
+    "concept-fidelity": 0.81,
+    "material-separation": 0.84,
+    "classification-fit": 0.9,
+  },
+  findings: [
+    {
+      criterionId: "silhouette-readability",
+      summary: "The rear silhouette loses the crystal housing and side guards.",
+      severity: "major",
+      confidence: 0.94,
+      evidence: [
+        { frameIndex: 3 },
+        {
+          frameIndex: 4,
+          crop: { x: 0.28, y: 0.2, width: 0.44, height: 0.62 },
+        },
+        { frameIndex: 5 },
+      ],
+      suggestedAction:
+        "Add rear and side references that define the crystal housing depth.",
+    },
+  ],
+});
+
+const passingVision = (): VisionFindings => ({
+  verdict: "pass",
+  dimensionScores: {
+    "silhouette-readability": 0.9,
+    "view-consistency": 0.92,
+    "concept-fidelity": 0.91,
+    "material-separation": 0.86,
+    "classification-fit": 0.95,
+  },
+  findings: [],
+});
+
+const visionWireFromDomain = (
+  findings: VisionFindings,
+): VisionFindingsWire => ({
+  verdict: findings.verdict,
+  dimensionScores: Object.entries(findings.dimensionScores).map(
+    ([dimension, score]) => ({ dimension, score }),
+  ),
+  findings: findings.findings.map((finding) => ({
+    ...finding,
+    evidence: finding.evidence.map((item) => ({
+      ...item,
+      crop: item.crop ?? null,
+    })),
+    suggestedAction: finding.suggestedAction ?? null,
+  })),
+});
+
+const passingVisionWire = (): VisionFindingsWire =>
+  visionWireFromDomain(passingVision());
+
+describe("vision findings live JSON Schema", () => {
+  it("VisionFindingsWireSchema is OpenAI strict-compatible", () => {
+    expect(() =>
+      assertStrictCompatibleJsonSchema(
+        z.toJSONSchema(VisionFindingsWireSchema),
+      ),
+    ).not.toThrow();
+  });
+});
+
+describe("mapVisionFindingsWire", () => {
+  it("folds dimension entries into the domain record", () => {
+    const domain = rearFinding();
+
+    expect(
+      mapVisionFindingsWire(
+        VisionFindingsWireSchema.parse(visionWireFromDomain(domain)),
+      ),
+    ).toEqual(domain);
+  });
+
+  it("omits null crops and suggested actions from domain findings", () => {
+    const wire = visionWireFromDomain(rearFinding());
+    wire.findings[0]!.suggestedAction = null;
+
+    const mapped = mapVisionFindingsWire(wire);
+
+    expect(mapped.findings[0]).not.toHaveProperty("suggestedAction");
+    expect(mapped.findings[0]?.evidence[0]).not.toHaveProperty("crop");
+    expect(mapped.findings[0]?.evidence[1]).toHaveProperty("crop");
+  });
+
+  it("rejects duplicate dimensions with their wire issue path", () => {
+    const wire = passingVisionWire();
+    wire.dimensionScores.push({
+      ...wire.dimensionScores[0]!,
+      score: 0.1,
+    });
+
+    try {
+      mapVisionFindingsWire(wire);
+      throw new Error("Expected duplicate dimensions to be rejected.");
+    } catch (error) {
+      expect(error).toBeInstanceOf(z.ZodError);
+      expect((error as z.ZodError).issues).toEqual([
+        expect.objectContaining({
+          path: ["dimensionScores", 5, "dimension"],
+          message: "Duplicate vision score dimension: silhouette-readability.",
+        }),
+      ]);
+    }
+  });
+});
+
+const apiOnlyStatuses: ExecutionProviderStatus[] = [
+  {
+    provider: "openai",
+    access: "subscription",
+    ready: false,
+    installed: true,
+    authenticated: false,
+    capabilities: { imageGeneration: false },
+    detail: "not signed in",
+  },
+  {
+    provider: "openai-api",
+    access: "api",
+    ready: true,
+    installed: true,
+    authenticated: true,
+    capabilities: { imageGeneration: true },
+    detail: "configured",
+  },
+];
+
+type VisionExecutionInput<T> = {
+  provider: "openai" | "openai-api";
+  model?: string;
+  cwd: string;
+  systemPrompt: string;
+  prompt: string;
+  frames: VisionFrameInput[];
+  schema: z.ZodType<T>;
+  idempotencyKey: string;
+};
+
+const openSemanticProject = async (
+  execution: StructuredVisionExecution,
+  mode: "live" | "replay" = "live",
+): Promise<{
+  repository: ProjectRepository;
+  quality: AssetQuality;
+  projectId: string;
+  runId: string;
+  asset: RevisionRef;
+  policy: RevisionRef;
+  deterministicReport: RevisionRef;
+  turntable: RevisionRef;
+}> => {
+  const root = mkdtempSync(path.join(tmpdir(), "fulcrum-semantic-"));
+  roots.push(root);
+  const repository = new ProjectRepository(root);
+  const projectId = "semantic-project";
+  const runId = "semantic-run";
+  const createdAt = "2026-08-24T12:00:00.000Z";
+  repository.reserveProject(projectId, createdAt);
+  const brief = repository.writeRevision({
+    projectId,
+    entityId: `${projectId}:brief`,
+    kind: "game-brief",
+    value: { text: "A semantic evaluation fixture.", rightsConfirmed: true },
+    runId,
+  });
+  const glbBytes = await createReplayReliquary();
+  const glb = repository.putArtifact(projectId, glbBytes, "model/gltf-binary");
+  const asset = repository.writeRevision({
+    projectId,
+    entityId: `${projectId}:asset`,
+    kind: "asset-document",
+    value: AssetDocumentSchema.parse({
+      assetId: `${projectId}:asset`,
+      name: "Ancient Reliquary",
+      classification: "hero",
+      glb,
+      provider: "fixture-live",
+      model: "fixture-v1",
+      sourceConceptRevisionId: "concept-1",
+      externalJobId: "asset-job-1",
+      costUsd: 0,
+    }),
+    runId,
+  });
+  const policy = repository.writeRevision({
+    projectId,
+    entityId: `${projectId}:policy:hero`,
+    kind: "asset-policy",
+    value: DEFAULT_ASSET_POLICIES.hero,
+    runId,
+  });
+  repository.createProject({
+    schemaVersion: 1,
+    milestone: "m2",
+    projectId,
+    name: "Semantic fixture",
+    mode,
+    status: "active",
+    stage: "asset-batch",
+    runId,
+    budgetUsd: 1,
+    spentUsd: 0,
+    brief,
+    createdAt,
+    updatedAt: createdAt,
+  });
+  const quality = new AssetQuality(repository, {
+    visionExecution: execution,
+    visionProviderStatuses: apiOnlyStatuses,
+  });
+  const inspected = await quality.inspect({
+    projectId,
+    runId,
+    asset,
+    policy: { revision: policy, value: DEFAULT_ASSET_POLICIES.hero },
+  });
+  if (!inspected.turntable)
+    throw new Error("Fixture did not render a turntable.");
+  return {
+    repository,
+    quality,
+    projectId,
+    runId,
+    asset,
+    policy,
+    deterministicReport: inspected.deterministicReport,
+    turntable: inspected.turntable,
+  };
+};
+
+const semanticRequest = (
+  fixture: Awaited<ReturnType<typeof openSemanticProject>>,
+) => ({
+  projectId: fixture.projectId,
+  runId: fixture.runId,
+  mode: "live" as const,
+  asset: fixture.asset,
+  deterministicReport: fixture.deterministicReport,
+  turntable: fixture.turntable,
+  policy: {
+    revision: fixture.policy,
+    value: DEFAULT_ASSET_POLICIES.hero,
+  },
+  context: {
+    intendedUse: "Readable hero prop at the center of the arena.",
+    requiredFeatures: ["cyan crystal core", "bronze binding rings"],
+    prohibitedFeatures: ["photorealism"],
+    referenceArtifacts: [],
+  },
+});
+
+describe("visionRequestDigest", () => {
+  it("keeps_content_digest_stable_but_changes_scope_hash_when_required_features_change", () => {
+    const first = descriptor();
+    const second = descriptor({
+      requiredFeatures: ["cyan crystal core", "silver binding rings"],
+    });
+
+    expect(visionRequestDigest(second)).toBe(visionRequestDigest(first));
+    expect(visionRequestScopeHash(second)).not.toBe(
+      visionRequestScopeHash(first),
+    );
+  });
+});
+
+describe("materializeVisionReport", () => {
+  it("maps_frame_indices_and_crops_to_real_artifact_ids", () => {
+    const request = descriptor();
+    request.frames[3]!.artifact = artifact("z-frame-3");
+    request.frames[4]!.artifact = artifact("a-frame-4");
+    request.frames[5]!.artifact = artifact("m-frame-5");
+    const report = materializeVisionReport(request, rearFinding());
+
+    expect(report.findings[0]?.evidence).toEqual([
+      {
+        artifactId: "z-frame-3",
+        kind: "turntable-frame",
+        frameIndex: 3,
+      },
+      {
+        artifactId: "a-frame-4",
+        kind: "turntable-frame",
+        frameIndex: 4,
+        crop: { x: 0.28, y: 0.2, width: 0.44, height: 0.62 },
+      },
+      {
+        artifactId: "m-frame-5",
+        kind: "turntable-frame",
+        frameIndex: 5,
+      },
+    ]);
+    expect(report.findings[0]?.evidenceArtifactIds).toEqual([
+      "z-frame-3",
+      "a-frame-4",
+      "m-frame-5",
+    ]);
+  });
+
+  it("rejects_unknown_frame_index_and_pass_with_major_finding", () => {
+    const unknownFrame = rearFinding();
+    unknownFrame.findings[0]!.evidence = [{ frameIndex: 99 }];
+    expect(() => materializeVisionReport(descriptor(), unknownFrame)).toThrow(
+      /unknown frame index 99/i,
+    );
+
+    expect(() =>
+      materializeVisionReport(descriptor(), {
+        ...rearFinding(),
+        verdict: "pass",
+      }),
+    ).toThrow(/pass.*major/i);
+  });
+
+  it("creates_stable_finding_ids_from_identical_evidence", () => {
+    const first = materializeVisionReport(descriptor(), rearFinding());
+    const second = materializeVisionReport(descriptor(), rearFinding());
+
+    expect(second.findings[0]?.findingId).toBe(first.findings[0]?.findingId);
+  });
+});
+
+describe("ReplayVisionEvaluationPort", () => {
+  it("returns_fixture_only_for_exact_request_digest", async () => {
+    const request = descriptor();
+    const response = rearFinding();
+    const port = new ReplayVisionEvaluationPort({
+      schema: "fulcrum.replay-vision-catalog",
+      version: 1,
+      fixtures: [
+        {
+          requestDigest: visionRequestDigest(request),
+          description: "Exact fixture",
+          response,
+        },
+      ],
+    });
+    const frameBytes = request.frames.map(({ artifact: frameArtifact }) =>
+      Uint8Array.from(Buffer.from(frameArtifact.artifactId)),
+    );
+    const withMatchingHashes = descriptor({
+      frames: request.frames.map((frame, index) => ({
+        ...frame,
+        artifact: artifact(
+          frame.artifact.artifactId,
+          createHash("sha256").update(frameBytes[index]!).digest("hex"),
+        ),
+      })),
+    });
+    const matchingPort = new ReplayVisionEvaluationPort({
+      schema: "fulcrum.replay-vision-catalog",
+      version: 1,
+      fixtures: [
+        {
+          requestDigest: visionRequestDigest(withMatchingHashes),
+          description: "Exact fixture",
+          response,
+        },
+      ],
+    });
+
+    await expect(
+      matchingPort.evaluate(
+        { ...withMatchingHashes, frameBytes },
+        "vision:key",
+      ),
+    ).resolves.toMatchObject({
+      findings: response,
+      provider: "fulcrum-replay",
+      model: "replay-vision-catalog-v1",
+      costUsd: 0,
+    });
+    await expect(
+      port.evaluate(
+        {
+          ...descriptor({ assetSha256: "c".repeat(64) }),
+          frameBytes,
+        },
+        "vision:key",
+      ),
+    ).rejects.toBeInstanceOf(VisionEvaluationError);
+  });
+
+  it("fails_policy_blocked_when_fixture_is_missing", async () => {
+    const request = descriptor();
+    const port = new ReplayVisionEvaluationPort({
+      schema: "fulcrum.replay-vision-catalog",
+      version: 1,
+      fixtures: [],
+    });
+
+    await expect(
+      port.evaluate(
+        { ...request, frameBytes: request.frames.map(() => new Uint8Array()) },
+        "vision:key",
+      ),
+    ).rejects.toMatchObject({
+      code: expect.stringMatching(/replay|integrity/),
+      failureKind: "policy-blocked",
+    });
+  });
+
+  it("catalog_entries_match_current_replay_turntable_hashes", async () => {
+    for (const [variant, description] of [
+      ["baseline", "baseline replay reliquary"],
+      ["rear-defined", "rear-defined replay reliquary"],
+    ] as const) {
+      const bytes = await createReplayReliquary(variant);
+      const document = await new NodeIO().readBinary(bytes);
+      const frames = await renderTurntable(
+        document,
+        DEFAULT_ASSET_POLICIES.hero.turntable,
+      );
+      const request = descriptor({
+        assetSha256: createHash("sha256").update(bytes).digest("hex"),
+        policySha256: createHash("sha256")
+          .update(JSON.stringify(DEFAULT_ASSET_POLICIES.hero, null, 2))
+          .digest("hex"),
+        frames: frames.map((frame) => ({
+          frameIndex: frame.frameIndex,
+          yawDegrees: frame.yawDegrees,
+          artifact: artifact(
+            `replay-frame-${frame.frameIndex}`,
+            createHash("sha256").update(frame.bytes).digest("hex"),
+          ),
+        })),
+      });
+      const fixture = REPLAY_VISION_CATALOG.fixtures.find(
+        (entry) => entry.description === description,
+      );
+
+      expect(fixture?.requestDigest).toBe(visionRequestDigest(request));
+    }
+  });
+});
+
+describe("biped detection ports", () => {
+  const bipedInput = (name: string, description: string) => {
+    const bytes = Uint8Array.from([1, 2, 3, 4]);
+    return {
+      assetId: `asset:${name}`,
+      name,
+      description,
+      classification: "hero" as const,
+      frontImage: artifact(
+        `front:${name}`,
+        createHash("sha256").update(bytes).digest("hex"),
+      ),
+      frontImageBytes: bytes,
+    };
+  };
+
+  it("classifies replay metadata deterministically without live execution", async () => {
+    const port = new ReplayBipedDetectionPort();
+    await expect(
+      port.detect(
+        bipedInput("Foundry Warden", "A humanoid boss with two legs."),
+        "biped:one",
+      ),
+    ).resolves.toMatchObject({
+      verdict: { biped: true },
+      provider: "fulcrum-replay",
+      model: "replay-biped-heuristic-v1",
+      costUsd: 0,
+    });
+    await expect(
+      port.detect(
+        bipedInput("Ancient Reliquary", "A stone objective chest."),
+        "biped:two",
+      ),
+    ).resolves.toMatchObject({ verdict: { biped: false } });
+  });
+
+  it("sends live detection one front image plus the asset metadata", async () => {
+    const call = vi.fn(async (input) => ({
+      value: input.schema.parse({
+        biped: true,
+        confidence: 0.94,
+        rationale: "The front view shows one torso, two arms and two legs.",
+      }),
+      provider: "openai" as const,
+      model: "vision-fixture",
+    }));
+    const port = new LiveBipedDetectionPort(
+      { generateStructuredVision: call } as StructuredVisionExecution,
+      "openai",
+      "/tmp",
+    );
+    const input = bipedInput(
+      "Foundry Boss",
+      "A heavily armored humanoid boss.",
+    );
+
+    await expect(port.detect(input, "biped:live")).resolves.toMatchObject({
+      verdict: { biped: true, confidence: 0.94 },
+      provider: "openai",
+      model: "vision-fixture",
+    });
+    expect(call).toHaveBeenCalledOnce();
+    expect(call).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "openai",
+        idempotencyKey: "biped:live",
+        frames: [
+          expect.objectContaining({
+            label: "approved front reference",
+            bytes: input.frontImageBytes,
+          }),
+        ],
+        prompt: expect.stringContaining("Foundry Boss"),
+      }),
+    );
+    expect(() =>
+      assertStrictCompatibleJsonSchema(BipedDetectionVerdictSchema),
+    ).not.toThrow();
+  });
+});
+
+describe("AssetQuality.ensureSemantic", () => {
+  it("starts_a_fresh_replay_evaluation_when_request_scope_changes", async () => {
+    const fixture = await openSemanticProject(
+      {
+        async generateStructuredVision() {
+          throw new Error("Replay evaluation must not call live execution.");
+        },
+      },
+      "replay",
+    );
+    const firstRequest = {
+      ...semanticRequest(fixture),
+      mode: "replay" as const,
+    };
+    const secondRequest = {
+      ...firstRequest,
+      context: {
+        ...firstRequest.context,
+        requiredFeatures: ["cyan crystal core", "silver binding rings"],
+      },
+    };
+
+    const first = await fixture.quality.ensureSemantic(firstRequest);
+    const second = await fixture.quality.ensureSemantic(secondRequest);
+
+    expect(first).toMatchObject({ status: "ready" });
+    expect(second).toMatchObject({ status: "ready" });
+    if (first.status === "ready" && second.status === "ready") {
+      expect(second.value.report.requestDigest).toBe(
+        first.value.report.requestDigest,
+      );
+      expect(second.value.revision.revisionId).not.toBe(
+        first.value.revision.revisionId,
+      );
+    }
+    const semanticEvents = fixture.repository
+      .listEvents(fixture.projectId)
+      .filter(({ type }) => type.startsWith("asset.semantic-evaluation-"));
+    const submissions = semanticEvents.filter(
+      ({ type }) => type === "asset.semantic-evaluation-submitted",
+    );
+    expect(submissions).toHaveLength(2);
+    expect(
+      new Set(submissions.map(({ payload }) => payload.requestId)).size,
+    ).toBe(2);
+    expect(
+      semanticEvents.filter(
+        ({ type }) => type === "asset.semantic-evaluation-completed",
+      ),
+    ).toHaveLength(2);
+    fixture.repository.close();
+  });
+
+  it("keeps_concurrent_replay_submissions_asset_scoped_for_identical_content", async () => {
+    const fixture = await openSemanticProject(
+      {
+        async generateStructuredVision() {
+          throw new Error("Replay evaluation must not call live execution.");
+        },
+      },
+      "replay",
+    );
+    const firstAsset = AssetDocumentSchema.parse(
+      fixture.repository.resolveRevision(fixture.asset),
+    );
+    const secondAssetId = `${fixture.projectId}:second-asset`;
+    const secondAsset = fixture.repository.writeRevision({
+      projectId: fixture.projectId,
+      entityId: secondAssetId,
+      kind: "asset-document",
+      value: AssetDocumentSchema.parse({
+        ...firstAsset,
+        assetId: secondAssetId,
+        name: "Second Ancient Reliquary",
+        externalJobId: "asset-job-2",
+      }),
+      runId: fixture.runId,
+    });
+    const secondInspected = await fixture.quality.inspect({
+      projectId: fixture.projectId,
+      runId: fixture.runId,
+      asset: secondAsset,
+      policy: {
+        revision: fixture.policy,
+        value: DEFAULT_ASSET_POLICIES.hero,
+      },
+    });
+    if (!secondInspected.turntable)
+      throw new Error("Second fixture did not render a turntable.");
+    const firstRequest = {
+      ...semanticRequest(fixture),
+      mode: "replay" as const,
+    };
+    const secondRequest = {
+      ...firstRequest,
+      asset: secondAsset,
+      deterministicReport: secondInspected.deterministicReport,
+      turntable: secondInspected.turntable,
+    };
+    const requestDescriptor = (
+      asset: RevisionRef,
+      turntable: RevisionRef,
+    ): VisionRequestDescriptor => {
+      const document = AssetDocumentSchema.parse(
+        fixture.repository.resolveRevision(asset),
+      );
+      const manifest = TurntableManifestSchema.parse(
+        fixture.repository.resolveRevision(turntable),
+      );
+      return {
+        assetRevisionId: asset.revisionId,
+        assetSha256: document.glb.sha256,
+        policySha256: fixture.policy.artifact.sha256,
+        classification: DEFAULT_ASSET_POLICIES.hero.classification,
+        intendedUse: firstRequest.context.intendedUse,
+        requiredFeatures: firstRequest.context.requiredFeatures,
+        prohibitedFeatures: firstRequest.context.prohibitedFeatures,
+        referenceArtifacts: firstRequest.context.referenceArtifacts,
+        frames: manifest.frames,
+        rubric: ASSET_VISION_RUBRIC_V1,
+      };
+    };
+    const firstDescriptor = requestDescriptor(fixture.asset, fixture.turntable);
+    const secondDescriptor = requestDescriptor(
+      secondAsset,
+      secondInspected.turntable,
+    );
+    const firstDigest = visionRequestDigest(firstDescriptor);
+    const secondDigest = visionRequestDigest(secondDescriptor);
+    const firstScopeHash = visionRequestScopeHash(firstDescriptor);
+    const secondScopeHash = visionRequestScopeHash(secondDescriptor);
+
+    expect(secondDigest).toBe(firstDigest);
+    expect(secondScopeHash).toBe(firstScopeHash);
+    const [first, second] = await Promise.all([
+      fixture.quality.ensureSemantic(firstRequest),
+      fixture.quality.ensureSemantic(secondRequest),
+    ]);
+
+    expect(first).toMatchObject({ status: "ready" });
+    expect(second).toMatchObject({ status: "ready" });
+    if (first.status === "ready" && second.status === "ready") {
+      expect(first.value.report.assetId).toBe(firstAsset.assetId);
+      expect(second.value.report.assetId).toBe(secondAssetId);
+    }
+    const firstKey = `asset-semantic:${fixture.projectId}:${firstAsset.assetId}:replay:${firstDigest}:${firstScopeHash}`;
+    const secondKey = `asset-semantic:${fixture.projectId}:${secondAssetId}:replay:${secondDigest}:${secondScopeHash}`;
+    expect(secondKey).not.toBe(firstKey);
+    const firstSubmission = fixture.repository.getSubmissionByKey(firstKey);
+    const secondSubmission = fixture.repository.getSubmissionByKey(secondKey);
+    expect(firstSubmission).toMatchObject({
+      idempotencyKey: firstKey,
+      status: "ready",
+    });
+    expect(secondSubmission).toMatchObject({
+      idempotencyKey: secondKey,
+      status: "ready",
+    });
+    expect(secondSubmission?.requestId).not.toBe(firstSubmission?.requestId);
+    const semanticEvents = fixture.repository
+      .listEvents(fixture.projectId)
+      .filter(({ type }) => type.startsWith("asset.semantic-evaluation-"));
+    expect(
+      semanticEvents.filter(
+        ({ type }) => type === "asset.semantic-evaluation-submitted",
+      ),
+    ).toHaveLength(2);
+    expect(
+      semanticEvents.filter(
+        ({ type }) => type === "asset.semantic-evaluation-submission-unknown",
+      ),
+    ).toHaveLength(0);
+    fixture.repository.close();
+  });
+
+  it("reruns_replay_evaluation_after_an_interrupted_provider_call_marker", async () => {
+    const fixture = await openSemanticProject(
+      {
+        async generateStructuredVision() {
+          throw new Error("Replay evaluation must not call live execution.");
+        },
+      },
+      "replay",
+    );
+    const request = {
+      ...semanticRequest(fixture),
+      mode: "replay" as const,
+    };
+    const updateSubmission = fixture.repository.updateSubmission.bind(
+      fixture.repository,
+    );
+    let interruptedIdempotencyKey: string | undefined;
+    const interruption = vi
+      .spyOn(fixture.repository, "updateSubmission")
+      .mockImplementation((requestId, update) => {
+        const submission = updateSubmission(requestId, update);
+        if (
+          !interruptedIdempotencyKey &&
+          update.status === "pending" &&
+          typeof update.payload?.providerCallStartedAt === "string"
+        ) {
+          interruptedIdempotencyKey = submission.idempotencyKey;
+          throw new Error("simulated process interruption");
+        }
+        return submission;
+      });
+
+    await expect(fixture.quality.ensureSemantic(request)).rejects.toThrow(
+      "simulated process interruption",
+    );
+    interruption.mockRestore();
+    if (!interruptedIdempotencyKey)
+      throw new Error("Fixture did not persist a provider call marker.");
+    expect(
+      fixture.repository.getSubmissionByKey(interruptedIdempotencyKey),
+    ).toMatchObject({
+      status: "pending",
+      payload: { providerCallStartedAt: expect.any(String) },
+    });
+
+    const resumed = await fixture.quality.ensureSemantic(request);
+
+    expect(resumed).toMatchObject({ status: "ready" });
+    expect(
+      fixture.repository.getSubmissionByKey(interruptedIdempotencyKey),
+    ).toMatchObject({ status: "ready" });
+    expect(
+      fixture.repository
+        .listEvents(fixture.projectId)
+        .filter(
+          ({ type }) => type === "asset.semantic-evaluation-submission-unknown",
+        ),
+    ).toHaveLength(0);
+    fixture.repository.close();
+  });
+
+  it("journals_intent_before_live_execution", async () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    let repository: ProjectRepository | undefined;
+    const execution: StructuredVisionExecution = {
+      async generateStructuredVision<T>(input: VisionExecutionInput<T>) {
+        const submission = repository?.getSubmissionByKey(input.idempotencyKey);
+        expect(submission).toMatchObject({
+          status: "pending",
+          provider: "openai-api",
+        });
+        expect(submission?.payload.providerCallStartedAt).toEqual(
+          expect.any(String),
+        );
+        expect(input.schema).toBe(VisionFindingsWireSchema);
+        return {
+          value: passingVisionWire() as T,
+          provider: input.provider,
+          model: "vision-fixture-v1",
+        };
+      },
+    };
+    const fixture = await openSemanticProject(execution);
+    repository = fixture.repository;
+
+    const outcome = await fixture.quality.ensureSemantic(
+      semanticRequest(fixture),
+    );
+
+    expect(outcome.status).toBe("ready");
+    expect(
+      fixture.repository.listEvents(fixture.projectId).map(({ type }) => type),
+    ).toEqual(
+      expect.arrayContaining([
+        "asset.semantic-evaluation-submitted",
+        "asset.semantic-evaluation-completed",
+      ]),
+    );
+    fixture.repository.close();
+  });
+
+  it("reserves_api_budget_once_across_resume", async () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    process.env.FULCRUM_OPENAI_VISION_RESERVE_USD = "0.07";
+    const call = vi.fn(async () => {
+      throw new Error("connection reset after request body");
+    });
+    const execution: StructuredVisionExecution = {
+      generateStructuredVision: call,
+    };
+    const fixture = await openSemanticProject(execution);
+
+    const first = await fixture.quality.ensureSemantic(
+      semanticRequest(fixture),
+    );
+    const spentAfterFirst = fixture.repository.getProject(
+      fixture.projectId,
+    ).spentUsd;
+    const second = await fixture.quality.ensureSemantic(
+      semanticRequest(fixture),
+    );
+
+    expect(first.status).toBe("failed");
+    expect(second.status).toBe("failed");
+    expect(spentAfterFirst).toBe(0.07);
+    expect(fixture.repository.getProject(fixture.projectId).spentUsd).toBe(
+      0.07,
+    );
+    expect(call).toHaveBeenCalledOnce();
+    fixture.repository.close();
+  });
+
+  it("marks_ambiguous_api_interruption_submission_unknown", async () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    const call = vi.fn(async () => {
+      throw new Error("socket ended without a response");
+    });
+    const fixture = await openSemanticProject({
+      generateStructuredVision: call,
+    });
+
+    const first = await fixture.quality.ensureSemantic(
+      semanticRequest(fixture),
+    );
+    const second = await fixture.quality.ensureSemantic(
+      semanticRequest(fixture),
+    );
+
+    expect(first).toMatchObject({
+      status: "failed",
+      error: { code: "submission-unknown" },
+    });
+    expect(second).toMatchObject({
+      status: "failed",
+      error: { code: "submission-unknown" },
+    });
+    expect(call).toHaveBeenCalledOnce();
+    expect(
+      fixture.repository
+        .listEvents(fixture.projectId)
+        .filter(
+          ({ type }) => type === "asset.semantic-evaluation-submission-unknown",
+        ),
+    ).toHaveLength(1);
+    fixture.repository.close();
+  });
+
+  it("routes_duplicate_dimensions_through_submission_unknown", async () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    const duplicate = passingVisionWire();
+    duplicate.dimensionScores.push({
+      ...duplicate.dimensionScores[0]!,
+      score: 0.1,
+    });
+    const fixture = await openSemanticProject({
+      async generateStructuredVision<T>(input: VisionExecutionInput<T>) {
+        return {
+          value: duplicate as T,
+          provider: input.provider,
+          model: "vision-fixture-v1",
+        };
+      },
+    });
+
+    const outcome = await fixture.quality.ensureSemantic(
+      semanticRequest(fixture),
+    );
+
+    expect(outcome).toMatchObject({
+      status: "failed",
+      error: {
+        code: "submission-unknown",
+        failureKind: "user-action-required",
+      },
+    });
+    expect(
+      fixture.repository
+        .listEvents(fixture.projectId)
+        .filter(
+          ({ type }) => type === "asset.semantic-evaluation-submission-unknown",
+        ),
+    ).toHaveLength(1);
+    fixture.repository.close();
+  });
+
+  it("returns_ready_revision_without_reinvoking_provider", async () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    const call = vi.fn();
+    const execution: StructuredVisionExecution = {
+      async generateStructuredVision<T>(input: VisionExecutionInput<T>) {
+        call(input);
+        return {
+          value: passingVisionWire() as T,
+          provider: input.provider,
+          model: "vision-fixture-v1",
+        };
+      },
+    };
+    const fixture = await openSemanticProject(execution);
+
+    const first = await fixture.quality.ensureSemantic(
+      semanticRequest(fixture),
+    );
+    const second = await fixture.quality.ensureSemantic(
+      semanticRequest(fixture),
+    );
+
+    expect(first.status).toBe("ready");
+    expect(second.status).toBe("ready");
+    if (first.status === "ready" && second.status === "ready")
+      expect(second.value.revision).toEqual(first.value.revision);
+    expect(call).toHaveBeenCalledOnce();
+    fixture.repository.close();
+  });
+
+  it("persists_report_with_exact_turntable_and_model_lineage", async () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    const fixture = await openSemanticProject({
+      async generateStructuredVision<T>(input: VisionExecutionInput<T>) {
+        return {
+          value: passingVisionWire() as T,
+          provider: input.provider,
+          model: "vision-fixture-v1",
+        };
+      },
+    });
+
+    const outcome = await fixture.quality.ensureSemantic(
+      semanticRequest(fixture),
+    );
+
+    expect(outcome.status).toBe("ready");
+    if (outcome.status === "ready") {
+      expect(outcome.value.report).toMatchObject({
+        assetRevisionId: fixture.asset.revisionId,
+        turntableRevisionId: fixture.turntable.revisionId,
+        provider: "openai-api",
+        model: "vision-fixture-v1",
+        verdict: "pass",
+      });
+      expect(
+        fixture.repository.resolveRevision(outcome.value.revision),
+      ).toEqual(outcome.value.report);
+    }
+    fixture.repository.close();
+  });
+});

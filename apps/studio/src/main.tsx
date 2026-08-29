@@ -8,11 +8,16 @@ import { resolveStudioRoute } from "./studio-route";
 import "./styles.css";
 
 const route = resolveStudioRoute(window.location.search);
-const Root =
-  route === "m1-prototype" ? M1Prototype : route === "m1" ? M1Studio : App;
-
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <Root />
+    {route === "m1-prototype" ? (
+      <M1Prototype />
+    ) : route === "m2" ? (
+      <M1Studio milestone="m2" />
+    ) : route === "m1" ? (
+      <M1Studio milestone="m1" />
+    ) : (
+      <App />
+    )}
   </StrictMode>,
 );

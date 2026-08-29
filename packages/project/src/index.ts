@@ -6,16 +6,55 @@ import { DatabaseSync } from "node:sqlite";
 import {
   ApprovalDecisionSchema,
   ArtifactRefSchema,
+  normalizeBlockedReason,
   ProjectStateSchema,
   ProviderPreflightError,
   type ApprovalDecision,
   type ArtifactRef,
   type ProjectState,
   type ProjectStateInput,
+  type ProjectStage,
   type RevisionRef,
   type SubmissionRecord,
   type SubmissionStatus,
 } from "@fulcrum/domain";
+
+export interface WorkflowCheckpointRepository {
+  ensureRevision<T>(input: {
+    projectId: string;
+    operationKey: string;
+    entityId: string;
+    kind: string;
+    runId: string;
+    createValue: () => T;
+  }): { revision: RevisionRef; value: T; created: boolean };
+
+  appendWorkflowEvent(input: {
+    projectId: string;
+    runId: string;
+    type:
+      | "workflow.node.entered"
+      | "workflow.node.suspended"
+      | "workflow.node.failed"
+      | "workflow.run.reconstructed";
+    payload: Record<string, unknown>;
+  }): void;
+
+  commitWorkflowCheckpoint(input: {
+    projectId: string;
+    runId: string;
+    checkpointKey: string;
+    expectedStage: ProjectStage;
+    nextState: ProjectStateInput;
+    event: {
+      type: "workflow.node.completed";
+      payload: Record<string, unknown>;
+    };
+  }): {
+    status: "committed" | "already-committed" | "stale";
+    state: ProjectState;
+  };
+}
 
 type ArtifactRow = {
   artifact_id: string;
@@ -213,7 +252,9 @@ export class ProjectRepository {
     if (!row) {
       throw new Error(`Project ${projectId} does not exist.`);
     }
-    return ProjectStateSchema.parse(JSON.parse(row.state_json));
+    return normalizeBlockedReason(
+      ProjectStateSchema.parse(JSON.parse(row.state_json)),
+    );
   }
 
   listProjects(): ProjectState[] {
@@ -222,7 +263,7 @@ export class ProjectRepository {
       .all() as unknown as ProjectRow[];
     return rows.flatMap((row) => {
       const parsed = ProjectStateSchema.safeParse(JSON.parse(row.state_json));
-      return parsed.success ? [parsed.data] : [];
+      return parsed.success ? [normalizeBlockedReason(parsed.data)] : [];
     });
   }
 
@@ -275,6 +316,29 @@ export class ProjectRepository {
     });
   }
 
+  /**
+   * An artifact this project owns, or a miss.
+   *
+   * `getArtifactRecord` deliberately answers for any artifact id in the
+   * workspace, which is right for the public read route but wrong when the
+   * id arrives in a request body: a browser must not be able to name another
+   * project's bytes and have them attached here. Reads that trust an
+   * untrusted id go through this instead.
+   */
+  getProjectArtifact(projectId: string, artifactId: string): ArtifactRef {
+    const row = this.database
+      .prepare(
+        "SELECT artifact_id, project_id, sha256, media_type, byte_length, relative_path FROM artifacts WHERE artifact_id = ? AND project_id = ?",
+      )
+      .get(artifactId, projectId) as ArtifactRow | undefined;
+    if (!row) {
+      throw new Error(
+        `Artifact ${artifactId} does not exist on project ${projectId}.`,
+      );
+    }
+    return this.artifactRef(row);
+  }
+
   getArtifactRecord(artifactId: string): {
     ref: ArtifactRef;
     absolutePath: string;
@@ -317,6 +381,8 @@ export class ProjectRepository {
     kind: string;
     value: T;
     runId: string;
+    revisionId?: string;
+    createdAt?: string;
   }): RevisionRef {
     const bytes = new TextEncoder().encode(
       JSON.stringify(input.value, null, 2),
@@ -326,8 +392,8 @@ export class ProjectRepository {
       bytes,
       "application/json",
     );
-    const revisionId = randomUUID();
-    const createdAt = now();
+    const revisionId = input.revisionId ?? randomUUID();
+    const createdAt = input.createdAt ?? now();
     this.database
       .prepare(
         "INSERT INTO revisions (revision_id, project_id, entity_id, kind, artifact_id, run_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -349,6 +415,75 @@ export class ProjectRepository {
       createdAt,
       createdByRunId: input.runId,
     };
+  }
+
+  ensureRevision<T>(input: {
+    projectId: string;
+    operationKey: string;
+    entityId: string;
+    kind: string;
+    runId: string;
+    createValue: () => T;
+  }): { revision: RevisionRef; value: T; created: boolean } {
+    const revisionId = `ensured-${createHash("sha256")
+      .update(JSON.stringify([input.projectId, input.operationKey]))
+      .digest("hex")}`;
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const existing = this.database
+        .prepare(
+          "SELECT revision_id, entity_id, kind, artifact_id, created_at, run_id FROM revisions WHERE revision_id = ?",
+        )
+        .get(revisionId) as RevisionRow | undefined;
+      if (existing) {
+        if (
+          existing.entity_id !== input.entityId ||
+          existing.kind !== input.kind
+        )
+          throw new Error(
+            `Operation key ${input.operationKey} was reused for a different revision identity.`,
+          );
+        const revision = this.getRevision(revisionId);
+        const value = this.resolveRevision<T>(revision);
+        this.database.exec("COMMIT");
+        return { revision, value, created: false };
+      }
+
+      const value = input.createValue();
+      const bytes = new TextEncoder().encode(JSON.stringify(value, null, 2));
+      const artifact = this.putArtifact(
+        input.projectId,
+        bytes,
+        "application/json",
+      );
+      const createdAt = now();
+      this.database
+        .prepare(
+          "INSERT INTO revisions (revision_id, project_id, entity_id, kind, artifact_id, run_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          revisionId,
+          input.projectId,
+          input.entityId,
+          input.kind,
+          artifact.artifactId,
+          input.runId,
+          createdAt,
+        );
+      const revision = {
+        entityId: input.entityId,
+        revisionId,
+        kind: input.kind,
+        artifact,
+        createdAt,
+        createdByRunId: input.runId,
+      };
+      this.database.exec("COMMIT");
+      return { revision, value, created: true };
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   getRevision(revisionId: string): RevisionRef {
@@ -397,6 +532,86 @@ export class ProjectRepository {
       );
   }
 
+  appendWorkflowEvent(input: {
+    projectId: string;
+    runId: string;
+    type:
+      | "workflow.node.entered"
+      | "workflow.node.suspended"
+      | "workflow.node.failed"
+      | "workflow.run.reconstructed";
+    payload: Record<string, unknown>;
+  }): void {
+    this.appendEvent(input);
+  }
+
+  commitWorkflowCheckpoint(input: {
+    projectId: string;
+    runId: string;
+    checkpointKey: string;
+    expectedStage: ProjectStage;
+    nextState: ProjectStateInput;
+    event: {
+      type: "workflow.node.completed";
+      payload: Record<string, unknown>;
+    };
+  }): {
+    status: "committed" | "already-committed" | "stale";
+    state: ProjectState;
+  } {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const current = this.getProject(input.projectId);
+      const checkpoints = this.database
+        .prepare(
+          "SELECT payload_json FROM events WHERE project_id = ? AND event_type = 'workflow.node.completed' ORDER BY rowid ASC",
+        )
+        .all(input.projectId) as unknown as Array<{ payload_json: string }>;
+      const alreadyCommitted = checkpoints.some(({ payload_json }) => {
+        const payload = JSON.parse(payload_json) as Record<string, unknown>;
+        return payload.checkpointKey === input.checkpointKey;
+      });
+      if (alreadyCommitted) {
+        this.database.exec("COMMIT");
+        return { status: "already-committed", state: current };
+      }
+      if (current.stage !== input.expectedStage) {
+        this.database.exec("COMMIT");
+        return { status: "stale", state: current };
+      }
+      const next = ProjectStateSchema.parse({
+        ...input.nextState,
+        projectId: input.projectId,
+        updatedAt: now(),
+      });
+      this.database
+        .prepare(
+          "UPDATE projects SET state_json = ?, updated_at = ? WHERE project_id = ?",
+        )
+        .run(JSON.stringify(next), next.updatedAt, input.projectId);
+      this.database
+        .prepare(
+          "INSERT INTO events (event_id, project_id, run_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          randomUUID(),
+          input.projectId,
+          input.runId,
+          input.event.type,
+          JSON.stringify({
+            ...input.event.payload,
+            checkpointKey: input.checkpointKey,
+          }),
+          now(),
+        );
+      this.database.exec("COMMIT");
+      return { status: "committed", state: next };
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   listEvents(projectId: string): Array<{
     eventId: string;
     runId: string;
@@ -406,7 +621,7 @@ export class ProjectRepository {
   }> {
     const rows = this.database
       .prepare(
-        "SELECT event_id, run_id, event_type, payload_json, created_at FROM events WHERE project_id = ? ORDER BY created_at ASC",
+        "SELECT event_id, run_id, event_type, payload_json, created_at FROM events WHERE project_id = ? ORDER BY created_at ASC, rowid ASC",
       )
       .all(projectId) as unknown as Array<{
       event_id: string;
@@ -444,6 +659,72 @@ export class ProjectRepository {
         parsed.decidedAt,
       );
     return parsed;
+  }
+
+  commitApproval(input: {
+    decision: ApprovalDecision;
+    nextState: ProjectState;
+    event: {
+      runId: string;
+      type: string;
+      payload: Record<string, unknown>;
+    };
+  }): { decision: ApprovalDecision; state: ProjectState } {
+    const decision = ApprovalDecisionSchema.parse(input.decision);
+    const nextState = ProjectStateSchema.parse({
+      ...input.nextState,
+      projectId: decision.projectId,
+      updatedAt: now(),
+    });
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const revision = this.getRevision(decision.targetRevisionId);
+      if (revision.artifact.sha256 !== decision.targetSha256) {
+        throw new Error(
+          "Approval target hash does not match the immutable revision.",
+        );
+      }
+      this.database
+        .prepare(
+          "INSERT INTO approvals (approval_id, project_id, target_revision_id, decision_json, created_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .run(
+          decision.approvalId,
+          decision.projectId,
+          decision.targetRevisionId,
+          JSON.stringify(decision),
+          decision.decidedAt,
+        );
+      const updated = this.database
+        .prepare(
+          "UPDATE projects SET state_json = ?, updated_at = ? WHERE project_id = ?",
+        )
+        .run(
+          JSON.stringify(nextState),
+          nextState.updatedAt,
+          decision.projectId,
+        );
+      if (updated.changes !== 1) {
+        throw new Error(`Project ${decision.projectId} does not exist.`);
+      }
+      this.database
+        .prepare(
+          "INSERT INTO events (event_id, project_id, run_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .run(
+          randomUUID(),
+          decision.projectId,
+          input.event.runId,
+          input.event.type,
+          JSON.stringify(input.event.payload),
+          now(),
+        );
+      this.database.exec("COMMIT");
+      return { decision, state: nextState };
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   recordSubmissionIntent(input: {
@@ -573,6 +854,187 @@ export class ProjectRepository {
       payload: { label, amountUsd, totalReservedUsd: saved.spentUsd },
     });
     return saved;
+  }
+
+  reserveMeshyCredits(
+    projectId: string,
+    credits: number,
+    label: string,
+  ): ProjectState {
+    if (!Number.isInteger(credits) || credits < 0) {
+      throw new ProviderPreflightError(
+        "payload-invalid",
+        "Meshy credit reservation must be a non-negative integer.",
+      );
+    }
+    const project = this.getProject(projectId);
+    const budget = project.meshyCreditBudget ?? 0;
+    const reserved = project.meshyCreditsReserved ?? 0;
+    const consumed = project.meshyCreditsConsumed ?? 0;
+    const remaining = budget - reserved - consumed;
+    if (credits > remaining) {
+      this.appendEvent({
+        projectId,
+        runId: project.runId,
+        type: "meshy-credits.refused",
+        payload: {
+          label,
+          credits,
+          remainingCredits: remaining,
+          budgetCredits: budget,
+          reservedCredits: reserved,
+          consumedCredits: consumed,
+        },
+      });
+      throw new ProviderPreflightError(
+        "budget-refused",
+        `Meshy credit budget exhausted: ${label} requires ${credits} credits, but ${remaining} remain.`,
+      );
+    }
+    const saved = this.saveProject({
+      ...project,
+      meshyCreditBudget: budget,
+      meshyCreditsReserved: reserved + credits,
+      meshyCreditsConsumed: consumed,
+    });
+    this.appendEvent({
+      projectId,
+      runId: project.runId,
+      type: "meshy-credits.reserved",
+      payload: {
+        label,
+        credits,
+        totalReservedCredits: saved.meshyCreditsReserved ?? 0,
+        consumedCredits: saved.meshyCreditsConsumed ?? 0,
+      },
+    });
+    return saved;
+  }
+
+  reconcileMeshyCredits(
+    projectId: string,
+    reservedCredits: number,
+    consumedCredits: number,
+    label: string,
+  ): ProjectState {
+    if (
+      !Number.isInteger(reservedCredits) ||
+      reservedCredits < 0 ||
+      !Number.isInteger(consumedCredits) ||
+      consumedCredits < 0
+    ) {
+      throw new ProviderPreflightError(
+        "payload-invalid",
+        "Meshy credit reconciliation values must be non-negative integers.",
+      );
+    }
+    const project = this.getProject(projectId);
+    const currentReserved = project.meshyCreditsReserved ?? 0;
+    if (reservedCredits > currentReserved) {
+      throw new ProviderPreflightError(
+        "payload-invalid",
+        `Cannot reconcile ${reservedCredits} Meshy credits when only ${currentReserved} are reserved.`,
+      );
+    }
+    const saved = this.saveProject({
+      ...project,
+      meshyCreditBudget: project.meshyCreditBudget ?? 0,
+      meshyCreditsReserved: currentReserved - reservedCredits,
+      meshyCreditsConsumed:
+        (project.meshyCreditsConsumed ?? 0) + consumedCredits,
+    });
+    this.appendEvent({
+      projectId,
+      runId: project.runId,
+      type: "meshy-credits.reconciled",
+      payload: {
+        label,
+        reservedCredits,
+        consumedCredits,
+        totalReservedCredits: saved.meshyCreditsReserved ?? 0,
+        totalConsumedCredits: saved.meshyCreditsConsumed ?? 0,
+        budgetCredits: saved.meshyCreditBudget ?? 0,
+      },
+    });
+    return saved;
+  }
+
+  reserveMeshySubmissionCredits(
+    requestId: string,
+    credits: number,
+    label: string,
+  ): SubmissionRecord {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.database
+        .prepare("SELECT * FROM submissions WHERE request_id = ?")
+        .get(requestId) as SubmissionRow | undefined;
+      if (!row) throw new Error(`Submission ${requestId} does not exist.`);
+      const submission = this.submissionRecord(row);
+      if (typeof submission.payload.meshyCreditsReserved === "number") {
+        this.database.exec("COMMIT");
+        return submission;
+      }
+      this.reserveMeshyCredits(submission.projectId, credits, label);
+      const updated = this.updateSubmission(requestId, {
+        status: submission.status,
+        payload: {
+          ...submission.payload,
+          meshyCreditsReserved: credits,
+          meshyCreditsReconciled: false,
+        },
+      });
+      this.database.exec("COMMIT");
+      return updated;
+    } catch (error) {
+      if (this.database.isTransaction) this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  reconcileMeshySubmissionCredits(
+    requestId: string,
+    consumedCredits: number,
+    label: string,
+  ): SubmissionRecord {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const row = this.database
+        .prepare("SELECT * FROM submissions WHERE request_id = ?")
+        .get(requestId) as SubmissionRow | undefined;
+      if (!row) throw new Error(`Submission ${requestId} does not exist.`);
+      const submission = this.submissionRecord(row);
+      if (submission.payload.meshyCreditsReconciled === true) {
+        this.database.exec("COMMIT");
+        return submission;
+      }
+      const reservedCredits = submission.payload.meshyCreditsReserved;
+      if (typeof reservedCredits !== "number") {
+        throw new ProviderPreflightError(
+          "payload-invalid",
+          `Submission ${requestId} has no Meshy credit reservation.`,
+        );
+      }
+      this.reconcileMeshyCredits(
+        submission.projectId,
+        reservedCredits,
+        consumedCredits,
+        label,
+      );
+      const updated = this.updateSubmission(requestId, {
+        status: submission.status,
+        payload: {
+          ...submission.payload,
+          meshyCreditsReconciled: true,
+          meshyCreditsConsumed: consumedCredits,
+        },
+      });
+      this.database.exec("COMMIT");
+      return updated;
+    } catch (error) {
+      if (this.database.isTransaction) this.database.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   private artifactRef(row: ArtifactRow): ArtifactRef {
