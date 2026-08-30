@@ -184,7 +184,7 @@ describe("staged Meshy animation request", () => {
   it("takes the rigging task id and one library action", () => {
     expect(buildMeshyStagedAnimationRequest({ rigTaskId: "rig-7" })).toEqual({
       rig_task_id: "rig-7",
-      action_id: 0,
+      action_id: 112,
     });
     expect(
       buildMeshyStagedAnimationRequest({ rigTaskId: "rig-7", actionId: 92 })

@@ -15,8 +15,15 @@ import { ProjectRepository } from "@fulcrum/project";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { encodePngRgba } from "./png.js";
+import {
+  type LocalRigJobState,
+  type LocalRigRunner,
+  type LocalRigStartInput,
+} from "./local-rig.js";
 import { StagedAssetLifecycle } from "./staged-asset-lifecycle.js";
 import {
+  isMeshyRiggingProviderRefusal,
+  MeshySubmissionError,
   SimulatedStagedAdapter,
   type SimulatedStagedOptions,
   type StagedAssetAdapter,
@@ -54,6 +61,34 @@ class RecordingAdapter implements StagedAssetAdapter {
   }
 }
 
+class FakeLocalRigRunner implements LocalRigRunner {
+  readonly starts: LocalRigStartInput[] = [];
+  readonly disposed: string[] = [];
+  state: LocalRigJobState = { status: "running", progress: 45 };
+
+  async start(input: LocalRigStartInput) {
+    this.starts.push(input);
+    return { jobId: "local-rig-fixture", archetype: "biped" };
+  }
+
+  async inspect() {
+    return this.state;
+  }
+
+  async dispose(jobId: string) {
+    this.disposed.push(jobId);
+  }
+
+  succeed(bytes = 5_000) {
+    this.state = {
+      status: "succeeded",
+      outputGlb: new Uint8Array(bytes).fill(7),
+      stdout: "Blender finished",
+      stderr: "",
+    };
+  }
+}
+
 /** A distinct, genuinely decodable 4x4 PNG per view. */
 const pngDataUrl = (tint: number): string => {
   const rgba = new Uint8Array(4 * 4 * 4);
@@ -77,6 +112,7 @@ type FixtureOptions = {
   /** False models a plan that has not reached workflow finalization. */
   assetPlanApproved?: boolean;
   simulation?: SimulatedStagedOptions;
+  localRigRunner?: LocalRigRunner;
 };
 
 const fixture = (options: FixtureOptions = {}) => {
@@ -289,7 +325,12 @@ const fixture = (options: FixtureOptions = {}) => {
   });
 
   const adapter = new RecordingAdapter(options.simulation ?? {});
-  const lifecycle = new StagedAssetLifecycle(repository, { adapter });
+  const lifecycle = new StagedAssetLifecycle(repository, {
+    adapter,
+    ...(options.localRigRunner
+      ? { localRigRunner: options.localRigRunner }
+      : {}),
+  });
   return {
     repository,
     projectId,
@@ -328,6 +369,33 @@ const project = (context: Fixture) =>
 
 const eventTypes = (context: Fixture) =>
   context.repository.listEvents(context.projectId).map((event) => event.type);
+
+describe("Meshy rigging refusal classification", () => {
+  it.each([400, 422])(
+    "classifies a rigging HTTP %s response as a provider refusal",
+    (status) => {
+      expect(
+        isMeshyRiggingProviderRefusal(
+          new MeshySubmissionError(
+            "rigging",
+            status,
+            "Pose estimation failed, please provide a valid model",
+          ),
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it.each([
+    new Error("Pose estimation failed, please provide a valid model"),
+    new MeshySubmissionError("rigging", 401, "Invalid API key"),
+    new MeshySubmissionError("rigging", 429, "Too many requests"),
+    new MeshySubmissionError("rigging", 503, "Provider unavailable"),
+    new MeshySubmissionError("retexture", 422, "Invalid texture input"),
+  ])("keeps %s out of the local fallback", (error) => {
+    expect(isMeshyRiggingProviderRefusal(error)).toBe(false);
+  });
+});
 
 describe("staged asset lifecycle", () => {
   it("reports rising progress across polls before it hands back a mesh", async () => {
@@ -408,6 +476,327 @@ describe("staged asset lifecycle", () => {
     );
   });
 
+  it("keeps an infrastructure submit error as a failure with a normal retry", async () => {
+    const localRigRunner = new FakeLocalRigRunner();
+    const context = fixture({ localRigRunner });
+    await context.lifecycle.start(context.projectId, {
+      assetId: context.heroId,
+    });
+    await settle(context, context.heroId);
+    await decide(context, context.heroId, "texture");
+    await settle(context, context.heroId);
+    await decide(context, context.heroId, "retexture");
+    const reviewable = await settle(context, context.heroId);
+    const providerMessage = "Meshy rigging submission timed out";
+    vi.spyOn(context.adapter, "submit").mockRejectedValueOnce(
+      new Error(providerMessage),
+    );
+
+    await expect(decide(context, context.heroId, "rig")).rejects.toThrow(
+      providerMessage,
+    );
+
+    expect(project(context).meshyCreditsReserved).toBe(0);
+    expect(project(context).meshyCreditsConsumed).toBe(40);
+    const failedSubmission = context.repository.getSubmissionByKey(
+      `asset-stage:v1:${context.projectId}:${context.heroId}:rig:1`,
+    );
+    expect(failedSubmission).toMatchObject({
+      status: "failed",
+      payload: {
+        error: providerMessage,
+        meshyCreditsReserved: MESHY_STAGE_CREDITS.rig,
+        meshyCreditsReconciled: true,
+        meshyCreditsConsumed: 0,
+      },
+    });
+    expect(failedSubmission?.externalJobId).toBeUndefined();
+    expect(
+      context.repository
+        .listEvents(context.projectId)
+        .find((event) => event.type === "asset.stage-submit-failed"),
+    ).toMatchObject({
+      payload: {
+        assetId: context.heroId,
+        stage: "rig",
+        round: 1,
+        reason: providerMessage,
+      },
+    });
+    expect(project(context).assetStages?.[context.heroId]).toMatchObject({
+      status: "review",
+      stage: "texture",
+      runs: reviewable.runs,
+      submitFailure: {
+        stage: "rig",
+        round: 1,
+        reason: providerMessage,
+      },
+    });
+    expect(
+      context.lifecycle
+        .views(context.projectId)
+        [context.heroId]!.offers.find(({ decision }) => decision === "rig"),
+    ).toMatchObject({ available: true, credits: MESHY_STAGE_CREDITS.rig });
+    expect(localRigRunner.starts).toEqual([]);
+    expect(eventTypes(context)).not.toContain("asset.stage-rig-fallback");
+
+    const retried = await decide(context, context.heroId, "rig");
+    expect(retried.record).toMatchObject({
+      status: "running",
+      stage: "rig",
+      runs: expect.arrayContaining([
+        expect.objectContaining({ stage: "rig", round: 1 }),
+      ]),
+    });
+    expect(project(context).meshyCreditsReserved).toBe(MESHY_STAGE_CREDITS.rig);
+    await settle(context, context.heroId);
+    expect(project(context).meshyCreditsReserved).toBe(0);
+    expect(project(context).meshyCreditsConsumed).toBe(45);
+  });
+
+  it("turns a Meshy rig refusal into a zero-credit local job for the same round", async () => {
+    const localRigRunner = new FakeLocalRigRunner();
+    const context = fixture({ localRigRunner });
+    await context.lifecycle.start(context.projectId, {
+      assetId: context.heroId,
+    });
+    await settle(context, context.heroId);
+    await decide(context, context.heroId, "texture");
+    await settle(context, context.heroId);
+
+    const providerReason =
+      "Pose estimation failed, please provide a valid model";
+    vi.spyOn(context.adapter, "submit").mockRejectedValueOnce(
+      new MeshySubmissionError("rigging", 422, providerReason),
+    );
+
+    const fallback = await decide(context, context.heroId, "rig");
+
+    expect(fallback.record).toMatchObject({
+      status: "running",
+      stage: "rig",
+      submitFailure: undefined,
+      runs: expect.arrayContaining([
+        expect.objectContaining({
+          stage: "rig",
+          round: 1,
+          status: "running",
+          provider: "blender-local",
+          providerRefusalReason: providerReason,
+          rigArchetype: "biped",
+          reservedCredits: 0,
+          consumedCredits: 0,
+          externalJobId: "local-rig-fixture",
+        }),
+      ]),
+    });
+    expect(fallback.resumeAfter).toBeTruthy();
+    expect(project(context)).toMatchObject({
+      meshyCreditsReserved: 0,
+      meshyCreditsConsumed: 30,
+    });
+    expect(localRigRunner.starts).toHaveLength(1);
+    expect(localRigRunner.starts[0]!.sourceGlb.byteLength).toBeGreaterThan(0);
+
+    const submissions = context.repository.listSubmissions(context.projectId);
+    expect(
+      submissions.find(
+        ({ idempotencyKey }) =>
+          idempotencyKey ===
+          `asset-stage:v1:${context.projectId}:${context.heroId}:rig:1`,
+      ),
+    ).toMatchObject({
+      provider: "meshy",
+      status: "failed",
+      payload: {
+        error: providerReason,
+        meshyCreditsConsumed: 0,
+        meshyCreditsReconciled: true,
+      },
+    });
+    expect(
+      submissions.find(({ provider }) => provider === "blender-local"),
+    ).toMatchObject({
+      operation: "m2-staged-rig-local",
+      status: "pending",
+      externalJobId: "local-rig-fixture",
+      payload: {
+        assetId: context.heroId,
+        stage: "rig",
+        round: 1,
+        rigArchetype: "biped",
+        providerRefusalReason: providerReason,
+        consumedCredits: 0,
+      },
+    });
+    expect(
+      context.repository
+        .listEvents(context.projectId)
+        .find(({ type }) => type === "asset.stage-rig-fallback"),
+    ).toMatchObject({
+      payload: {
+        assetId: context.heroId,
+        round: 1,
+        provider: "blender-local",
+        rigArchetype: "biped",
+        providerRefusalReason: providerReason,
+        consumedCredits: 0,
+      },
+    });
+
+    const polled = await context.lifecycle.poll(
+      context.projectId,
+      context.heroId,
+    );
+    expect(polled.record.runs.at(-1)).toMatchObject({
+      provider: "blender-local",
+      progress: 45,
+      status: "running",
+    });
+  });
+
+  it("stores a finished local rig through the poll loop and exposes its baked walk", async () => {
+    const localRigRunner = new FakeLocalRigRunner();
+    const context = fixture({ localRigRunner });
+    await context.lifecycle.start(context.projectId, {
+      assetId: context.heroId,
+    });
+    await settle(context, context.heroId);
+    await decide(context, context.heroId, "texture");
+    await settle(context, context.heroId);
+    vi.spyOn(context.adapter, "submit").mockRejectedValueOnce(
+      new MeshySubmissionError(
+        "rigging",
+        400,
+        "The submitted model could not be pose-estimated.",
+      ),
+    );
+    await decide(context, context.heroId, "rig");
+    localRigRunner.succeed();
+
+    const completed = await context.lifecycle.poll(
+      context.projectId,
+      context.heroId,
+    );
+
+    expect(completed.record).toMatchObject({
+      status: "review",
+      stage: "rig",
+    });
+    expect(completed.record.runs.at(-1)).toMatchObject({
+      stage: "rig",
+      provider: "blender-local",
+      status: "succeeded",
+      progress: 100,
+      consumedCredits: 0,
+      model: {
+        mediaType: "model/gltf-binary",
+        byteLength: 5_000,
+      },
+    });
+    expect(localRigRunner.disposed).toEqual(["local-rig-fixture"]);
+    expect(project(context)).toMatchObject({
+      meshyCreditsReserved: 0,
+      meshyCreditsConsumed: 30,
+    });
+    expect(
+      context.repository
+        .listSubmissions(context.projectId)
+        .find(({ provider }) => provider === "blender-local"),
+    ).toMatchObject({
+      status: "ready",
+      payload: {
+        consumedCredits: 0,
+        stdout: "Blender finished",
+        glbArtifactId: expect.any(String),
+      },
+    });
+    const view = context.lifecycle.views(context.projectId)[context.heroId]!;
+    expect(view.preview).toMatchObject({
+      stage: "rig",
+      provider: "blender-local",
+      rigged: true,
+      animated: true,
+    });
+    expect(view.offers.map(({ decision }) => decision)).toEqual([
+      "accept",
+      "rebuild-geometry",
+      "scrap",
+    ]);
+  });
+
+  it("lazily refunds a reserved rig intent with no provider job or stage run", async () => {
+    const context = fixture({ mode: "live" });
+    await context.lifecycle.start(context.projectId, {
+      assetId: context.heroId,
+    });
+    await settle(context, context.heroId);
+    await decide(context, context.heroId, "texture");
+    const reviewable = await settle(context, context.heroId);
+    const idempotencyKey = `asset-stage:v1:${context.projectId}:${context.heroId}:rig:1`;
+    const orphan = context.repository.recordSubmissionIntent({
+      projectId: context.projectId,
+      operation: "m2-staged-rig",
+      provider: "meshy",
+      idempotencyKey,
+      payload: {
+        assetId: context.heroId,
+        stage: "rig",
+        round: 1,
+        pollCount: 0,
+      },
+    });
+    context.repository.reserveMeshySubmissionCredits(
+      orphan.requestId,
+      MESHY_STAGE_CREDITS.rig,
+      "Meshy rig",
+    );
+    const submissionsBeforeTouch = context.adapter.submissions.length;
+    expect(project(context).meshyCreditsReserved).toBe(MESHY_STAGE_CREDITS.rig);
+
+    const view = context.lifecycle.views(context.projectId)[context.heroId]!;
+
+    expect(context.adapter.submissions).toHaveLength(submissionsBeforeTouch);
+    expect(project(context).meshyCreditsReserved).toBe(0);
+    expect(project(context).meshyCreditsConsumed).toBe(30);
+    expect(view).toMatchObject({
+      status: "review",
+      stage: "texture",
+      runs: reviewable.runs,
+      submitFailure: {
+        stage: "rig",
+        round: 1,
+        recovered: true,
+      },
+    });
+    expect(context.repository.getSubmissionByKey(idempotencyKey)).toMatchObject(
+      {
+        status: "failed",
+        payload: {
+          meshyCreditsReconciled: true,
+          meshyCreditsConsumed: 0,
+        },
+      },
+    );
+    expect(
+      context.repository.getSubmissionByKey(idempotencyKey)?.externalJobId,
+    ).toBeUndefined();
+    expect(
+      context.repository
+        .listEvents(context.projectId)
+        .find((event) => event.type === "asset.stage-submit-failed"),
+    ).toMatchObject({
+      payload: {
+        assetId: context.heroId,
+        stage: "rig",
+        round: 1,
+        reason: expect.stringMatching(/Meshy job/i),
+        recovered: true,
+      },
+    });
+  });
+
   /* Meshy publishes no free-retry path on its public API. The web app's 12
      retries per asset are not reachable from POST /openapi/v1/*, so a retry
      here is a brand-new 20-credit geometry task and must be priced as one. */
@@ -436,6 +825,88 @@ describe("staged asset lifecycle", () => {
       MESHY_STAGE_CREDITS.geometry * 2,
     );
     expect(second.runs[1]!.model!.sha256).not.toBe(firstGlb);
+  });
+
+  it("rebuilds reviewed geometry in the effective pose and feeds it to the next texture round", async () => {
+    const context = fixture({ heroPose: "none" });
+    await context.lifecycle.start(context.projectId, {
+      assetId: context.heroId,
+    });
+    const firstGeometryReview = await settle(context, context.heroId);
+    const firstGeometry = firstGeometryReview.runs[0]!.model!;
+    await decide(context, context.heroId, "texture");
+    await settle(context, context.heroId);
+    context.lifecycle.overrideRigEligibility(context.projectId, {
+      assetId: context.heroId,
+      biped: true,
+    });
+    const submissionsBeforeRebuild = context.adapter.submissions.length;
+
+    await expect(
+      context.lifecycle.decide(context.projectId, {
+        assetId: context.heroId,
+        decision: "rebuild-geometry",
+        acknowledgedCredits: 19,
+      }),
+    ).rejects.toThrow(/costs 20 credits, but 19 were acknowledged/);
+    expect(context.adapter.submissions).toHaveLength(submissionsBeforeRebuild);
+    expect(project(context).meshyCreditsReserved).toBe(0);
+
+    const rebuilding = await context.lifecycle.decide(context.projectId, {
+      assetId: context.heroId,
+      decision: "rebuild-geometry",
+      acknowledgedCredits: MESHY_STAGE_CREDITS.geometry,
+    });
+    expect(rebuilding.record).toMatchObject({
+      status: "running",
+      stage: "geometry",
+      runs: expect.arrayContaining([
+        expect.objectContaining({ stage: "geometry", round: 1 }),
+        expect.objectContaining({ stage: "texture", round: 1 }),
+        expect.objectContaining({ stage: "geometry", round: 2 }),
+      ]),
+    });
+    expect(context.adapter.submissions.at(-1)).toMatchObject({
+      stage: "geometry",
+      round: 2,
+      poseMode: "a-pose",
+    });
+    expect(project(context).meshyCreditsReserved).toBe(
+      MESHY_STAGE_CREDITS.geometry,
+    );
+
+    const rebuilt = await settle(context, context.heroId);
+    const rebuiltGeometry = rebuilt.runs.at(-1)!.model!;
+    expect(rebuilt).toMatchObject({
+      status: "review",
+      stage: "geometry",
+    });
+    expect(rebuiltGeometry.sha256).not.toBe(firstGeometry.sha256);
+    expect(rebuilt.runs.map(({ stage, round }) => [stage, round])).toEqual([
+      ["geometry", 1],
+      ["texture", 1],
+      ["geometry", 2],
+    ]);
+    expect(
+      context.lifecycle
+        .views(context.projectId)
+        [context.heroId]!.offers.map(({ decision }) => decision),
+    ).toEqual(["texture", "retry", "scrap"]);
+
+    const texturing = await decide(context, context.heroId, "texture");
+    expect(texturing.record.runs.at(-1)).toMatchObject({
+      stage: "texture",
+      round: 2,
+    });
+    const textureInput = context.adapter.submissions.at(-1);
+    if (textureInput?.stage !== "texture")
+      throw new Error("The rebuilt geometry did not start a texture task.");
+    expect(textureInput.sourceModel.artifact.sha256).toBe(
+      rebuiltGeometry.sha256,
+    );
+    expect(textureInput.sourceModel.artifact.sha256).not.toBe(
+      firstGeometry.sha256,
+    );
   });
 
   it("keeps a scrapped asset terminal and says what it cost", async () => {
@@ -598,6 +1069,23 @@ describe("staged asset lifecycle", () => {
     expect(context.adapter.submissions[0]).toMatchObject({
       stage: "geometry",
       poseMode: "a-pose",
+    });
+  });
+
+  it("lets a not-biped override remove the plan pose from geometry input", async () => {
+    const context = fixture({ heroPose: "a-pose" });
+    context.lifecycle.overrideRigEligibility(context.projectId, {
+      assetId: context.heroId,
+      biped: false,
+    });
+
+    await context.lifecycle.start(context.projectId, {
+      assetId: context.heroId,
+    });
+
+    expect(context.adapter.submissions[0]).toMatchObject({
+      stage: "geometry",
+      poseMode: undefined,
     });
   });
 
@@ -792,6 +1280,7 @@ describe("staged snapshot surface", () => {
       ["accept", 0],
       ["retexture", 10],
       ["rig", 5],
+      ["rebuild-geometry", 20],
       ["scrap", 0],
     ]);
   });

@@ -1,0 +1,11 @@
+{
+  "$comment": "Local Blender rigging script library. Each entry maps a body archetype to a headless Blender script invoked as: blender --background --python <script> -- <src.glb> <out.glb> <blend-out>. Scripts must export a single skinned armature with one baked animation named 'walk' and preserve the source textures. New archetypes are added as they are solved.",
+  "schemaVersion": 1,
+  "archetypes": {
+    "biped": {
+      "script": "biped.py",
+      "description": "Humanoid/boss bipeds, upright or hunched. 22-joint skeleton measured off the mesh (bounds, limb clusters, medial axes), heat weights via voxel-remeshed largest-shell proxy, analytic 2-link leg IK with ground clamp, in-place 1.2s heavy walk cycle.",
+      "provenance": "Authored 2026-08-29 against the Ashwake foundry boss after Meshy's rigger refused the mesh (no humanoid head landmark). Handled both the hunched original and the upright rebuild with no per-model tuning."
+    }
+  }
+}

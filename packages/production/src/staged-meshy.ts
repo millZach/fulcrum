@@ -74,6 +74,47 @@ export type StagedSubmission = {
   endpoint: MeshyStageEndpoint;
 };
 
+export type MeshySubmissionFailureKind =
+  | "provider-refusal"
+  | "authentication"
+  | "rate-limit"
+  | "upstream"
+  | "unexpected-response";
+
+const meshySubmissionFailureKind = (
+  status: number,
+): MeshySubmissionFailureKind => {
+  if (status === 400 || status === 422) return "provider-refusal";
+  if (status === 401 || status === 403) return "authentication";
+  if (status === 429) return "rate-limit";
+  if (status >= 500) return "upstream";
+  return "unexpected-response";
+};
+
+/** A synchronous HTTP response from Meshy, kept distinct from transport errors. */
+export class MeshySubmissionError extends Error {
+  readonly provider = "meshy" as const;
+  readonly failureKind: MeshySubmissionFailureKind;
+
+  constructor(
+    readonly endpoint: MeshyStageEndpoint,
+    readonly status: number,
+    readonly providerReason: string,
+  ) {
+    super(providerReason);
+    this.name = "MeshySubmissionError";
+    this.failureKind = meshySubmissionFailureKind(status);
+  }
+}
+
+/** Only a rigging endpoint's model-validation refusal may use Blender. */
+export const isMeshyRiggingProviderRefusal = (
+  error: unknown,
+): error is MeshySubmissionError =>
+  error instanceof MeshySubmissionError &&
+  error.endpoint === "rigging" &&
+  error.failureKind === "provider-refusal";
+
 export type StagedInspectInput = {
   stage: MeshyStage;
   round: number;
@@ -290,7 +331,9 @@ export class LiveMeshyStagedAdapter implements StagedAssetAdapter {
       detail?: string;
     };
     if (!response.ok || !payload.result)
-      throw new Error(
+      throw new MeshySubmissionError(
+        endpoint,
+        response.status,
         payload.message ??
           payload.detail ??
           `Meshy ${input.stage} submission failed (${response.status}).`,

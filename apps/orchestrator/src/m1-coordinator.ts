@@ -18,6 +18,7 @@ import {
 } from "@fulcrum/execution";
 import {
   StagedAssetLifecycle,
+  type LocalRigRunner,
   type StagedAssetAdapter,
 } from "@fulcrum/production";
 import { z } from "zod";
@@ -200,6 +201,7 @@ export type M1CoordinatorOptions = {
   soundRunner?: SoundGenerationRunner;
   /** Injected by tests to drive the staged gate without a real provider. */
   stagedAssetAdapter?: StagedAssetAdapter;
+  stagedLocalRigRunner?: LocalRigRunner;
   stagedVisionExecution?: StructuredVisionExecution;
   stagedVisionProviderStatuses?: ExecutionProviderStatus[];
 };
@@ -229,6 +231,9 @@ export class M1Coordinator {
     this.stagedAssets = new StagedAssetLifecycle(repository, {
       ...(options.stagedAssetAdapter
         ? { adapter: options.stagedAssetAdapter }
+        : {}),
+      ...(options.stagedLocalRigRunner
+        ? { localRigRunner: options.stagedLocalRigRunner }
         : {}),
       ...(options.stagedVisionExecution
         ? { visionExecution: options.stagedVisionExecution }
@@ -1819,7 +1824,7 @@ export class M1Coordinator {
   }
 
   snapshot(projectId: string): ProjectSnapshot {
-    const state = this.requireM1(projectId);
+    let state = this.requireM1(projectId);
     const briefText = this.briefText(state);
     const visualDirections = state.visualDirectionSet
       ? VisualDirectionSetSchema.parse(
@@ -1878,6 +1883,13 @@ export class M1Coordinator {
     const assetPlan = state.assetPlan
       ? AssetPlanSchema.parse(this.repository.resolveRevision(state.assetPlan))
       : undefined;
+    const assetStages =
+      state.milestone === "m2" && assetPlan
+        ? this.stagedAssets.views(projectId)
+        : undefined;
+    /* Building staged views lazily repairs pre-fix orphaned reservations. Read
+       state again so this same snapshot carries the reconciled ledger. */
+    if (assetStages) state = this.requireM1(projectId);
     return ProjectSnapshotSchema.parse({
       state,
       briefText,
@@ -1931,9 +1943,7 @@ export class M1Coordinator {
       ...(state.milestone === "m2"
         ? {
             meshyConfig: this.stagedAssets.config(projectId),
-            ...(assetPlan
-              ? { assetStages: this.stagedAssets.views(projectId) }
-              : {}),
+            ...(assetStages ? { assetStages } : {}),
             ...(state.assetReferenceSets
               ? {
                   assetReferenceSets:

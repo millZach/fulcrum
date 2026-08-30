@@ -25,6 +25,7 @@ import {
   creditLabel,
   gateCreditPlan,
   providerMarkLabels,
+  stagedSubmitFailureHint,
   stagedCardView,
   type GateCreditPlan,
 } from "./staged-asset-view.js";
@@ -638,6 +639,9 @@ function Overview({
                     meshyRouted: isMeshyRouted(asset),
                     geometryCredits: MESHY_GEOMETRY_PREVIEW_CREDITS,
                   });
+                  const submitFailureHint = stage?.submitFailure
+                    ? stagedSubmitFailureHint(stage.submitFailure.reason)
+                    : undefined;
                   return (
                     <div className="agp-node-shell" key={asset.assetId}>
                       <button
@@ -683,6 +687,17 @@ function Overview({
                           <span className="agp-node-stage-copy">
                             <strong>{card.statusLabel}</strong>
                             <small>{card.detail}</small>
+                            {stage?.submitFailure && (
+                              <span
+                                className="agp-staged-card-error"
+                                role="alert"
+                              >
+                                <strong>{stage.submitFailure.reason}</strong>
+                                {submitFailureHint && (
+                                  <small>{submitFailureHint}</small>
+                                )}
+                              </span>
+                            )}
                             {stage && (
                               <RigEligibilityControl
                                 busy={overridingRig !== null}

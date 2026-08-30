@@ -393,6 +393,95 @@ describe("staged asset gate routes", () => {
     });
   });
 
+  it("returns a synchronous Meshy refusal while keeping texture review retryable", async () => {
+    const context = await fixture({ mode: "live" });
+    await context.post(`${context.base}/start`);
+    await context.settle();
+    await context.post(`${context.base}/decide`, {
+      decision: "texture",
+      acknowledgedCredits: 10,
+    });
+    await context.settle();
+    const providerMessage =
+      "Pose estimation failed, please provide a valid model";
+    vi.spyOn(context.adapter, "submit").mockRejectedValueOnce(
+      new Error(providerMessage),
+    );
+
+    const refused = await context.post(`${context.base}/decide`, {
+      decision: "rig",
+      acknowledgedCredits: 5,
+    });
+
+    expect(refused.statusCode).toBe(500);
+    expect(refused.json()).toMatchObject({ detail: providerMessage });
+    expect(
+      context.repository.getProject(context.projectId).meshyCreditsReserved,
+    ).toBe(0);
+    expect(
+      context.repository.getProject(context.projectId).assetStages?.[
+        context.assetId
+      ],
+    ).toMatchObject({
+      status: "review",
+      stage: "texture",
+      submitFailure: { stage: "rig", reason: providerMessage },
+    });
+
+    const retried = await context.post(`${context.base}/decide`, {
+      decision: "rig",
+      acknowledgedCredits: 5,
+    });
+    expect(retried.statusCode).toBe(200);
+    expect(
+      (retried.json() as ProjectSnapshot).assetStages?.[context.assetId],
+    ).toMatchObject({ status: "running", stage: "rig" });
+  });
+
+  it("returns a reconciled ledger on the first snapshot that finds an orphaned rig intent", async () => {
+    const context = await fixture({ mode: "live" });
+    await context.post(`${context.base}/start`);
+    await context.settle();
+    await context.post(`${context.base}/decide`, {
+      decision: "texture",
+      acknowledgedCredits: 10,
+    });
+    await context.settle();
+    const submission = context.repository.recordSubmissionIntent({
+      projectId: context.projectId,
+      operation: "m2-staged-rig",
+      provider: "meshy",
+      idempotencyKey: `asset-stage:v1:${context.projectId}:${context.assetId}:rig:1`,
+      payload: {
+        assetId: context.assetId,
+        stage: "rig",
+        round: 1,
+        pollCount: 0,
+      },
+    });
+    context.repository.reserveMeshySubmissionCredits(
+      submission.requestId,
+      5,
+      "Meshy rigging",
+    );
+    const providerCallsBeforeTouch = context.adapter.submissions.length;
+
+    const response = await context.server.inject({
+      method: "GET",
+      url: `/api/projects/${context.projectId}`,
+    });
+    const snapshot = response.json() as ProjectSnapshot;
+
+    expect(response.statusCode).toBe(200);
+    expect(snapshot.state.meshyCreditsReserved).toBe(0);
+    expect(snapshot.assetStages?.[context.assetId]).toMatchObject({
+      status: "review",
+      stage: "texture",
+      submitFailure: { stage: "rig", recovered: true },
+    });
+    expect(context.adapter.submissions).toHaveLength(providerCallsBeforeTouch);
+  });
+
   it("exposes the Meshy profile and refuses an unpinned model", async () => {
     const context = await fixture();
     const snapshot = (

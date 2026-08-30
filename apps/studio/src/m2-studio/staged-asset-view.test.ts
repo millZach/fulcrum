@@ -13,16 +13,19 @@ import {
   creditLabel,
   gateCreditPlan,
   humaniseRefusal,
+  localRigFallbackStory,
   meshySettingValue,
   meshySettingsLocked,
   offerNote,
   offerViews,
   previewCaption,
   providerMarkLabels,
+  rebuildGeometryPoseHint,
   rigEligibilityLabel,
   rigOverrideControl,
   shouldPollStage,
   stagedCardView,
+  stagedSubmitFailureHint,
   terminalNote,
 } from "./staged-asset-view.js";
 
@@ -44,6 +47,31 @@ const stage = (overrides: Partial<AssetStageView> = {}): AssetStageView => ({
   creditsConsumed: 20,
   updatedAt: "2026-08-28T12:00:00.000Z",
   ...overrides,
+});
+
+describe("submit failure copy", () => {
+  it("explains how to rebuild a pose-rejected mesh", () => {
+    expect(
+      stagedSubmitFailureHint(
+        "Pose estimation failed, please provide a valid model",
+      ),
+    ).toMatch(/"Rebuild geometry" \(20 CR\).*A-pose/i);
+    expect(stagedSubmitFailureHint("Meshy refused the task.")).toBeUndefined();
+  });
+
+  it("names the effective pose under the rebuild decision", () => {
+    expect(rebuildGeometryPoseHint(stage())).toBe(
+      "Biped pose set · rebuilt geometry will use A-pose.",
+    );
+    expect(
+      rebuildGeometryPoseHint(stage({ rigEligible: true, poseMode: "t-pose" })),
+    ).toContain("T-pose");
+    expect(
+      rebuildGeometryPoseHint(
+        stage({ rigEligible: false, poseMode: undefined }),
+      ),
+    ).toBeUndefined();
+  });
 });
 
 describe("provider mark", () => {
@@ -90,6 +118,69 @@ describe("polling", () => {
 });
 
 describe("offers", () => {
+  it("offers geometry rebuild only after texture or rig review", () => {
+    const eligibility = assetRigEligibility({
+      classification: "hero",
+      poseMode: "a-pose",
+    });
+    const decisionsAt = (
+      status: AssetStageView["status"],
+      stageName: AssetStageView["stage"],
+    ) =>
+      assetStageOffers({ status, stage: stageName }, eligibility).map(
+        ({ decision }) => decision,
+      );
+
+    expect(decisionsAt("review", "geometry")).toEqual([
+      "texture",
+      "retry",
+      "scrap",
+    ]);
+    expect(decisionsAt("review", "texture")).toEqual([
+      "accept",
+      "retexture",
+      "rig",
+      "rebuild-geometry",
+      "scrap",
+    ]);
+    expect(decisionsAt("review", "rig")).toEqual([
+      "accept",
+      "animate",
+      "rebuild-geometry",
+      "scrap",
+    ]);
+    expect(
+      assetStageOffers(
+        {
+          status: "review",
+          stage: "rig",
+          runs: [
+            {
+              stage: "rig",
+              status: "succeeded",
+              provider: "blender-local",
+            },
+          ],
+        },
+        eligibility,
+      ).map(({ decision }) => decision),
+    ).toEqual(["accept", "rebuild-geometry", "scrap"]);
+    expect(decisionsAt("review", "animation")).toEqual(["accept", "scrap"]);
+    expect(decisionsAt("running", "texture")).toEqual([]);
+    expect(decisionsAt("failed", "rig")).toEqual(["retry", "scrap"]);
+    expect(decisionsAt("accepted", "texture")).toEqual([]);
+    expect(
+      offerViews(
+        assetStageOffers({ status: "review", stage: "texture" }, eligibility),
+      ).find(({ decision }) => decision === "rebuild-geometry"),
+    ).toMatchObject({
+      label: "Rebuild geometry",
+      credits: 20,
+      costed: true,
+      tone: "quiet",
+    });
+  });
+
   it("renders the server's labels and prices verbatim", () => {
     const offers = assetStageOffers(
       { status: "review", stage: "geometry" },
@@ -133,6 +224,9 @@ describe("offers", () => {
     );
     const rig = offerViews(offers).find(({ decision }) => decision === "rig");
     expect(rig).toBeUndefined();
+    expect(offers.map(({ decision }) => decision)).toContain(
+      "rebuild-geometry",
+    );
   });
 
   it("gives free decisions no price and no acknowledgement", () => {
@@ -253,7 +347,79 @@ describe("preview", () => {
       "run",
       "none",
     ]);
+    expect(
+      clipOptions({
+        ...preview,
+        stage: "rig",
+        provider: "blender-local",
+        textured: true,
+        rigged: true,
+        animated: true,
+      }),
+    ).toEqual(["walk", "none"]);
     expect(clipOptions(undefined)).toEqual([]);
+  });
+});
+
+describe("local rig fallback story", () => {
+  it("shows the Meshy refusal, zero-credit Blender recovery, and baked walk", () => {
+    const story = localRigFallbackStory(
+      stage({
+        stage: "rig",
+        runs: [
+          {
+            stage: "rig",
+            round: 1,
+            status: "succeeded",
+            progress: 100,
+            requestId: "local-request",
+            externalJobId: "local-job",
+            provider: "blender-local",
+            providerRefusalReason:
+              "Pose estimation failed, please provide a valid model",
+            rigArchetype: "biped",
+            reservedCredits: 0,
+            consumedCredits: 0,
+            startedAt: "2026-08-29T12:00:00.000Z",
+            updatedAt: "2026-08-29T12:03:00.000Z",
+            finishedAt: "2026-08-29T12:03:00.000Z",
+          },
+        ],
+      }),
+    );
+
+    expect(story).toEqual({
+      headline: "Fulcrum rigged this locally with Blender · 0 CR",
+      refusal:
+        "Meshy refused the model: Pose estimation failed, please provide a valid model",
+      detail:
+        "The biped rig includes a baked walk clip, so no separate Meshy animation task is needed.",
+    });
+  });
+
+  it("stays absent for a Meshy rig", () => {
+    expect(
+      localRigFallbackStory(
+        stage({
+          runs: [
+            {
+              stage: "rig",
+              round: 1,
+              status: "succeeded",
+              progress: 100,
+              requestId: "meshy-request",
+              externalJobId: "meshy-task",
+              provider: "meshy",
+              reservedCredits: 5,
+              consumedCredits: 5,
+              startedAt: "2026-08-29T12:00:00.000Z",
+              updatedAt: "2026-08-29T12:01:00.000Z",
+              finishedAt: "2026-08-29T12:01:00.000Z",
+            },
+          ],
+        }),
+      ),
+    ).toBeUndefined();
   });
 });
 

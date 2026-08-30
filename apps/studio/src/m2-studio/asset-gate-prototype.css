@@ -2683,16 +2683,19 @@
   margin: auto 0;
 }
 
+/* Block flow, not grid: as a scroll container with a definite height, grid
+   tracks get equal-split and the sections overlap instead of scrolling. */
 .variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-record {
   min-height: 0;
-  display: grid;
-  align-content: start;
-  gap: 16px;
   overflow-y: auto;
   border: 1px solid var(--agp-line);
   border-radius: 10px;
   padding: 15px 16px;
   background: var(--agp-paper-bright);
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-record > div + div {
+  margin-top: 16px;
 }
 
 .variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-record .agp-eyebrow {
@@ -2753,6 +2756,30 @@
   margin: 0 0 8px;
 }
 
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-local-rig-story {
+  display: grid;
+  gap: 5px;
+  margin: 0 0 12px;
+  border-left: 3px solid var(--agp-teal);
+  padding-left: 10px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-local-rig-story > strong {
+  color: var(--agp-teal-dark);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-local-rig-story > p {
+  margin: 0;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-local-rig-story > small {
+  color: var(--agp-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-record p {
   font-family: "Fulcrum Text", sans-serif;
   font-size: 13px;
@@ -2774,6 +2801,32 @@
   color: #7d2f22;
   background: #f9ebe7;
   font-size: 15px;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-submit-error,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-card-error {
+  display: grid;
+  gap: 6px;
+  border: 2px solid var(--agp-ink);
+  border-radius: 7px;
+  padding: 10px 12px;
+  color: #7d2f22;
+  background: #f9ebe7;
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.055em;
+  line-height: 1.45;
+  text-transform: uppercase;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-submit-error small,
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-card-error small {
+  color: var(--agp-ink);
+  font: inherit;
+}
+
+.variant-b-voxel.m1-studio .voxel-concept-host .agp-staged-card-error {
+  margin-top: 8px;
 }
 
 /* --------------------------------- progress -------------------------------- */
@@ -3076,6 +3129,22 @@
   color: var(--agp-muted);
   font-size: 13px;
   line-height: 1.35;
+}
+
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-staged-offer
+  small.agp-staged-pose-hint,
+.variant-b-voxel.m1-studio
+  .voxel-concept-host
+  .agp-credit-modal
+  small.agp-staged-pose-hint {
+  color: var(--agp-teal-dark);
+  font-family: "Fulcrum Mono", ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .variant-b-voxel.m1-studio
