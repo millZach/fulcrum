@@ -140,11 +140,26 @@ export type {
   StagedAssetOutcome,
 } from "./staged-asset-lifecycle.js";
 export {
+  BlenderLocalRigRunner,
+  LOCAL_RIG_OUTPUT_MIN_BYTES,
+  LOCAL_RIG_TIMEOUT_MS,
+} from "./local-rig.js";
+export type {
+  BlenderLocalRigRunnerOptions,
+  LocalRigJobState,
+  LocalRigRunner,
+  LocalRigStartedJob,
+  LocalRigStartInput,
+} from "./local-rig.js";
+export {
   createStagedAssetAdapter,
+  isMeshyRiggingProviderRefusal,
   LiveMeshyStagedAdapter,
+  MeshySubmissionError,
   SimulatedStagedAdapter,
 } from "./staged-meshy.js";
 export type {
+  MeshySubmissionFailureKind,
   SimulatedStagedOptions,
   StagedAssetAdapter,
   StagedInspectInput,

@@ -54,10 +54,17 @@ import {
 } from "./meshy-adapter.js";
 import { stagedShapeSeed } from "./staged-glb.js";
 import {
+  BlenderLocalRigRunner,
+  type LocalRigJobState,
+  type LocalRigRunner,
+} from "./local-rig.js";
+import {
   createStagedAssetAdapter,
+  isMeshyRiggingProviderRefusal,
   type StagedAssetAdapter,
   type StagedBinary,
   type StagedSubmitInput,
+  type StagedSubmission,
 } from "./staged-meshy.js";
 import {
   LiveBipedDetectionPort,
@@ -96,6 +103,7 @@ const CREDIT_LABELS: Record<MeshyStage, string> = {
 
 export type StagedAssetLifecycleOptions = {
   adapter?: StagedAssetAdapter;
+  localRigRunner?: LocalRigRunner;
   now?: () => string;
   visionExecution?: StructuredVisionExecution;
   visionProviderStatuses?: ExecutionProviderStatus[];
@@ -184,9 +192,12 @@ export const assetStageView = (
             glb: preview.model!,
             stage: preview.stage,
             round: preview.round,
+            ...(preview.provider ? { provider: preview.provider } : {}),
             textured: preview.stage !== "geometry",
             rigged: preview.stage === "rig" || preview.stage === "animation",
-            animated: preview.stage === "animation",
+            animated:
+              preview.stage === "animation" ||
+              preview.provider === "blender-local",
           },
         }
       : {}),
@@ -231,6 +242,8 @@ export const resolveMeshyConfig = (
 
 export class StagedAssetLifecycle {
   private readonly adapter: StagedAssetAdapter | undefined;
+  private readonly injectedLocalRigRunner: LocalRigRunner | undefined;
+  private liveLocalRigRunner: LocalRigRunner | undefined;
   private readonly now: () => string;
   private readonly visionExecution: StructuredVisionExecution;
   private readonly visionProviderStatuses:
@@ -241,6 +254,7 @@ export class StagedAssetLifecycle {
     options: StagedAssetLifecycleOptions = {},
   ) {
     this.adapter = options.adapter;
+    this.injectedLocalRigRunner = options.localRigRunner;
     this.now = options.now ?? nowIso;
     this.visionExecution = options.visionExecution ?? new ModelExecution();
     this.visionProviderStatuses = options.visionProviderStatuses;
@@ -581,11 +595,14 @@ export class StagedAssetLifecycle {
   }
 
   views(projectId: string): Record<string, AssetStageView> {
-    const state = this.state(projectId);
+    let state = this.state(projectId);
     if (!state.assetPlan) return {};
     const plan = AssetPlanSchema.parse(
       this.repository.resolveRevision(state.assetPlan),
     );
+    for (const asset of plan.assets)
+      this.reconcileOrphanedReservations(projectId, asset.assetId);
+    state = this.state(projectId);
     return assetStageViews(
       state,
       plan,
@@ -642,6 +659,7 @@ export class StagedAssetLifecycle {
   /** Authorizes the first paid task for one asset: 20 credits of geometry. */
   async start(projectId: string, input: unknown): Promise<StagedAssetOutcome> {
     const parsed = StartAssetStageInputSchema.parse(input);
+    this.reconcileOrphanedReservations(projectId, parsed.assetId);
     const record = this.recordFor(projectId, parsed.assetId);
     if (record.status !== "not-started")
       throw new Error(
@@ -656,17 +674,20 @@ export class StagedAssetLifecycle {
    * of whatever changed.
    */
   async poll(projectId: string, assetId: string): Promise<StagedAssetOutcome> {
+    this.reconcileOrphanedReservations(projectId, assetId);
     const record = this.recordFor(projectId, assetId);
     const run = activeRunOf(record);
     if (!run) return { record };
 
-    const submission = this.repository.getSubmissionByKey(
-      this.idempotencyKey(projectId, assetId, run.stage, run.round),
-    );
+    const submission = this.repository
+      .listSubmissions(projectId)
+      .find(({ requestId }) => requestId === run.requestId);
     if (!submission?.externalJobId)
       throw new Error(
         `The ${run.stage} task for ${assetId} has no provider job to poll.`,
       );
+    if (run.provider === "blender-local")
+      return await this.pollLocalRig(projectId, assetId, run, submission);
     const pollCount = Number(submission.payload.pollCount ?? 0) + 1;
     this.repository.updateSubmission(submission.requestId, {
       status: "pending",
@@ -788,6 +809,7 @@ export class StagedAssetLifecycle {
   /** Records a human's call at a review gate, and spends if the call costs. */
   async decide(projectId: string, input: unknown): Promise<StagedAssetOutcome> {
     const parsed = DecideAssetStageInputSchema.parse(input);
+    this.reconcileOrphanedReservations(projectId, parsed.assetId);
     const record = this.recordFor(projectId, parsed.assetId);
     const planned = this.plannedAsset(projectId, parsed.assetId);
     const eligibility = assetRigEligibility(
@@ -876,6 +898,145 @@ export class StagedAssetLifecycle {
 
   /* ------------------------------- internals ------------------------------ */
 
+  private async pollLocalRig(
+    projectId: string,
+    assetId: string,
+    run: AssetStageRun,
+    submission: ReturnType<ProjectRepository["listSubmissions"]>[number],
+  ): Promise<StagedAssetOutcome> {
+    const pollCount = Number(submission.payload.pollCount ?? 0) + 1;
+    this.repository.updateSubmission(submission.requestId, {
+      status: "pending",
+      payload: { ...submission.payload, pollCount },
+    });
+
+    let state: LocalRigJobState;
+    try {
+      state = await this.localRigRunnerFor(projectId).inspect(
+        submission.externalJobId!,
+      );
+    } catch (error) {
+      state = {
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error),
+        stdout: "",
+        stderr: "",
+      };
+    }
+
+    if (state.status === "running") {
+      const advanced = this.replaceRun(projectId, assetId, {
+        ...run,
+        progress: state.progress,
+        updatedAt: this.now(),
+      });
+      return {
+        record: advanced,
+        resumeAfter: new Date(Date.now() + POLL_INTERVAL_MS).toISOString(),
+      };
+    }
+
+    const finishedAt = this.now();
+    if (state.status === "succeeded") {
+      const model = this.repository.putArtifact(
+        projectId,
+        state.outputGlb,
+        "model/gltf-binary",
+      );
+      const next = this.writeRecord(projectId, assetId, (current) => ({
+        ...current,
+        status: "review",
+        stage: "rig",
+        runs: this.withRun(current, {
+          ...run,
+          status: "succeeded",
+          progress: 100,
+          consumedCredits: 0,
+          model,
+          updatedAt: finishedAt,
+          finishedAt,
+        }),
+        updatedAt: finishedAt,
+      }));
+      this.repository.updateSubmission(submission.requestId, {
+        status: "ready",
+        payload: {
+          ...submission.payload,
+          pollCount,
+          glbArtifactId: model.artifactId,
+          stdout: state.stdout,
+          stderr: state.stderr,
+          consumedCredits: 0,
+        },
+      });
+      this.event(projectId, "asset.stage-succeeded", {
+        assetId,
+        stage: "rig",
+        round: run.round,
+        provider: "blender-local",
+        rigArchetype: run.rigArchetype,
+        glbArtifactId: model.artifactId,
+        consumedCredits: 0,
+      });
+      await this.disposeLocalRig(projectId, assetId, submission.externalJobId!);
+      return { record: next };
+    }
+
+    const next = this.writeRecord(projectId, assetId, (current) => ({
+      ...current,
+      status: "failed",
+      stage: "rig",
+      runs: this.withRun(current, {
+        ...run,
+        status: "failed",
+        consumedCredits: 0,
+        error: state.error,
+        updatedAt: finishedAt,
+        finishedAt,
+      }),
+      terminalReason: state.error,
+      updatedAt: finishedAt,
+    }));
+    this.repository.updateSubmission(submission.requestId, {
+      status: "failed",
+      payload: {
+        ...submission.payload,
+        pollCount,
+        error: state.error,
+        stdout: state.stdout,
+        stderr: state.stderr,
+        consumedCredits: 0,
+      },
+    });
+    this.event(projectId, "asset.stage-failed", {
+      assetId,
+      stage: "rig",
+      round: run.round,
+      provider: "blender-local",
+      consumedCredits: 0,
+      error: state.error,
+    });
+    await this.disposeLocalRig(projectId, assetId, submission.externalJobId!);
+    return { record: next };
+  }
+
+  private async disposeLocalRig(
+    projectId: string,
+    assetId: string,
+    jobId: string,
+  ): Promise<void> {
+    try {
+      await this.localRigRunnerFor(projectId).dispose?.(jobId);
+    } catch (error) {
+      this.event(projectId, "asset.stage-rig-cleanup-failed", {
+        assetId,
+        provider: "blender-local",
+        externalJobId: jobId,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   private async submitStage(
     projectId: string,
     assetId: string,
@@ -892,7 +1053,7 @@ export class StagedAssetLifecycle {
       round,
     );
     const prior = this.repository.getSubmissionByKey(idempotencyKey);
-    const submission =
+    let submission =
       prior ??
       this.repository.recordSubmissionIntent({
         projectId,
@@ -909,6 +1070,32 @@ export class StagedAssetLifecycle {
           pollCount: 0,
         },
       });
+
+    /* A synchronous provider refusal creates no run, so the next click reaches
+       the same stage/round key. Rearm that durable intent only after its old
+       reservation has been reconciled. */
+    if (
+      prior?.status === "failed" &&
+      !prior.externalJobId &&
+      prior.payload.meshyCreditsReconciled === true
+    ) {
+      const retryPayload = { ...prior.payload };
+      delete retryPayload.error;
+      delete retryPayload.failedAt;
+      delete retryPayload.recovered;
+      delete retryPayload.providerCallStartedAt;
+      delete retryPayload.meshyCreditsReserved;
+      delete retryPayload.meshyCreditsReconciled;
+      delete retryPayload.meshyCreditsConsumed;
+      submission = this.repository.updateSubmission(prior.requestId, {
+        status: "intent-recorded",
+        payload: {
+          ...retryPayload,
+          pollCount: 0,
+          submissionAttempt: Number(prior.payload.submissionAttempt ?? 1) + 1,
+        },
+      });
+    }
 
     /* Reserve before the call. A task submitted against an exhausted cap is a
        bill Fulcrum cannot refuse after the fact. A live project always has a
@@ -933,9 +1120,56 @@ export class StagedAssetLifecycle {
       }
     }
 
-    const submitted = await this.adapterFor(projectId).submit(
-      this.submitInput(projectId, assetId, stage, round, config),
-    );
+    let submitted: StagedSubmission;
+    try {
+      const input = this.submitInput(projectId, assetId, stage, round, config);
+      submission = this.repository.updateSubmission(submission.requestId, {
+        status: "pending",
+        payload: {
+          ...this.repository.getSubmissionByKey(idempotencyKey)!.payload,
+          providerCallStartedAt: this.now(),
+        },
+      });
+      submitted = await this.adapterFor(projectId).submit(input);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      const reserved = this.repository.getSubmissionByKey(idempotencyKey)!;
+      if (
+        typeof reserved.payload.meshyCreditsReserved === "number" &&
+        reserved.payload.meshyCreditsReconciled !== true
+      )
+        this.repository.reconcileMeshySubmissionCredits(
+          reserved.requestId,
+          0,
+          CREDIT_LABELS[stage],
+        );
+      const reconciled = this.repository.getSubmissionByKey(idempotencyKey)!;
+      const failedAt = this.now();
+      this.repository.updateSubmission(reconciled.requestId, {
+        status: "failed",
+        payload: { ...reconciled.payload, error: reason, failedAt },
+      });
+      this.writeRecord(projectId, assetId, (current) => ({
+        ...current,
+        submitFailure: { stage, round, reason, failedAt },
+        updatedAt: failedAt,
+      }));
+      this.event(projectId, "asset.stage-submit-failed", {
+        assetId,
+        stage,
+        round,
+        reason,
+      });
+      if (stage === "rig" && isMeshyRiggingProviderRefusal(error))
+        return await this.submitLocalRig(
+          projectId,
+          assetId,
+          round,
+          reason,
+          reconciled.requestId,
+        );
+      throw error;
+    }
     this.repository.updateSubmission(submission.requestId, {
       status: "pending",
       externalJobId: submitted.taskId,
@@ -950,6 +1184,7 @@ export class StagedAssetLifecycle {
       ...current,
       status: "running",
       stage,
+      submitFailure: undefined,
       runs: [
         ...current.runs,
         {
@@ -959,6 +1194,7 @@ export class StagedAssetLifecycle {
           progress: 0,
           requestId: submission.requestId,
           externalJobId: submitted.taskId,
+          provider: "meshy",
           reservedCredits: credits,
           startedAt,
           updatedAt: startedAt,
@@ -970,8 +1206,159 @@ export class StagedAssetLifecycle {
       assetId,
       stage,
       round,
+      provider: "meshy",
       reservedCredits: credits,
       externalJobId: submitted.taskId,
+    });
+    return {
+      record,
+      resumeAfter: new Date(Date.now() + POLL_INTERVAL_MS).toISOString(),
+    };
+  }
+
+  private async submitLocalRig(
+    projectId: string,
+    assetId: string,
+    round: number,
+    providerRefusalReason: string,
+    meshyRequestId: string,
+  ): Promise<StagedAssetOutcome> {
+    const idempotencyKey = this.localRigIdempotencyKey(
+      projectId,
+      assetId,
+      round,
+    );
+    let submission =
+      this.repository.getSubmissionByKey(idempotencyKey) ??
+      this.repository.recordSubmissionIntent({
+        projectId,
+        operation: "m2-staged-rig-local",
+        provider: "blender-local",
+        idempotencyKey,
+        payload: {
+          assetId,
+          stage: "rig",
+          round,
+          pollCount: 0,
+          consumedCredits: 0,
+          providerRefusalReason,
+          meshyRequestId,
+        },
+      });
+
+    if (submission.status === "failed" && !submission.externalJobId)
+      submission = this.repository.updateSubmission(submission.requestId, {
+        status: "intent-recorded",
+        payload: {
+          ...submission.payload,
+          pollCount: 0,
+          consumedCredits: 0,
+          providerRefusalReason,
+          meshyRequestId,
+          submissionAttempt:
+            Number(submission.payload.submissionAttempt ?? 1) + 1,
+        },
+      });
+
+    let jobId = submission.externalJobId;
+    let rigArchetype =
+      typeof submission.payload.rigArchetype === "string"
+        ? submission.payload.rigArchetype
+        : undefined;
+    if (!jobId || !rigArchetype) {
+      try {
+        const source = this.sourceRun(
+          this.recordFor(projectId, assetId),
+          "texture",
+        );
+        const started = await this.localRigRunnerFor(projectId).start({
+          sourceGlb: this.binary(source.model!).bytes,
+        });
+        jobId = started.jobId;
+        rigArchetype = started.archetype;
+        submission = this.repository.updateSubmission(submission.requestId, {
+          status: "pending",
+          externalJobId: jobId,
+          payload: {
+            ...submission.payload,
+            sourceGlbArtifactId: source.model!.artifactId,
+            rigArchetype,
+            startedAt: this.now(),
+          },
+        });
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        const failedAt = this.now();
+        this.repository.updateSubmission(submission.requestId, {
+          status: "failed",
+          payload: { ...submission.payload, error: reason, failedAt },
+        });
+        this.writeRecord(projectId, assetId, (current) => ({
+          ...current,
+          submitFailure: {
+            stage: "rig",
+            round,
+            reason,
+            failedAt,
+          },
+          updatedAt: failedAt,
+        }));
+        this.event(projectId, "asset.stage-submit-failed", {
+          assetId,
+          stage: "rig",
+          round,
+          provider: "blender-local",
+          reason,
+        });
+        throw error;
+      }
+    }
+
+    const startedAt = this.now();
+    const record = this.writeRecord(projectId, assetId, (current) => ({
+      ...current,
+      status: "running",
+      stage: "rig",
+      submitFailure: undefined,
+      runs: [
+        ...current.runs,
+        {
+          stage: "rig",
+          round,
+          status: "running",
+          progress: 10,
+          requestId: submission.requestId,
+          externalJobId: jobId,
+          provider: "blender-local",
+          providerRefusalReason,
+          rigArchetype,
+          reservedCredits: 0,
+          consumedCredits: 0,
+          startedAt,
+          updatedAt: startedAt,
+        },
+      ],
+      updatedAt: startedAt,
+    }));
+    this.event(projectId, "asset.stage-rig-fallback", {
+      assetId,
+      stage: "rig",
+      round,
+      meshyRequestId,
+      providerRefusalReason,
+      provider: "blender-local",
+      rigArchetype,
+      consumedCredits: 0,
+      externalJobId: jobId,
+    });
+    this.event(projectId, "asset.stage-started", {
+      assetId,
+      stage: "rig",
+      round,
+      provider: "blender-local",
+      rigArchetype,
+      reservedCredits: 0,
+      externalJobId: jobId,
     });
     return {
       record,
@@ -1038,6 +1425,82 @@ export class StagedAssetLifecycle {
         "Meshy builds an animation clip from a rigging task id, and this rig has none.",
       );
     return { stage, round, config, shapeSeed, rigTaskId: rig.externalJobId };
+  }
+
+  /**
+   * Releases a reservation that never acquired a provider job or a stage run.
+   * This repairs the pre-fix live shape on any card view, poll, or decision.
+   */
+  private reconcileOrphanedReservations(
+    projectId: string,
+    onlyAssetId?: string,
+  ): void {
+    const operations = new Set(Object.values(OPERATION_BY_STAGE));
+    for (const submission of this.repository.listSubmissions(projectId)) {
+      if (!operations.has(submission.operation)) continue;
+      const assetId = submission.payload.assetId;
+      const stage = submission.payload.stage;
+      const round = submission.payload.round;
+      const reservedCredits = submission.payload.meshyCreditsReserved;
+      if (
+        typeof assetId !== "string" ||
+        (onlyAssetId !== undefined && assetId !== onlyAssetId) ||
+        (stage !== "geometry" &&
+          stage !== "texture" &&
+          stage !== "rig" &&
+          stage !== "animation") ||
+        typeof round !== "number" ||
+        !Number.isInteger(round) ||
+        round < 1 ||
+        typeof reservedCredits !== "number" ||
+        submission.status !== "intent-recorded" ||
+        submission.payload.meshyCreditsReconciled === true ||
+        submission.externalJobId
+      )
+        continue;
+      const matchingRun = this.state(projectId).assetStages?.[
+        assetId
+      ]?.runs.some((run) => run.requestId === submission.requestId);
+      if (matchingRun) continue;
+
+      this.repository.reconcileMeshySubmissionCredits(
+        submission.requestId,
+        0,
+        CREDIT_LABELS[stage],
+      );
+      const failedAt = this.now();
+      const reason = `The ${stage} submission stopped before Fulcrum recorded a Meshy job. Its ${reservedCredits} credit reservation was released; retry is safe.`;
+      const reconciled = this.repository.getSubmissionByKey(
+        submission.idempotencyKey,
+      )!;
+      this.repository.updateSubmission(submission.requestId, {
+        status: "failed",
+        payload: {
+          ...reconciled.payload,
+          error: reason,
+          failedAt,
+          recovered: true,
+        },
+      });
+      this.writeRecord(projectId, assetId, (current) => ({
+        ...current,
+        submitFailure: {
+          stage,
+          round,
+          reason,
+          failedAt,
+          recovered: true,
+        },
+        updatedAt: failedAt,
+      }));
+      this.event(projectId, "asset.stage-submit-failed", {
+        assetId,
+        stage,
+        round,
+        reason,
+        recovered: true,
+      });
+    }
   }
 
   /** The most recent successful run of a stage. Its GLB feeds the next one. */
@@ -1196,6 +1659,16 @@ export class StagedAssetLifecycle {
     return this.adapter ?? createStagedAssetAdapter(this.state(projectId).mode);
   }
 
+  private localRigRunnerFor(projectId: string): LocalRigRunner {
+    if (this.injectedLocalRigRunner) return this.injectedLocalRigRunner;
+    if (this.state(projectId).mode !== "live")
+      throw new Error(
+        "Replay asset rigging requires an injected local rig runner; it will not launch Blender.",
+      );
+    this.liveLocalRigRunner ??= new BlenderLocalRigRunner();
+    return this.liveLocalRigRunner;
+  }
+
   private idempotencyKey(
     projectId: string,
     assetId: string,
@@ -1203,6 +1676,14 @@ export class StagedAssetLifecycle {
     round: number,
   ): string {
     return `asset-stage:v1:${projectId}:${assetId}:${stage}:${round}`;
+  }
+
+  private localRigIdempotencyKey(
+    projectId: string,
+    assetId: string,
+    round: number,
+  ): string {
+    return `asset-stage-local-rig:v1:${projectId}:${assetId}:rig:${round}`;
   }
 
   private state(projectId: string): ProjectState {

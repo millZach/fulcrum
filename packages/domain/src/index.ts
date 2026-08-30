@@ -2098,6 +2098,7 @@ export type AssetStageStatus = z.infer<typeof AssetStageStatusSchema>;
 export const AssetStageDecisionSchema = z.enum([
   "scrap",
   "retry",
+  "rebuild-geometry",
   "texture",
   "accept",
   "retexture",
@@ -2111,6 +2112,7 @@ export const ASSET_STAGE_DECISION_CREDITS = {
   scrap: 0,
   accept: 0,
   retry: MESHY_STAGE_CREDITS.geometry,
+  "rebuild-geometry": MESHY_STAGE_CREDITS.geometry,
   texture: MESHY_STAGE_CREDITS.texture,
   retexture: MESHY_STAGE_CREDITS.texture,
   rig: MESHY_STAGE_CREDITS.rig,
@@ -2120,6 +2122,7 @@ export const ASSET_STAGE_DECISION_CREDITS = {
 /** The stage a decision submits. Absent for the two free decisions. */
 export const ASSET_STAGE_DECISION_STAGES = {
   retry: "geometry",
+  "rebuild-geometry": "geometry",
   texture: "texture",
   retexture: "texture",
   rig: "rig",
@@ -2128,6 +2131,9 @@ export const ASSET_STAGE_DECISION_STAGES = {
   Exclude<AssetStageDecision, "scrap" | "accept">,
   MeshyStage
 >;
+
+export const AssetStageProviderSchema = z.enum(["meshy", "blender-local"]);
+export type AssetStageProvider = z.infer<typeof AssetStageProviderSchema>;
 
 export const AssetStageRunSchema = z.object({
   stage: MeshyStageSchema,
@@ -2138,6 +2144,12 @@ export const AssetStageRunSchema = z.object({
   /** The durable submission record that owns this task's credit reservation. */
   requestId: z.string().min(1),
   externalJobId: z.string().min(1).optional(),
+  /** Optional for records written before provider provenance was introduced. */
+  provider: AssetStageProviderSchema.optional(),
+  /** Meshy's synchronous model refusal that caused a local rig run. */
+  providerRefusalReason: z.string().min(1).optional(),
+  /** Manifest key from tools/rigging/ used by a local rig run. */
+  rigArchetype: z.string().min(1).optional(),
   reservedCredits: z.number().int().nonnegative(),
   consumedCredits: z.number().int().nonnegative().optional(),
   /** The persisted GLB. Present once the run succeeds and bytes are stored. */
@@ -2170,6 +2182,18 @@ export type AssetStageDecisionRecord = z.infer<
   typeof AssetStageDecisionRecordSchema
 >;
 
+/** A provider rejected a new task before Fulcrum could create a stage run. */
+export const AssetStageSubmitFailureSchema = z.object({
+  stage: MeshyStageSchema,
+  round: z.number().int().min(1),
+  reason: z.string().min(1),
+  failedAt: z.string().datetime(),
+  recovered: z.boolean().optional(),
+});
+export type AssetStageSubmitFailure = z.infer<
+  typeof AssetStageSubmitFailureSchema
+>;
+
 /** The durable half of an asset's lifecycle. Everything else is derived. */
 export const AssetStageRecordSchema = z.object({
   assetId: z.string().min(1),
@@ -2177,6 +2201,8 @@ export const AssetStageRecordSchema = z.object({
   stage: MeshyStageSchema,
   runs: z.array(AssetStageRunSchema),
   decisions: z.array(AssetStageDecisionRecordSchema),
+  /** Does not replace the last reviewable stage; a retry clears it. */
+  submitFailure: AssetStageSubmitFailureSchema.optional(),
   terminalReason: z.string().min(1).optional(),
   updatedAt: z.string().datetime(),
 });
@@ -2200,6 +2226,7 @@ export const AssetStagePreviewSchema = z.object({
   glb: ArtifactRefSchema,
   stage: MeshyStageSchema,
   round: z.number().int().min(1),
+  provider: AssetStageProviderSchema.optional(),
   textured: z.boolean(),
   rigged: z.boolean(),
   animated: z.boolean(),
@@ -2321,6 +2348,7 @@ export const assetRigEligibility = (
 const OFFER_LABELS = {
   scrap: "Scrap this asset",
   retry: "Generate new geometry",
+  "rebuild-geometry": "Rebuild geometry",
   texture: "Texture this geometry",
   accept: "Accept this asset",
   retexture: "Texture again",
@@ -2344,7 +2372,9 @@ const offer = (
  * and the tests all agree on what is legal without re-deriving the rules.
  */
 export const assetStageOffers = (
-  record: Pick<AssetStageRecord, "status" | "stage">,
+  record: Pick<AssetStageRecord, "status" | "stage"> & {
+    runs?: Pick<AssetStageRun, "stage" | "status" | "provider">[];
+  },
   eligibility: { eligible: boolean; reason: string },
 ): AssetStageOffer[] => {
   switch (record.status) {
@@ -2368,12 +2398,22 @@ export const assetStageOffers = (
         offer("accept"),
         offer("retexture"),
         ...(eligibility.eligible ? [offer("rig")] : []),
+        offer("rebuild-geometry"),
         offer("scrap"),
       ];
     case "rig":
+      /* Meshy animation requires a Meshy rig task id. Blender's local rig has
+         no such id and already carries its baked walk, so offering animation
+         here would authorize a task the provider cannot accept. */
+      const latestRig = [...(record.runs ?? [])]
+        .reverse()
+        .find((run) => run.stage === "rig" && run.status === "succeeded");
       return [
         offer("accept"),
-        ...(eligibility.eligible ? [offer("animate")] : []),
+        ...(eligibility.eligible && latestRig?.provider !== "blender-local"
+          ? [offer("animate")]
+          : []),
+        offer("rebuild-geometry"),
         offer("scrap"),
       ];
     case "animation":

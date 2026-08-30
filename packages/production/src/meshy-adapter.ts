@@ -362,9 +362,11 @@ export const buildMeshyStagedRigRequest = (
  * Meshy's animation library is a static documentation page of non-contiguous
  * integer action ids, not a discovery endpoint. v1 asks for one clip and does
  * not model a catalog, so the id is a named constant rather than an enum
- * generated from a maximum.
+ * generated from a maximum. The library's ids start at 1 — 0 is not a
+ * documented action — so the default is 112 "Monster_Walk", a heavy walk
+ * cycle suited to the hero/boss characters the rig stage produces.
  */
-export const MESHY_DEFAULT_ACTION_ID = 0;
+export const MESHY_DEFAULT_ACTION_ID = 112;
 
 export const buildMeshyStagedAnimationRequest = (input: {
   rigTaskId: string;

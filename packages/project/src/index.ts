@@ -773,6 +773,16 @@ export class ProjectRepository {
     return row ? this.submissionRecord(row) : undefined;
   }
 
+  listSubmissions(projectId: string): SubmissionRecord[] {
+    return (
+      this.database
+        .prepare(
+          "SELECT * FROM submissions WHERE project_id = ? ORDER BY created_at ASC, request_id ASC",
+        )
+        .all(projectId) as SubmissionRow[]
+    ).map((row) => this.submissionRecord(row));
+  }
+
   updateSubmission(
     requestId: string,
     update: {

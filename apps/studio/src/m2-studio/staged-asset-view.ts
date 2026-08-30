@@ -73,6 +73,43 @@ export const shouldPollStage = (
   stage: Pick<AssetStageView, "status"> | undefined,
 ): boolean => stage?.status === "running";
 
+export type LocalRigFallbackStory = {
+  headline: string;
+  refusal: string;
+  detail: string;
+};
+
+/** Plain-language provenance for a rig Meshy refused and Blender recovered. */
+export const localRigFallbackStory = (
+  stage: Pick<AssetStageView, "runs">,
+): LocalRigFallbackStory | undefined => {
+  const run = [...stage.runs]
+    .reverse()
+    .find(({ stage: runStage }) => runStage === "rig");
+  if (run?.provider !== "blender-local") return undefined;
+  const archetype = run.rigArchetype ?? "manifest-selected";
+  return {
+    headline:
+      run.status === "succeeded"
+        ? "Fulcrum rigged this locally with Blender · 0 CR"
+        : "Fulcrum is rigging this locally with Blender · 0 CR",
+    refusal: `Meshy refused the model: ${run.providerRefusalReason ?? "No provider reason was recorded."}`,
+    detail: `The ${archetype} rig includes a baked walk clip, so no separate Meshy animation task is needed.`,
+  };
+};
+
+export const stagedSubmitFailureHint = (reason: string): string | undefined =>
+  /pose estimation failed/i.test(reason)
+    ? 'The mesh was generated without a rig-ready pose. With the biped marking now set, choose "Rebuild geometry" (20 CR) to build it in A-pose before rigging.'
+    : undefined;
+
+export const rebuildGeometryPoseHint = (
+  stage: Pick<AssetStageView, "rigEligible" | "poseMode">,
+): string | undefined => {
+  if (!stage.rigEligible || !stage.poseMode) return undefined;
+  return `Biped pose set · rebuilt geometry will use ${stage.poseMode === "a-pose" ? "A-pose" : "T-pose"}.`;
+};
+
 export type StagedOfferTone = "accept" | "spend" | "quiet" | "scrap";
 
 export type StagedOfferView = {
@@ -91,6 +128,7 @@ const OFFER_TONES: Record<AssetStageOffer["decision"], StagedOfferTone> = {
   accept: "accept",
   texture: "spend",
   retexture: "quiet",
+  "rebuild-geometry": "quiet",
   rig: "spend",
   animate: "spend",
   retry: "quiet",
@@ -226,7 +264,12 @@ export type StagedClip = "walk" | "run" | "none";
 /** The clip toggle only earns its place once a preview actually carries clips. */
 export const clipOptions = (
   preview: AssetStagePreview | undefined,
-): StagedClip[] => (preview?.animated ? ["walk", "run", "none"] : []);
+): StagedClip[] =>
+  preview?.provider === "blender-local"
+    ? ["walk", "none"]
+    : preview?.animated
+      ? ["walk", "run", "none"]
+      : [];
 
 export type StagedCardAction = "start" | "open" | "none";
 

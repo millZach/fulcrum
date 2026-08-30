@@ -22,12 +22,15 @@ import {
   STAGE_RUNNING_COPY,
   clipOptions,
   creditLabel,
+  localRigFallbackStory,
   offerNote,
   offerViews,
   previewCaption,
+  rebuildGeometryPoseHint,
   rigEligibilityLabel,
   rigOverrideControl,
   shouldPollStage,
+  stagedSubmitFailureHint,
   terminalNote,
   type StagedClip,
   type StagedOfferView,
@@ -47,7 +50,10 @@ const refusal = (error: unknown): string =>
 
 /** The instrument the progress screen is built around: a ruled paper track. */
 function StageProgress({ stage }: { stage: AssetStageView }) {
-  const copy = STAGE_RUNNING_COPY[stage.stage];
+  const fallback = localRigFallbackStory(stage);
+  const copy = fallback
+    ? { headline: fallback.headline, detail: fallback.detail }
+    : STAGE_RUNNING_COPY[stage.stage];
   return (
     <section className="agp-staged-progress">
       <span className="agp-eyebrow">
@@ -136,6 +142,7 @@ function StageRecord({
   onOverride: (biped: boolean) => void;
   stage: AssetStageView;
 }) {
+  const fallback = localRigFallbackStory(stage);
   return (
     <aside className="agp-staged-record">
       <div>
@@ -151,6 +158,7 @@ function StageRecord({
               </strong>
               <small>
                 {run.status}
+                {run.provider === "blender-local" ? " · Blender local" : ""}
                 {run.consumedCredits !== undefined
                   ? ` · ${creditLabel(run.consumedCredits)}`
                   : ` · ${creditLabel(run.reservedCredits)} reserved`}
@@ -161,6 +169,13 @@ function StageRecord({
       </div>
       <div>
         <span className="agp-eyebrow">Rigging</span>
+        {fallback && (
+          <div className="agp-local-rig-story">
+            <strong>{fallback.headline}</strong>
+            <p>{fallback.refusal}</p>
+            <small>{fallback.detail}</small>
+          </div>
+        )}
         <RigEligibilityControl
           busy={busy}
           onOverride={onOverride}
@@ -178,12 +193,18 @@ function DecisionBar({
   busy,
   offers,
   onDecide,
+  stage,
 }: {
   busy: boolean;
   offers: StagedOfferView[];
   onDecide: (offer: StagedOfferView) => void;
+  stage: AssetStageView;
 }) {
   if (offers.length === 0) return null;
+  const noteFor = (offer: StagedOfferView) =>
+    offer.decision === "rebuild-geometry"
+      ? rebuildGeometryPoseHint(stage)
+      : offerNote(offer.decision);
   return (
     <footer className="agp-staged-decisions">
       <span className="agp-eyebrow">Your call</span>
@@ -209,8 +230,16 @@ function DecisionBar({
             {offer.disabled ? (
               <small className="agp-staged-blocked">{offer.reason}</small>
             ) : (
-              offerNote(offer.decision) && (
-                <small>{offerNote(offer.decision)}</small>
+              noteFor(offer) && (
+                <small
+                  className={
+                    offer.decision === "rebuild-geometry"
+                      ? "agp-staged-pose-hint"
+                      : undefined
+                  }
+                >
+                  {noteFor(offer)}
+                </small>
               )
             )}
           </div>
@@ -227,6 +256,7 @@ function StagedCreditDialog({
   simulated,
   onCancel,
   onConfirm,
+  stage,
 }: {
   assetName: string;
   offer: StagedOfferView;
@@ -234,8 +264,13 @@ function StagedCreditDialog({
   simulated: boolean;
   onCancel: () => void;
   onConfirm: () => void;
+  stage: AssetStageView;
 }) {
   const dialogRef = useRef<HTMLDialogElement | null>(null);
+  const note =
+    offer.decision === "rebuild-geometry"
+      ? rebuildGeometryPoseHint(stage)
+      : offerNote(offer.decision);
   useEffect(() => {
     dialogRef.current?.showModal();
   }, []);
@@ -273,7 +308,17 @@ function StagedCreditDialog({
         <span>This decision</span>
         <strong>{offer.credits} credits</strong>
       </div>
-      {offerNote(offer.decision) && <small>{offerNote(offer.decision)}</small>}
+      {note && (
+        <small
+          className={
+            offer.decision === "rebuild-geometry"
+              ? "agp-staged-pose-hint"
+              : undefined
+          }
+        >
+          {note}
+        </small>
+      )}
       {simulated && (
         <small>
           This world is in replay. Meshy is simulated locally, so confirming
@@ -383,6 +428,10 @@ export function StagedAssetScreen({
   const offers = offerViews(stage.offers);
   const terminal = terminalNote(stage);
   const clips = clipOptions(stage.preview);
+  const visibleFailure = error ?? stage.submitFailure?.reason;
+  const failureHint = visibleFailure
+    ? stagedSubmitFailureHint(visibleFailure)
+    : undefined;
 
   return (
     <section className="agp-staged agp-surface">
@@ -419,9 +468,10 @@ export function StagedAssetScreen({
 
       <StageLadder stage={stage} />
 
-      {error && (
-        <p className="agp-staged-error" role="alert">
-          {error}
+      {visibleFailure && (
+        <p className="agp-staged-error agp-staged-submit-error" role="alert">
+          <strong>{visibleFailure}</strong>
+          {failureHint && <small>{failureHint}</small>}
         </p>
       )}
 
@@ -451,7 +501,7 @@ export function StagedAssetScreen({
             <div className="agp-staged-stage">
               <StagedModelViewer
                 caption={previewCaption(stage.preview)}
-                clip={clips.length > 0 ? clip : "none"}
+                clip={clips.includes(clip) ? clip : (clips[0] ?? "none")}
                 uri={stage.preview.glb.uri}
               />
               {clips.length > 0 && (
@@ -492,6 +542,7 @@ export function StagedAssetScreen({
           }
           send(offer);
         }}
+        stage={stage}
       />
 
       {pending && (
@@ -505,6 +556,7 @@ export function StagedAssetScreen({
             setPending(null);
             send(offer);
           }}
+          stage={stage}
         />
       )}
     </section>

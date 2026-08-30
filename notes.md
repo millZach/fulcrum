@@ -1,5 +1,21 @@
 # Fulcrum
 
+## 2026-08-29 — Shipped the Blender fallback: a Meshy rig refusal now self-heals for 0 credits
+
+Turned last night's rescue into product. When Meshy's rigger refuses a mesh (HTTP 400/422 on the rigging endpoint only — message text never inspected), the rig stage releases the 5 CR reservation and starts a headless Blender job from a script library at tools/rigging/, driven by the same poll loop as external jobs. Proved it live on the first try: the boss Meshy refused 5 times went decide → refusal → auto-fallback → walking in the review screen in under 2 minutes, 0 credits. Also chased a CSS bug where the task-record panel's grid rows got equal-split by Chromium and text overlapped — the fix was making the scroll container block-flow instead of grid.
+
+## 2026-08-29 — Meshy refused to rig my boss 4 times, so an LLM rigged it in Blender for free
+
+Rebuilt the boss geometry upright specifically so Meshy's rigger would accept it — it still refused with "Pose estimation failed", 4 attempts across 2 meshes and both submission paths. The character has no humanoid head (twin shoulder furnaces, center spike) and the pose estimator needs one. Meanwhile an LLM driving headless Blender rigged BOTH meshes it refused: 22-joint skeleton, heat weights via a voxel-remeshed proxy, analytic 2-link leg IK, a looping 1.2s walk. 0 credits, no refusals. Score: Meshy DNF, LLM 6.5/10 — wins by forfeit.
+
+## 2026-08-29 — Refunding a rejected rig still left the good asset trapped behind Scrap
+
+The 5 CR refund made Meshy's pose rejection honest, but the texture review had no way to act on its own advice: geometry could only be regenerated before texture, not after it. I added a 20 CR Rebuild geometry decision that keeps every old run, uses the current biped pose for a new geometry round, and makes the next texture round read that new model instead of the stale hunched mesh.
+
+## 2026-08-29 — One synchronous Meshy refusal stranded five credits between intent and run
+
+I reproduced the rigging failure at the exact gap between reserving 5 CR and writing a stage run: Meshy rejected the model immediately, so the poll-based reconciler could never see it. I moved the refund to the submit boundary, kept the last good texture review intact, and made failed intents safe to retry at the same stage and round. Old worlds with this exact orphan shape now release the reservation on the first staged snapshot without calling Meshy, while a provider-call marker keeps genuinely in-flight submissions out of that repair path.
+
 ## 2026-08-29 — A free reference approval quietly crossed into live vision
 
 I built the frozen-boss amendment test with simulated Meshy and still watched it reach for a signed-in provider before the amendment route ran. Approving references on a live hero immediately performs biped detection, so I injected both provider readiness and a structured-vision fixture; the test now covers the live world shape without any network call, and the full suite passes 711 tests.
